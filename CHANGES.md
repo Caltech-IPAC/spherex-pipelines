@@ -1,3 +1,115 @@
+## SPHEREx Pipelines 6.5 (2025-12-11)
+
+
+### New Features
+
+- Photometry tool v13: Major version of the photometry tool. Changes include CLI, butler-related changes, and bug fixes. [[#SP-1661](https://jira.ipac.caltech.edu/browse/SP-1661)]
+- Photometry tool: Add `obs_publisher_did` column to photometry tool VOTable output. [[#SP-1772](https://jira.ipac.caltech.edu/browse/SP-1772)]
+- Introduced an afterburner script to update the spectral WCS of Level 2 products, writing the results to a new collection. [[#SP-1823](https://jira.ipac.caltech.edu/browse/SP-1823)]
+- Mosaic tool CLI and sample docker delivery [[#SP-1850](https://jira.ipac.caltech.edu/browse/SP-1850)]
+- Use spectral WCS calibration product instead of simulator bandpass model to populate measurement wavelength and bandwidth for photometry tool v13.1 release. [[#SP-1862](https://jira.ipac.caltech.edu/browse/SP-1862)]
+- Added github actions workflow to build and deploy Docker container for spherex-pipelines. [[#SP-1902](https://jira.ipac.caltech.edu/browse/SP-1902)]
+
+
+### Changes
+- Ingested updated `bad pixel map` from 10/19/25 instrument delivery. [[#SP-1857](https://jira.ipac.caltech.edu/browse/SP-1857)]
+- Ingested `SIP` from qr-2 to use as initial SIP guess. [[#SP-1469](https://jira.ipac.caltech.edu/browse/SP-1469)]
+
+- Identification algorithm and flagging for source blooming, cosmic-ray snowball and halo, (BSH Flagging) artifacts: Aded new flag definitions and optional diagnostic output (to be used for validation). [[#SP-1582](https://jira.ipac.caltech.edu/browse/SP-1582)]
+- Created a dedicated module for source bloom and cosmic-ray halo flagging and added it to the beginning of L2a pipeline; preserves L1 flags as int16 and L2 flags as int32. [[#SP-1886](https://jira.ipac.caltech.edu/browse/SP-1886)]
+- Apply BSH flagging and update persistence current only to active pixel area of detectors. Persistence should ignore bad pixels. Streamlined BSH status information in header. [[#SP-1893](https://jira.ipac.caltech.edu/browse/SP-1893)]
+
+
+- Update Persistence: update persistence current with bloom, snowball, halo flagging; this includes distinguishing cosmic rays from bright sources.  `SSDC–MS–012 v2.2.1` [[#SP-1581](https://jira.ipac.caltech.edu/browse/SP-1581)]
+- Persistence Module Piecewise Function: Added new piecewise function, modified flagging rules, and 
+  updated persistence parameters for R6.5. [[#SP-1882](https://jira.ipac.caltech.edu/browse/SP-1882)]
+- Update persistence current should be applied to only active area. [[#SP-1890](https://jira.ipac.caltech.edu/browse/SP-1890)]
+
+
+- Solve for off-center detector position-angles (PA) using boresight and PA from planned observation. [[#SP-1549](https://jira.ipac.caltech.edu/browse/SP-1549)]
+- R6.5 astrometry improvements: Added sytematic shift corrections to coarse astro initial guess. [[#SP-1868](https://jira.ipac.caltech.edu/browse/SP-1868)]
+- Astrometry diagnostics: diagnostic capability built into the Fine Astrometry module for routine data collection during pipeline execution. [[#SP-1831](https://jira.ipac.caltech.edu/browse/SP-1831)]
+- Added `FINAST` quality metric: `Qs_nmatch_var` determined from the number of matched sources in each quadrant of the image. [[#SP-1897](https://jira.ipac.caltech.edu/browse/SP-1897)]
+
+- Dichroic Beam-Splitter (DBS) ghost masking: Added functionality to mask `main` and `edge` DBS ghosts for detectors 3-6 inclusive. `SSDC-MS-019 v3.3`. [[#SP-1858](https://jira.ipac.caltech.edu/browse/SP-1858)]
+- Validtion DQA check for corners of `GHOST_EXT` region of interest (ROI), logs a failure if there are no sources in the corners. [[#SP-1878](https://jira.ipac.caltech.edu/browse/SP-1878)]
+
+
+- Rewrite Query Reference Catalog task to use planned observations as inputs instead of L1 images. This mitigates loss of coverage of srccat when there are missing L1 images. [[#SP-1722](https://jira.ipac.caltech.edu/browse/SP-1722)]
+- Keep only necessary columns as float64 in srccat (ra, dec, times), others may use float32. [[#SP-1885](https://jira.ipac.caltech.edu/browse/SP-1885)]
+- Added a DQA check for srccat coverage of least 250 pixel padding past image active area region, on all sides. [[#SP-1892](https://jira.ipac.caltech.edu/browse/SP-1892)]
+- Query Reference Catalog Photometry Flag: Added `for_l3phot` flag to filter down galactic plane sources
+  photometered in L3 without affecting the source mask. [[#SP-1881](https://jira.ipac.caltech.edu/browse/SP-1881)]
+- Query Custom Catalog Task: Created a new Query Reference Catalog-like task to use input reference catalogs with custom sky coverage for deep-field. [[#SP-1895](https://jira.ipac.caltech.edu/browse/SP-1895)]
+
+- Photometry Flagging: Added `BLOOM`, `SNOWBALL`, `HALO`, and `SATELLITE_HALO` to the list of flags to mask when
+  estimating the diffuse background, the list of flags for Tractor to ignore, and the list of bad photometry
+  flags. [[#SP-1876](https://jira.ipac.caltech.edu/browse/SP-1876)]
+
+
+- L3 outputs: Based on the refcat version in the QRC srccat outputs, include file-level metadata in the Level 3 output Parquet files documenting the refcat version used. [[#SP-1810](https://jira.ipac.caltech.edu/browse/SP-1810)]
+
+
+- Decoupling Butler for Photometry Tool: When extracting products from the main butler to a temporary one, 
+  a new process is launched to avoid storage class mismatches between them. [[#SP-1845](https://jira.ipac.caltech.edu/browse/SP-1845)]
+
+
+
+
+### Bug Fixes
+
+- Fixed `SPHERExImage` layer order on read to match the order of the corresponding FITS extensions. [[#SP-1826](https://jira.ipac.caltech.edu/browse/SP-1826)]
+- Forced Photometry Flagging: Fixed source region mask to exclude non-source
+  pixels within the bounding box. [[#SP-1833](https://jira.ipac.caltech.edu/browse/SP-1833)]
+- Nonfunc flag count set to integer from numpy integer for pyyaml compatibility. [[#SP-1839](https://jira.ipac.caltech.edu/browse/SP-1839)]
+- Repeating UUIDs for CAOM Plane Table Fix: Fixes an indentation error in the logic that caused the same UUID 
+  to be used as the obsid for multiple plane ids. [[#SP-1846](https://jira.ipac.caltech.edu/browse/SP-1846)]
+- Photometry tool v13 bugfix: Subprocess hangs when all sources have no coverage as a consequence of multiprocessing queue blocking. [[#SP-1847](https://jira.ipac.caltech.edu/browse/SP-1847)]
+- Photometry tool v13: `obs_pub`lisher_did` should reflect qr2 by default. [[#SP-1848](https://jira.ipac.caltech.edu/browse/SP-1848)]
+- Addresses the suppression of the `local_bkg_flg` column in the Firefly display of Spectrophotometry Tool outputs. [[#SP-1856](https://jira.ipac.caltech.edu/browse/SP-1856)]
+- Perform Forced Photometry Bugfix: Added persistence flag to bad pixel mask and mask of pixels for Tractor to
+  ignore. [[#SP-1874](https://jira.ipac.caltech.edu/browse/SP-1874)]
+- Astometry bug fixes r6.5. [[#SP-1891](https://jira.ipac.caltech.edu/browse/SP-1891)]
+
+
+### Enhancements
+
+- Estimate Diffuse Background Optimization: Reduced memory allocated by the run
+  method by adding chunked spline evaluation and removing outdated null
+  background objects. [[#SP-1818](https://jira.ipac.caltech.edu/browse/SP-1818)]
+- Level 3a Optimization: Reduced memory allocated from reading parquet files by enabling column filtering and
+  initializing `astropy.table.Table` objects with shallow copies. [[#SP-1819](https://jira.ipac.caltech.edu/browse/SP-1819)]
+- Level 3 Photometry Improvements: Added more flexible pass-through options to save memory while reading `srccat`
+  parquet files during L3a production mode. Refactored L3 unit tests for easier testing of different config
+  values. [[#SP-1854](https://jira.ipac.caltech.edu/browse/SP-1854)]
+
+
+### Other
+
+- `click` package pin to less than breaking release 8.3.0. [[#SP-1834](https://jira.ipac.caltech.edu/browse/SP-1834)]
+
+## SPHEREx Pipelines 6.4.1 (2025-09-02)
+
+
+### Changes
+
+- Nonfunctional pixel map: updated input calibration product handling for nonfunc pixels, including, formatter, DetectorPixelData type, dataset type, fake products and updated scripts to ingest into the butler. [[#SP-1801](https://jira.ipac.caltech.edu/browse/SP-1801)]
+- Query Reference Catalog: Include reference catalog version in srccat tiles. [[#SP-1807](https://jira.ipac.caltech.edu/browse/SP-1807)]
+
+
+### Bug Fixes
+
+- L2a Date Header Fix: Creation time of FITS file based on creation of L2a file rather than
+  inheriting date from L1. [[#SP-1806](https://jira.ipac.caltech.edu/browse/SP-1806)]
+- Perform Forced Photometry Bugfix: Fixed central source filtering to correctly
+  index the inverse variance. [[#SP-1811](https://jira.ipac.caltech.edu/browse/SP-1811)]
+
+
+### Enhancements
+
+- L3a Memory Optimization: Improved memory consumption by reducing array copying, enhancing window boundary
+  object representation, and adding a manual garbage collection option. [[#SP-1764](https://jira.ipac.caltech.edu/browse/SP-1764)]
+
 ## SPHEREx Pipelines 6.4 (2025-08-26)
 
 

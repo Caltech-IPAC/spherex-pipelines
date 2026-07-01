@@ -77,6 +77,34 @@ class TestPersistenceModel(unittest.TestCase):
         self.assertTrue(persist_current_2.shape == self.spximg.data.shape)
         self.assertTrue(persist_flg_2.shape == self.spximg.data.shape)
 
+        self.assertTrue(persist_current_2.shape == self.spximg.data.shape)
+
+    def test_lookup_table_fluence(self):
+        """Tests lookup table case where electron fluence is calculated."""
+        self.initialize()
+
+        self.persistence_model.compute_persistence_current(
+            self.spximg,
+            t_slew_2_1=0.0,
+            t_int=1.,
+        )
+
+        self.persistence_model._state.prev1_end_time = 0.5
+        self.persistence_model.compute_persistence_current(
+            self.spximg,
+            t_slew_2_1=0.0,
+            t_int=1.,
+        )
+
+        b_prev1 = self.persistence_model._lookup_table(
+            flux=self.persistence_model._state.spximg_prev[0],
+            band=4,
+            t_int=1.,
+            use_flux=False,
+        )
+
+        self.assertTrue(self.persistence_model._state.spximg_prev[0].shape == b_prev1.shape)
+
 
 if __name__ == '__main__':
     unittest.main()

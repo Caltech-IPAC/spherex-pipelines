@@ -3,6 +3,7 @@ __all__ = ["PerformForcedPhotometryConfig", "PerformForcedPhotometryTask"]
 # Standard library imports
 from itertools import repeat
 import copy
+import gc
 import multiprocessing as mp
 import time
 
@@ -10,6 +11,7 @@ import time
 from astropy.coordinates import SkyCoord
 from astropy.io.fits import Header, HDUList
 from astropy.table import Table, Column
+from lsst.daf.butler import DeferredDatasetHandle
 from lsst.pex.config import Field, ListField
 import numpy as np
 import healpy as hp
@@ -25,7 +27,8 @@ from spx_data.spx_version import SSDC_PIPELINES_VERSION
 from spx_utils.photometry.window_utils import (
     slide_window, run_tractor_window, combine_measurements, combine_fits)
 from spx_utils.photometry.tractor_utils import MJysr_to_uJy
-from spx_utils import SourcePipelineClass
+from spx_utils import SourcePipelineClass, get_current_rss
+from spx_utils.utils import get_refcat_provenance
 
 
 # ==============================================================================
@@ -59,7 +62,7 @@ def check_cut_side_length(value: int) -> bool:
         return False
 
 
-def add_pass_thru(idx_map: np.array, input_cat: Table, col_name: str, output_tab: Table):
+def add_srccat_pass_thru(idx_map: np.array, input_cat: Table, col_name: str, output_tab: Table):
     """Add a pass-through column from the input catalog to the output
     photometry measurement table.
 
@@ -76,64 +79,17 @@ def add_pass_thru(idx_map: np.array, input_cat: Table, col_name: str, output_tab
     """
     # Input catalog columns that can be added to the output table
     pass_thru_lookup = {
-        "coord_src": {
-            "final_name": "external_survey",
-            "description": "Identifier of external survey",
-            "dtype": "uint8",
-            "unit": None,
-            "idx": 1
-        },
-        "external_source_id": {
-            "final_name": "external_source_id",
-            "description": "ID of source in external survey catalog",
-            "dtype": "U",
-            "unit": None,
-            "idx": 2
-        },
         "name": {
-            "final_name": "name",
             "description": "User-specified name of the source ('Target NNN' if no name provided)",
             "dtype": "U",
             "unit": None,
             "idx": 1
         },
-        "parallax": {
-            "final_name": "parallax",
-            "description": "Parallax (from reference catalog)",
-            "dtype": "float32",
-            "unit": u.mas,
-            "idx": 8
-        },
-        "pmdec": {
-            "final_name": "pm_dec",
-            "description": "Proper motion in Decl. (from reference catalog)",
-            "dtype": "float32",
-            "unit": u.mas/u.year,
-            "idx": 7
-        },
-        "pmra": {
-            "final_name": "pm_ra",
-            "description": "Proper motion in R.A. (from reference catalog)",
-            "dtype": "float32",
-            "unit": u.mas/u.year,
-            "idx": 6
-        },
         "spherex_class": {
-            "final_name": "spherex_class",
             "description": "Source origin in reference catalog",
             "dtype": "int32",
             "unit": None,
-            "idx": 3
-        },
-    }
-
-    # Input catalog columns that can override values in the output table
-    override_lookup = {
-        "ref_ra": {
-            "replace_name": "ra"
-        },
-        "ref_dec": {
-            "replace_name": "dec"
+            "idx": 1
         }
     }
 
@@ -144,22 +100,11 @@ def add_pass_thru(idx_map: np.array, input_cat: Table, col_name: str, output_tab
     if col_name in pass_thru_lookup.keys():
         output_tab.add_column(
             col=Column(data=input_cat[col_name][idx_map],
-                       name=pass_thru_lookup[col_name]["final_name"],
+                       name=col_name,
                        unit=pass_thru_lookup[col_name]["unit"],
                        description=pass_thru_lookup[col_name]["description"],
                        dtype=pass_thru_lookup[col_name]["dtype"]),
             index=pass_thru_lookup[col_name]["idx"], copy=False
-        )
-    if col_name in override_lookup.keys():
-        orig_col = output_tab[override_lookup[col_name]["replace_name"]]
-        output_tab.replace_column(
-            name=override_lookup[col_name]["replace_name"],
-            col=Column(data=input_cat[col_name][idx_map],
-                       name=orig_col.name,
-                       unit=orig_col.unit,
-                       description=orig_col.description,
-                       dtype=orig_col.dtype),
-            copy=False
         )
 
 
@@ -183,6 +128,7 @@ class PerformForcedPhotometryConnections(pipeBase.PipelineTaskConnections,
         doc="Input catalog.",
         storageClass="AstropyParquet",
         dimensions=("instrument", "dichroicpair", "spsplan", "slewgroup"),
+        deferLoad=True,
     )
     solid_angle_pixel_map = cT.PrerequisiteInput(
         name="solid_angle_pixel_map",
@@ -224,15 +170,15 @@ class PerformForcedPhotometryConnections(pipeBase.PipelineTaskConnections,
         super().__init__(config=config)
 
         if config.combinedOutput:
-            self.outputs.discard("phot_meas")
+            del self.phot_meas
         else:
-            self.outputs.discard("phot_meas_combined")
+            del self.phot_meas_combined
 
         if not config.return_fit:
-            self.outputs.discard("tractor_fits")
+            del self.tractor_fits
 
         if config.use_simulator_bandpass:
-            self.inputs.discard("spectral_wcs")
+            del self.spectral_wcs
 
 
 class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
@@ -249,12 +195,29 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
         default=False)
 
     pass_thru_cols = ListField(
-        doc="List of columns from input catalog to pass through to the output catalog, in order of relative"
-            " placement in the output catalog.",
+        doc="List of columns to pass through to the output catalog, in order of relative placement in the"
+            "output catalog.",
         dtype=str,
-        default=["coord_src", "external_source_id", "spherex_class", "pmra", "pmdec", "parallax", "ref_ra",
-                 "ref_dec"]
+        default=[])
+
+    gc_interval = Field(
+        doc="Triggers manual garbage collection very N iterations during window loop. Default is 0 (no"
+            " garbage collection).",
+        dtype=int,
+        default=0)
+
+    cat_phot_cols = ListField(
+        doc="Minimal list of input source catalog columns required to perform photometry.",
+        dtype=str,
+        default=["SPHERExRefID", "ra", "dec", "ra_error", "dec_error", "sersic", "shape_r", "ab_ratio", "phi",
+                 "for_l3phot"]
     )
+
+    merge_srccat = Field(
+        doc="If True, adds `pass_thru_cols` from the input source catalog to the output photometry table."
+            " Default is False.",
+        dtype=bool,
+        default=False)
 
     # Sliding window parameters
     cut_side_length = Field(
@@ -283,8 +246,7 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
         doc="Filters target windows to photometer based on `spherex_class` from SPHEREx Reference Catalog. "
             "Default is `SourcePipelineClass.ALL`.",
         dtype=int,
-        default=SourcePipelineClass.ALL
-    )
+        default=SourcePipelineClass.ALL)
 
     # Local background estimation parameters
     bkg_side_length = Field(
@@ -398,8 +360,12 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
         class_missing = "spherex_class" not in self.pass_thru_cols
         filtering_enabled = (self.class_filter != SourcePipelineClass.ALL.value)
         if (filtering_enabled and class_missing):
-            raise ValueError("Pass through column 'spherex_class' must be included to perform class "
+            raise ValueError("Pass-through column 'spherex_class' must be included to perform class "
                              "filtering.")
+
+        # If merging srccat data, 1+ pass-through columns must be specified
+        if self.merge_srccat and (len(self.pass_thru_cols) == 0):
+            raise ValueError("To merge data from the srccat, 1+ pass-through columns must be specified.")
 
 
 class PerformForcedPhotometryTask(pipeBase.PipelineTask):
@@ -453,24 +419,22 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                         # TODO handle other types of output
                         print(f"ERROR: output for connection {name} is not saved")
 
-    def run(self, spximg: SPHERExImage, srccat: Table,
-            global_bkgd: np.ndarray,
-            solid_angle_pixel_map: SPHERExImage,
-            spectral_wcs: HDUList = None) -> pipeBase.Struct:
+    def run(self, spximg: SPHERExImage, srccat: DeferredDatasetHandle | Table, global_bkgd: np.ndarray,
+            solid_angle_pixel_map: SPHERExImage, spectral_wcs: HDUList = None) -> pipeBase.Struct:
         """Perform Forced Photometry.
 
         Parameters
         ----------
         spximg : `spx_data.SPHERExImage`
             LVF image with catalog of sources to be measured
-        srccat : `astropy.table.Table`
-            Ref catalog sources within or close to the image
+        srccat : `astropy.table.Table`|`lsst.daf.butler.DeferredDatasetHandle`
+            Catalog of sources within or close to the image.
         global_bkgd : `numpy.ndarray`
             Global background estimate.
         solid_angle_pixel_map : `spx_data.SPHERExImage`
             Solid angle pixel map derived by Update Field Distortion module.
         spectral_wcs : `~astropy.io.fits.HDUList`, optional
-            Spectral WCS calibration file with center wavelength and center bandwidth.
+            Spectral WCS calibration with central wavelength and bandwidth.
             If not specified, Simulator's wavelength model is used.
 
         Returns
@@ -489,6 +453,36 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         task_t0 = time.time()
         self.log.info("Starting forced photometry...")
 
+        # Only read necessary columns from input catalog
+        if isinstance(srccat, DeferredDatasetHandle):
+            # NOTE: Need to convert `lsst.pex.config.listField.List` to
+            # `list` for table item access
+            read_cols = list(self.config.cat_phot_cols) + list(self.config.pass_thru_cols) if \
+                self.config.merge_srccat else list(self.config.cat_phot_cols)
+            try:
+                srccat = srccat.get(
+                    parameters={
+                        "columns": read_cols
+                    }
+                )
+            except KeyError as e:
+                raise ValueError(f"Requested column {e} is not in the input catalog.")
+
+        # Extract refcat provenance (version) from input srccat once
+        ref_ver = None
+        try:
+            _, ref_ver = get_refcat_provenance(srccat)
+        except Exception:
+            # Optional: try the meta dict if your pipeline stores it there
+            try:
+                _, ref_ver = get_refcat_provenance(getattr(srccat, "meta", {}))
+            except Exception:
+                ref_ver = None
+
+        if ref_ver:
+            # Record in task metadata (shows up in Butler task metadata)
+            self.metadata.add("refcat_version", str(ref_ver))
+
         # Convert positions/their errors to X, Y pixel coordinates on detector
         srctab = copy.copy(srccat)  # avoid directly modifying input cat
         cat_coords = SkyCoord(ra=srctab["ra"], dec=srctab["dec"], unit=u.deg, frame="icrs")
@@ -505,6 +499,15 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         src_yimg = src_ydet[img_mask]
         cat_coords = cat_coords[img_mask]
         srctab = srctab[img_mask]
+
+        # If "for_l3phot" column exists, filter out sources not flagged for L3
+        if "for_l3phot" in srctab.colnames:
+            l3phot_mask = (srctab["for_l3phot"] == 1)
+            src_ximg = src_ximg[l3phot_mask]
+            src_yimg = src_yimg[l3phot_mask]
+            cat_coords = cat_coords[l3phot_mask]
+            srctab = srctab[l3phot_mask]
+        self.log.debug(get_current_rss("Image-filtered catalog created"))
 
         # Add HEALPix index for each source
         # NOTE: We avoid copying columns to save memory. If future module
@@ -524,7 +527,8 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
 
         # Flagged pixels (in image and variance)
         ignore_pixel_flags = (Flag.SUR_ERROR | Flag.NONFUNC | Flag.MISSING_DATA | Flag.HOT | Flag.COLD
-                              | Flag.NONLINEAR)
+                              | Flag.NONLINEAR | Flag.PERSIST | Flag.BLOOM | Flag.SNOWBALL | Flag.HALO
+                              | Flag.SATELLITE_HALO)
         ignore_mask = spximg.getFlagsAsMask(ignore_pixel_flags)
         spximg.data[ignore_mask] = 0
         spximg.uncertainty.array[ignore_mask] = 1e3 * var_nanmax_init
@@ -578,6 +582,7 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         # Perform fitting
         # Step across the detector, storing bounds for "windows" or subregions
         img_windows = slide_window(spximg, self.config, use_local)
+        self.log.debug(get_current_rss("Array of window objects created"))
 
         # Set up photometry measurement array/fitting results dictionary
         combined_arr = np.empty(len(srctab), dtype=[("SPHERExRefID", "int64"),
@@ -585,6 +590,9 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                                                     ("dec", "float64"),
                                                     ("x_image", "float32"),
                                                     ("y_image", "float32"),
+                                                    ("mjd", "float64"),
+                                                    ("lambda", "float32"),
+                                                    ("lambda_width", "float32"),
                                                     ("flux", "float32"),
                                                     ("flux_err", "float32"),
                                                     ("flux_bkg", "float32"),
@@ -592,6 +600,9 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                                                     ("ext_flg", "bool"),
                                                     ("flags", "int64"),
                                                     ("fit_ql", "float32"),
+                                                    ("deep_flg", "bool"),
+                                                    ("lvf_id", "int64"),
+                                                    ("det_id", "uint8"),
                                                     (hips_col_name, "int32")])
         tractor_fits = {} if self.config.return_fit else None
         start = 0
@@ -600,9 +611,10 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         self.log.info("Starting window fitting with Tractor...")
         fitting_t0 = time.time()
         fit_tab_np = fit_tab.as_array()
+        self.log.debug(get_current_rss("Empty fitting array created"))
         if not self.config.parallel_fitting:
             # Fit windows sequentially
-            for window in img_windows:
+            for i, window in enumerate(img_windows):
                 result = run_tractor_window(
                     img_data=data, img_units=units, img_wcs=wcs, img_var=variance, img_flags=flags,
                     window_params=window, src_ximg=src_ximg, src_yimg=src_yimg, src_cat=fit_tab_np,
@@ -611,6 +623,9 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                 start, end = combine_measurements(combined_arr, result, start, end)
                 if self.config.return_fit:
                     tractor_fits = combine_fits(tractor_fits, result)
+                if (self.config.gc_interval > 0) and (i % self.config.gc_interval == 0):
+                    n_objs = gc.collect()
+                    self.log.info(f"{n_objs} objects garbage collected")
         else:
             # Fit windows in parallel (for small datasets/quick local tests)
             iterator = zip(repeat(data), repeat(units), repeat(wcs), repeat(variance), repeat(flags),
@@ -628,7 +643,7 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         combined_arr = combined_arr[:end]
 
         # Convert specific intensity to spectral flux density
-        pix_map = solid_angle_pixel_map.data * solid_angle_pixel_map.unit
+        pix_map = solid_angle_pixel_map.data << solid_angle_pixel_map.unit  # use << to avoid copying
         ypos_idx, xpos_idx = (spximg.wcs).world_to_array_index(
             SkyCoord(combined_arr["ra"], combined_arr["dec"], unit=u.deg, frame="icrs"))  # keep array order
         # NOTE: We pass an oversample factor of 1 because the Tractor
@@ -642,41 +657,8 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         if not use_local:
             combined_arr["flux_bkg"] = global_bkgd[ypos_idx, xpos_idx]  # replaces 0s
 
-        # Construct output table
-        out_fmt_arr = np.array([
-            ("source_id", "Unique SPHEREx ID", "", "int64"),
-            ("ra", "R.A. of the source in the reference catalog", u.degree, "float64"),
-            ("dec", "DEC of the source in the reference catalog", u.degree, "float64"),
-            ("x_image", "x pixel position on LVF image used for fitting", u.pixel, "float32"),
-            ("y_image", "y pixel position on LVF image used for fitting", u.pixel, "float32"),
-            ("flux", "SPHEREx observed flux", u.uJy, "float32"),
-            ("flux_err", "SPHEREx observed flux error", u.uJy, "float32"),
-            ("flux_bkg", "SPHEREx background surface brightness at source position", u.MJy/u.sr, "float32"),
-            ("local_bkg_flg", "True if background estimation was local", "", "bool"),
-            ("ext_flg", "True if treated as extended source", "", "bool"),
-            ("flags", "Photometry flags", "", "int64"),
-            ("fit_ql", "Photometry metric", "", "float32"),
-            (hips_col_name, f"HEALPix tile (order {self.config.hips_order})", "", "int32")],
-            dtype=[("name", "U20"), ("parameter", "U60"), ("unit", "U10"), ("format", "U10")]
-        )
-        combined_tab = Table(data=combined_arr,
-                             names=out_fmt_arr["name"].tolist(),
-                             descriptions=out_fmt_arr["parameter"].tolist(),
-                             dtype=out_fmt_arr["format"].tolist(),
-                             units=out_fmt_arr["unit"].tolist())
-
         # =====================================================================
-        # Add columns for non-fitting parameters
-        # Quantities based on image/detector data
-        combined_tab.add_column(
-            # Modified Julian date
-            col=Column(data=np.full(shape=len(combined_tab), fill_value=calculate_mjd(hdr)),
-                       name="mjd", description="Modified Julian Date",
-                       unit=u.day, dtype="float64"),
-            index=5,
-            copy=False
-        )
-
+        # Add back in values for non-fitting parameters
         # Get central wavelengths and bandwidths
         # Use position indices initialized in order of combined_array
         if spectral_wcs is None:
@@ -689,84 +671,91 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
             central_wls = spectral_wcs["CWAVE"].data[ypos_idx, xpos_idx]
             central_bws = spectral_wcs["CBAND"].data[ypos_idx, xpos_idx]
 
-        # Use position indices initialized in order of combined_array
-        combined_tab.add_column(
-            col=Column(data=central_wls, name="lambda",
-                       description="SPHEREx wavelengths", unit=u.um, dtype="float32"),
-            index=6,
-            copy=False
-        )
-        combined_tab.add_column(
-            col=Column(data=central_bws, name="lambda_width",
-                       description="SPHEREx wavelength widths", unit=u.um, dtype="float32"),
-            index=7,
-            copy=False
-        )
-
-        combined_tab.add_column(
-            # Deep field flag
-            col=Column(data=np.full(shape=len(combined_tab), fill_value=get_deep_flag(hdr)),
-                       name="deep_flg", description="True if in Deep Field", unit=None, dtype="bool"),
-            index=15,
-            copy=False
-        )
-
         # Construct exposure ID
         exp_id_int = ObservationId(hdr["OBSID"]).pointing_id + hdr["DETECTOR"]
-        combined_tab.add_column(
-            col=Column(data=np.full(shape=len(combined_tab), fill_value=exp_id_int), name="lvf_id",
-                       description="ID of LVF exposure used for photometry", unit=None, dtype="int64"),
-            index=16,
-            copy=False
+
+        # Quantities based on image/detector data
+        combined_arr["mjd"] = calculate_mjd(hdr)
+        combined_arr["lambda"] = central_wls
+        combined_arr["lambda_width"] = central_bws
+        combined_arr["deep_flg"] = get_deep_flag(hdr)
+        combined_arr["lvf_id"] = exp_id_int
+        combined_arr["det_id"] = detector
+
+        # Construct output table
+        out_fmt_arr = np.array([
+            ("source_id", "Unique SPHEREx ID", "", "int64"),
+            ("ra", "Right ascension in input source catalog", u.deg, "float64"),
+            ("dec", "Declination in input source catalog", u.deg, "float64"),
+            ("x_image", "x pixel position on LVF image used for fitting", u.pixel, "float32"),
+            ("y_image", "y pixel position on LVF image used for fitting", u.pixel, "float32"),
+            ("mjd", "Modified Julian Date", u.day, "float64"),
+            ("lambda", "SPHEREx wavelengths", u.um, "float32"),
+            ("lambda_width", "SPHEREx wavelength widths", u.um, "float32"),
+            ("flux", "SPHEREx observed flux", u.uJy, "float32"),
+            ("flux_err", "SPHEREx observed flux error", u.uJy, "float32"),
+            ("flux_bkg", "SPHEREx background surface brightness at source position", u.MJy/u.sr, "float32"),
+            ("local_bkg_flg", "True if background estimation was local", "", "bool"),
+            ("ext_flg", "True if treated as extended source", "", "bool"),
+            ("flags", "Photometry flags", "", "int64"),
+            ("fit_ql", "Photometry metric", "", "float32"),
+            ("deep_flg", "True if in Deep Field", "", "bool"),
+            ("lvf_id", "ID of LVF exposure used for photometry", "", "int64"),
+            ("det_id", "Detector ID", "", "uint8"),
+            (hips_col_name, f"HEALPix tile (order {self.config.hips_order})", "", "int32")],
+            dtype=[("name", "U20"), ("parameter", "U60"), ("unit", "U10"), ("format", "U10")]
         )
+        combined_tab = Table(data=combined_arr,
+                             names=out_fmt_arr["name"].tolist(),
+                             descriptions=out_fmt_arr["parameter"].tolist(),
+                             units=out_fmt_arr["unit"].tolist(),
+                             copy=False)
 
-        combined_tab.add_column(
-            # Detector ID
-            col=Column(data=np.full(shape=len(combined_tab), fill_value=detector),
-                       name="det_id", description="Detector ID", unit=None, dtype="uint8"),
-            index=17,
-            copy=False
-        )
-
-        # Pass-through columns
-        if len(self.config.pass_thru_cols) > 0:
-            if self.config.class_filter == SourcePipelineClass.ALL.value:
-                # Get indices in unique ID-sorted order
-                srctab_sort_idx = np.argsort(srctab["SPHERExRefID"])
-                combined_sort_idx = np.argsort(combined_tab["source_id"])
-
-                # Recover original order of combined table
-                combined_unsort_idx = np.argsort(combined_sort_idx)
-                index_map = srctab_sort_idx[combined_unsort_idx]
+        # Add requested pass-through columns from srccat
+        if self.config.merge_srccat and len(self.config.pass_thru_cols) > 0:
+            srctab.sort(keys="SPHERExRefID")
+            combined_tab.sort(keys="source_id")
+            if (
+                (self.config.class_filter == SourcePipelineClass.ALL.value)
+                and (len(srctab) == len(combined_tab))
+            ):
+                # Use contiguous indexing to avoid copying
+                index_map = slice(None)
             else:
                 # Manually find corresponding indices (table lengths unequal)
                 index_map = [np.nonzero(srctab["SPHERExRefID"] == combined_tab["source_id"][idx])[0][0] for
                              idx in range(len(combined_tab))]
 
             for col_name in self.config.pass_thru_cols:
-                add_pass_thru(index_map, srctab, col_name, combined_tab)
+                add_srccat_pass_thru(index_map, srctab, col_name, combined_tab)
 
         # =====================================================================
         # Add metadata and create return object based on config parameters
         combined_tab.meta["version_level2"] = spximg.header["VERSION"]
         combined_tab.meta["version_phot_meas"] = SSDC_PIPELINES_VERSION
 
+        if ref_ver:
+            combined_tab.meta["refcat_version"] = str(ref_ver)
+
+        # Photometry measurement table keyword args
         if self.config.combinedOutput:
             # Group photometry measurements by image
-            if self.config.return_fit:
-                return_obj = pipeBase.Struct(phot_meas_combined=combined_tab, tractor_fits=tractor_fits)
-            else:
-                return_obj = pipeBase.Struct(phot_meas_combined=combined_tab)
+            kwargs = {"phot_meas_combined": combined_tab}
         else:
             # Group photometry measurements by HEALPix
             cat_dict = {}
             grouped_table = combined_tab.group_by(hips_col_name)
             for key, group in zip(grouped_table.groups.keys[hips_col_name], grouped_table.groups):
+                group.meta = dict(combined_tab.meta)
                 cat_dict[key] = group
-            if self.config.return_fit:
-                return_obj = pipeBase.Struct(phot_meas=cat_dict, tractor_fits=tractor_fits)
-            else:
-                return_obj = pipeBase.Struct(phot_meas=cat_dict)
+            kwargs = {"phot_meas": cat_dict}
+
+        # Fitting results keyword args
+        if self.config.return_fit:
+            kwargs["tractor_fits"] = tractor_fits
+
+        # Create return object
+        return_obj = pipeBase.Struct(**kwargs)
 
         task_t1 = time.time()
         self.log.info("Fitting time in seconds (minutes): %s (%s)", f"{(fitting_t1-fitting_t0):.2f}",

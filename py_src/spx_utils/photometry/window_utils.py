@@ -6,6 +6,8 @@ __all__ = ["midpoint", "slide_window", "estimate_loc_bkg", "run_tractor_window",
 
 # Standard library imports
 import itertools
+from collections import namedtuple
+from typing import NamedTuple
 
 # Related third party imports
 from astropy.coordinates import SkyCoord
@@ -23,6 +25,18 @@ from numba import njit
 from spx_data import PSFZoneData, SPHERExImage
 from spx_utils.photometry.tractor_utils import tractor_fit_spherex
 from spx_utils import SourcePipelineClass
+
+
+# Memory-efficient tuple subclass to store window metadata
+#   cut_<axis><N>:           central cutout boundaries
+#   window_<axis><N>:        window (cutout + frame edge) boundaries
+#   bkgd_<axis><N>:          local background estimation cutout boundaries
+#   x1, x2:                  left/right edge
+#   y1, y2:                  lower/upper edge
+WindowInfo = namedtuple(
+    "WindowInfo",
+    ['row', 'col', 'cut_x1', 'cut_x2', 'cut_y1', 'cut_y2', 'window_x1', 'window_x2', 'window_y1',
+     'window_y2', 'bkgd_x1', 'bkgd_x2', 'bkgd_y1', 'bkgd_y2'])
 
 
 @njit(cache=True)
@@ -45,7 +59,8 @@ def _compute_mask(src_ximg, src_yimg, x1, x2, y1, y2):
     return mask
 
 
-def window_masking_np(src_ximg, src_yimg, src_cat_np, window_params):
+def window_masking_np(src_ximg: np.ndarray, src_yimg: np.ndarray, src_cat_np: np.ndarray,
+                      window_params: NamedTuple):
     """
     src_ximg, src_yimg : `numpy.ndarray`
         Source positions in X, Y pixel coordinates on the detector, calculated
@@ -53,14 +68,14 @@ def window_masking_np(src_ximg, src_yimg, src_cat_np, window_params):
     src_cat_np : `np.ndarray`
         Numpy ndarray representation of reference catalog sources within
         or close to the image. Includes HEALPix index for each source.
-    window_params : `dict`[`str`, `int`]
-        Keys and values corresponding to window parameters. All X, Y values are
-        pixel coordinates on the detector.
+    window_params : `collections.namedtuple`
+        Named tuple with field names corresponding to different window
+        parameters. All X, Y values are pixel coordinates on the detector.
     """
-    x1 = window_params["window_x1"] - 0.5
-    x2 = window_params["window_x2"] - 0.5
-    y1 = window_params["window_y1"] - 0.5
-    y2 = window_params["window_y2"] - 0.5
+    x1 = window_params.window_x1 - 0.5
+    x2 = window_params.window_x2 - 0.5
+    y1 = window_params.window_y1 - 0.5
+    y2 = window_params.window_y2 - 0.5
 
     # Mask is computed at C speed after first compile
     window_mask = _compute_mask(src_ximg, src_yimg, x1, x2, y1, y2)
@@ -94,7 +109,7 @@ def midpoint(x1: float, x2: float, y1: float, y2: float) -> tuple[float, float]:
     return ((x1+x2)/2.0, (y1+y2)/2.0)
 
 
-def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> list[dict[str, int]]:
+def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> np.ndarray:
     """Slides a window across an image to identify boundaries for photometry.
 
     Parameters
@@ -108,9 +123,10 @@ def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> list[
 
     Returns
     -------
-    img_windows : `list`[`dict`[`str`, `int`]]
-        Keys and values in each dictionary correspond to individual window
-        parameters. All X, Y values are pixel coordinates on the detector.
+    img_windows : `np.ndarray`
+        Array of `collections.namedtuple` elements. The field names of each
+        named tuple correspond to different window parameters. All X, Y values
+        are pixel coordinates on the detector.
     """
     # NOTE: FITS NAXIS1 (NAXIS2) is numpy array axes 1 (0). See
     # https://docs.astropy.org/en/stable/io/fits/usage/image.html for more.
@@ -120,7 +136,8 @@ def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> list[
     num_y_windows = len(cut_y1_vals)
     bkg_border = config.bkg_side_length - config.cut_side_length
 
-    img_windows = []
+    window_idx = 0
+    img_windows = np.empty(shape=(num_x_windows * num_y_windows), dtype=WindowInfo)
     # Slide window along Y-axis
     for cut_y1, y_window in zip(cut_y1_vals, range(num_y_windows)):
         cut_y2 = cut_y1 + config.cut_side_length
@@ -159,36 +176,24 @@ def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> list[
                 bkgd_x1 = cut_x1 - bkg_border/2.0 if use_local else np.nan
                 bkgd_x2 = cut_x2 + bkg_border/2.0 if use_local else np.nan
 
-            # Create dict of bounds
-            window_params = {
-                "row": y_window,
-                "col": x_window,
-                "cut_x1": cut_x1,
-                "cut_x2": cut_x2,
-                "cut_y1": cut_y1,
-                "cut_y2": cut_y2,
-                "window_x1": window_x1,
-                "window_x2": window_x2,
-                "window_y1": window_y1,
-                "window_y2": window_y2,
-                "bkgd_x1": bkgd_x1,
-                "bkgd_x2": bkgd_x2,
-                "bkgd_y1": bkgd_y1,
-                "bkgd_y2": bkgd_y2,
-            }
-            img_windows.append(window_params)
+            # Populate array with corresponding window parameters
+            img_windows[window_idx] = WindowInfo(
+                y_window, x_window, cut_x1, cut_x2, cut_y1, cut_y2, window_x1, window_x2, window_y1,
+                window_y2, bkgd_x1, bkgd_x2, bkgd_y1, bkgd_y2
+            )
+            window_idx += 1
     return img_windows
 
 
-def estimate_loc_bkg(window_params: dict[str, int], img_data: np.ndarray, img_units: CompositeUnit,
+def estimate_loc_bkg(window_params: NamedTuple, img_data: np.ndarray, img_units: CompositeUnit,
                      img_wcs: WCS, config: Config) -> Cutout2D:
     """Estimates the local background for a window within a crowded image.
 
     Parameters
     ----------
-    window_params : `dict`[`str`, `int`]
-        Keys and values corresponding to window parameters. All X, Y values are
-        pixel coordinates on the detector.
+    window_params : `collections.namedtuple`
+        Named tuple with field names corresponding to different window
+        parameters. All X, Y values are pixel coordinates on the detector.
     img_data : `numpy.ndarray`
          Crowded SPHEREx image CCD data with no global background solution.
     img_units : `astropy.units.core.CompositeUnit`
@@ -205,8 +210,8 @@ def estimate_loc_bkg(window_params: dict[str, int], img_data: np.ndarray, img_un
         origin/size as the window cutout.
     """
     # Create larger cutout for background estimation region
-    est_region_ctr = midpoint(window_params["bkgd_x1"], window_params["bkgd_x2"],
-                              window_params["bkgd_y1"], window_params["bkgd_y2"])
+    est_region_ctr = midpoint(window_params.bkgd_x1, window_params.bkgd_x2,
+                              window_params.bkgd_y1, window_params.bkgd_y2)
     est_region_cut = Cutout2D(Quantity(value=img_data, unit=img_units, copy=False), position=est_region_ctr,
                               size=(config.bkg_side_length, config.bkg_side_length), wcs=img_wcs)
 
@@ -217,13 +222,13 @@ def estimate_loc_bkg(window_params: dict[str, int], img_data: np.ndarray, img_un
                         exclude_percentile=config.bkg_exclude_pct)
 
     # Create local background cutout overlapping with window cutout
-    win_relative_bkgd = [window_params["window_x1"]-window_params["bkgd_x1"],
-                         window_params["window_x2"]-window_params["bkgd_x1"],
-                         window_params["window_y1"]-window_params["bkgd_y1"],
-                         window_params["window_y2"]-window_params["bkgd_y1"]]
+    win_relative_bkgd = [window_params.window_x1-window_params.bkgd_x1,
+                         window_params.window_x2-window_params.bkgd_x1,
+                         window_params.window_y1-window_params.bkgd_y1,
+                         window_params.window_y2-window_params.bkgd_y1]
     bkgd_ctr = midpoint(*win_relative_bkgd)
-    size = ((window_params["window_y2"] - window_params["window_y1"]),
-            (window_params["window_x2"] - window_params["window_x1"]))
+    size = ((window_params.window_y2 - window_params.window_y1),
+            (window_params.window_x2 - window_params.window_x1))
     bkgd_cut = Cutout2D(Quantity(value=bkgd.background, unit=img_units, copy=False), position=bkgd_ctr,
                         size=size, wcs=est_region_cut.wcs)
 
@@ -231,7 +236,7 @@ def estimate_loc_bkg(window_params: dict[str, int], img_data: np.ndarray, img_un
 
 
 def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: WCS,
-                       img_var: VarianceUncertainty, img_flags: np.ndarray, window_params: dict[str, int],
+                       img_var: VarianceUncertainty, img_flags: np.ndarray, window_params: NamedTuple,
                        src_ximg: np.ndarray, src_yimg: np.ndarray, src_cat: np.ndarray, cat_coords: SkyCoord,
                        use_local: bool, config: Config, psf: PSFZoneData, detector: int,
                        keep_frame_sources: bool = False):
@@ -249,9 +254,9 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
         SPHEREx image variance.
     img_flags : `numpy.ndarray`
         Flags giving information about each pixel.
-    window_params : `dict`[`str`, `int`]
-        Keys and values corresponding to window parameters. All X, Y values are
-        pixel coordinates on the detector.
+    window_params : `collections.namedtuple`
+        Named tuple with field names corresponding to different window
+        parameters. All X, Y values are pixel coordinates on the detector.
     src_ximg, src_yimg : `numpy.ndarray`
         Source positions in X, Y pixel coordinates on the detector, calculated
         assuming zero-based indexes.
@@ -292,10 +297,10 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
         window_cat.add_column(col=src_yimg[window_mask], name="y_image", copy=False)
 
         # Flag sources in central cutout
-        central_mask = ((window_cat["x_image"] >= window_params["cut_x1"] - 0.5)
-                        & (window_cat["x_image"] <= window_params["cut_x2"] - 0.5)
-                        & (window_cat["y_image"] >= window_params["cut_y1"] - 0.5)
-                        & (window_cat["y_image"] <= window_params["cut_y2"] - 0.5))
+        central_mask = ((window_cat["x_image"] >= window_params.cut_x1 - 0.5)
+                        & (window_cat["x_image"] <= window_params.cut_x2 - 0.5)
+                        & (window_cat["y_image"] >= window_params.cut_y1 - 0.5)
+                        & (window_cat["y_image"] <= window_params.cut_y2 - 0.5))
         window_cat.add_column(col=central_mask, name="central_source", copy=False)
 
         # Filter source classes if necessary
@@ -309,10 +314,10 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
 
         if (len(window_cat[central_mask]) > 0) and class_in_window:
             # Create image cutout
-            window_center = midpoint(window_params["window_x1"], window_params["window_x2"],
-                                     window_params["window_y1"], window_params["window_y2"])
-            size = ((window_params["window_y2"] - window_params["window_y1"]),
-                    (window_params["window_x2"] - window_params["window_x1"]))
+            window_center = midpoint(window_params.window_x1, window_params.window_x2,
+                                     window_params.window_y1, window_params.window_y2)
+            size = ((window_params.window_y2 - window_params.window_y1),
+                    (window_params.window_x2 - window_params.window_x1))
             # NOTE: position in (x, y) order, but size in (ny, nx) order
             cutout = Cutout2D(Quantity(value=img_data, unit=img_units, copy=False), position=window_center,
                               size=size, wcs=img_wcs)
@@ -341,7 +346,7 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
             window_cat.add_column(col=src_ywin[cut_mask], name="y_window", copy=False)
 
             # Create generative model using Tractor
-            window_origin = (window_params["window_x1"], window_params["window_y1"])
+            window_origin = (window_params.window_x1, window_params.window_y1)
             tractor_results = tractor_fit_spherex(
                 spx_cutout=cutout, spx_variance=var_slice, spx_flags=flags_slice,
                 spx_bkgd=bkgd_cutout if use_local else None,

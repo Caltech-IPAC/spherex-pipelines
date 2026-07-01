@@ -10,6 +10,7 @@ import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 from lsst.pipe.base.connections import InputQuantizedConnection, OutputQuantizedConnection
+from astropy.wcs import Sip
 
 # Local application/library specific imports
 from spx_data import (PSFZoneData, SPHERExImage)
@@ -50,13 +51,13 @@ class L2bConnections(pipeBase.PipelineTaskConnections,
         dimensions=["instrument", "detector"],
         isCalibration=True
     )
-    # sip = cT.PrerequisiteInput(
-    #    name="sip",
-    #    doc="Input distortion as SIP (Simple Imaging Polynomial).",
-    #    storageClass="AstropySIP",
-    #    dimensions=["instrument", "detector"],
-    #    isCalibration=True
-    # )
+    sip = cT.PrerequisiteInput(
+        name="sip",
+        doc="Input distortion as SIP (Simple Imaging Polynomial).",
+        storageClass="AstropySIP",
+        dimensions=["instrument", "detector"],
+        isCalibration=True
+    )
     srccat = cT.Input(
         name="catalog",
         doc="Input catalog.",
@@ -108,6 +109,18 @@ class L2bConnections(pipeBase.PipelineTaskConnections,
         storageClass="Level2DQA",
         dimensions=("instrument", "exposure"),
     )
+    astr_diag = cT.Output(
+        name="astr_diag",
+        doc="Diagnostic JSON file with WCS solution details.",
+        storageClass="AstrDiag",
+        dimensions=("instrument", "exposure"),
+    )
+
+    # Deactivate the astr diagnostics output connection if not desired
+    def __init__(self, *, config=None):
+        super().__init__(config=config)
+        if not config.estimate_fine_astrometry.do_write_diagnostics:
+            del self.astr_diag
 
 
 class L2bConfig(pipeBase.PipelineTaskConfig,
@@ -192,7 +205,7 @@ class L2bTask(pipeBase.PipelineTask):
             spximg: SPHERExImage,
             abs_gain_matrix: SPHERExImage,
             dark: SPHERExImage,
-            # sip: Sip,
+            sip: Sip,
             srccat: Table,
             # ssocat: Table,
             # xtalk_coupling_matrix: SPHERExImage,
@@ -219,8 +232,9 @@ class L2bTask(pipeBase.PipelineTask):
 
         # Estimate Fine Astrometry
         task: EstimateFineAstrometryTask = getattr(self, "estimate_fine_astrometry")
-        result = task.run(spximg, srccat)
+        result = task.run(spximg, srccat, sip=sip)
         spximg = result.spximg_out
+        astr_diag = result.astrometry_diagnostics
 
         # Create Source Mask
         task: CreateSourceMaskTask = getattr(self, "create_source_mask")
@@ -260,4 +274,4 @@ class L2bTask(pipeBase.PipelineTask):
         dqa_l2 = result.dqa_l2
         idqr_obs = result.idqr_obs
 
-        return pipeBase.Struct(spximg_out=spximg, dqa_l2=dqa_l2, idqr_obs=idqr_obs)
+        return pipeBase.Struct(spximg_out=spximg, dqa_l2=dqa_l2, idqr_obs=idqr_obs, astr_diag=astr_diag)

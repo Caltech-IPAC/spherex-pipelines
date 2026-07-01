@@ -47,8 +47,8 @@ def get_window_shape(window_params: dict) -> tuple[int, int]:
     `tuple`[`int`, `int`]
         2D window shape.
     """
-    x_size = window_params["window_x2"] - window_params["window_x1"]
-    y_size = window_params["window_y2"] - window_params["window_y1"]
+    x_size = window_params.window_x2 - window_params.window_x1
+    y_size = window_params.window_y2 - window_params.window_y1
     return (x_size, y_size)
 
 
@@ -60,10 +60,12 @@ def check_fields(flux_arr: np.ndarray):
     flux_arr : `numpy.ndarray`
         Structured array of photometry results.
     """
-    expected_fields = ["SPHERExRefID", "ra", "dec", "x_image", "y_image", "flux", "flux_err", "flux_bkg",
-                       "local_bkg_flg", "ext_flg", "flags", "fit_ql", "hips6"]
-    for field in expected_fields:
-        assert field in flux_arr.dtype.names, f"Field {field} not found in combined photometry array."
+    expected_fields = ["SPHERExRefID", "ra", "dec", "x_image", "y_image", "mjd", "lambda", "lambda_width",
+                       "flux", "flux_err", "flux_bkg", "local_bkg_flg", "ext_flg", "flags", "fit_ql",
+                       "deep_flg", "lvf_id", "det_id", "hips6"]
+    for i, field in enumerate(expected_fields):
+        assert field == flux_arr.dtype.names[i], \
+            f"Field '{field}' not found in combined photometry array or at expected column index {i}."
 
 
 def setup_fixture(img, window_params, config: Config, keep_frame_sources: bool):
@@ -91,6 +93,9 @@ def setup_fixture(img, window_params, config: Config, keep_frame_sources: bool):
     """
     # Set up input parameters
     srccat = img.catalog
+    read_cols = list(config.cat_phot_cols) + list(config.pass_thru_cols) if \
+        config.merge_srccat else list(config.cat_phot_cols)
+    srccat = srccat[read_cols]
     hips_col_name = f"hips{config.hips_order}"
     col = Column(data=hp.ang2pix(2 ** config.hips_order, srccat["ra"], srccat["dec"], nest=True,
                                  lonlat=True),
@@ -154,7 +159,7 @@ class TestWindowUtils():
     def test_slide_window_global(self):
         """Test sliding window for global background case."""
         window = self.ps_windows_global[0]
-        nan_vals = [window["bkgd_x1"], window["bkgd_x2"], window["bkgd_y1"], window["bkgd_y2"]]
+        nan_vals = [window.bkgd_x1, window.bkgd_x2, window.bkgd_y1, window.bkgd_y2]
         nan_msg = "Background estimation window bounds are not NaN for global background subtraction case."
         assert np.all(np.isnan(nan_vals)), nan_msg
 
@@ -172,7 +177,7 @@ class TestWindowUtils():
     def test_slide_window_local(self):
         """Test sliding window for local background case."""
         window = self.ps_windows_local[0]
-        finite_vals = [window["bkgd_x1"], window["bkgd_x2"], window["bkgd_y1"], window["bkgd_y2"]]
+        finite_vals = [window.bkgd_x1, window.bkgd_x2, window.bkgd_y1, window.bkgd_y2]
         finite_msg = "Background estimation window bounds are not finite (+/- inf. and NaN) for local"\
                      " background subtraction case."
         assert np.all(np.isfinite(finite_vals)), finite_msg
@@ -183,9 +188,9 @@ class TestWindowUtils():
         bkg_cut = estimate_loc_bkg(window, self.ps_img.data, self.ps_img.unit, self.ps_img.wcs,
                                    self.base_cutout_config)
 
-        window_ctr = midpoint(window["window_x1"], window["window_x2"],
-                              window["window_y1"], window["window_y2"])
-        size = ((window["window_y2"] - window["window_y1"]), (window["window_x2"] - window["window_x1"]))
+        window_ctr = midpoint(window.window_x1, window.window_x2,
+                              window.window_y1, window.window_y2)
+        size = ((window.window_y2 - window.window_y1), (window.window_x2 - window.window_x1))
         img_cut = Cutout2D(Quantity(value=self.ps_img.data, unit=self.ps_img.unit, copy=False),
                            position=window_ctr, size=size, wcs=self.ps_img.wcs)
 
@@ -238,22 +243,24 @@ class TestWindowUtils():
 
         # SNR_CUT: not in image
         snr_config = PerformForcedPhotometryConfig(
-            cut_side_length=5, frame_width=3, bkg_side_length=9, class_filter=SourcePipelineClass.SNR_CUT)
+            cut_side_length=5, frame_width=3, bkg_side_length=9, class_filter=SourcePipelineClass.SNR_CUT,
+            pass_thru_cols=["spherex_class"], merge_srccat=True)
         flux_tab = setup_fixture(self.ps_img, self.ps_windows_global[6], snr_config, False)
         assert flux_tab is None
         assert "SNR_CUT" not in img_flags
 
         # UNDEFINED: in image, but not in this window
         no_flg_config = PerformForcedPhotometryConfig(
-            cut_side_length=5, frame_width=3, bkg_side_length=9, class_filter=SourcePipelineClass.UNDEFINED)
+            cut_side_length=5, frame_width=3, bkg_side_length=9, class_filter=SourcePipelineClass.UNDEFINED,
+            pass_thru_cols=["spherex_class"], merge_srccat=True)
         flux_tab = setup_fixture(self.ps_img, self.ps_windows_global[7], no_flg_config, False)
         assert flux_tab is None
         assert "UNDEFINED" in img_flags
 
         # COMBO FLAG: COSMOLOGY in window, SECONDARY not in image
         combo_config = PerformForcedPhotometryConfig(
-            cut_side_length=5, frame_width=3, bkg_side_length=9,
-            class_filter=(SourcePipelineClass.COSMOLOGY | SourcePipelineClass.SECONDARY))
+            cut_side_length=5, frame_width=3, bkg_side_length=9, pass_thru_cols=["spherex_class"],
+            class_filter=(SourcePipelineClass.COSMOLOGY | SourcePipelineClass.SECONDARY), merge_srccat=True)
         flux_tab = setup_fixture(self.ps_img, self.ps_windows_global[6], combo_config, False)
         assert flux_tab is not None
         assert "COSMOLOGY" in img_flags
@@ -267,6 +274,9 @@ class TestWindowUtils():
                                           ("dec", "float64"),
                                           ("x_image", "float32"),
                                           ("y_image", "float32"),
+                                          ("mjd", "float64"),
+                                          ("lambda", "float32"),
+                                          ("lambda_width", "float32"),
                                           ("flux", "float32"),
                                           ("flux_err", "float32"),
                                           ("flux_bkg", "float32"),
@@ -274,6 +284,9 @@ class TestWindowUtils():
                                           ("ext_flg", "bool"),
                                           ("flags", "int64"),
                                           ("fit_ql", "float32"),
+                                          ("deep_flg", "bool"),
+                                          ("lvf_id", "int64"),
+                                          ("det_id", "uint8"),
                                           ("hips6", "int32")])
         start = 0
         end = 0

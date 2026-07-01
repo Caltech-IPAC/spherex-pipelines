@@ -1,0 +1,16 @@
+on:
+  workflow_dispatch:
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write  # Necessary for both pushing AND deleting
+
+    steps:
+      - name: Cleanup old images
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          package: spherex-pipelines
+          delete-untagged: true

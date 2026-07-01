@@ -38,6 +38,7 @@ from .measure_psf import *
 from .perform_forced_photometry import *
 from .query_reference_catalog import *
 from .remove_reference_pixels import *
+from .source_bloom_and_cosmic_ray_halo_flagging import *
 from .update_field_distortion import *
 from .update_persistence import *
 from .update_photometric_calibration import *

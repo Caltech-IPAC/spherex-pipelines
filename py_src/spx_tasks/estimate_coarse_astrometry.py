@@ -14,8 +14,10 @@ import numpy as np
 
 # Local application/library specific imports
 from spx_data import SPHERExImage, PlannedObservation
-from spx_utils import get_initial_linear_wcs, get_initial_wcs_with_sip  # compute_side_pas
+from spx_utils import (get_ra_dec_lon_lat_from_quat, get_initial_linear_wcs,
+                       get_corrected_linear_wcs)
 from spx_data import ReadoutParameters
+from spx_data.observation_id import ObservationId
 from spx_tasks import add_history
 
 
@@ -97,6 +99,12 @@ class EstimateCoarseAstrometryConfig(pipeBase.PipelineTaskConfig,
         dtype=bool,
         default=True)
 
+    use_coarse_correction = Field(
+        doc="If True, apply a hard-coded pointing correction (roll + shift) ",
+        dtype=bool,
+        default=True
+    )
+
 
 class EstimateCoarseAstrometryTask(pipeBase.PipelineTask):
     """Implementation of L1 Estimate Coarse Astrometry.
@@ -160,8 +168,10 @@ class EstimateCoarseAstrometryTask(pipeBase.PipelineTask):
         ValueError
             Raised if no pointings are found within time range.
         """
-        c = self.config
         spximg_out = copy.copy(spximg)
+        array_id = spximg.getArrayId()
+        rp = ReadoutParameters.from_metadata(spximg.meta)
+
         if override_wcs is not None:
             # The wcs may be overriden by solution from
             # astrometry.net if needed.
@@ -173,59 +183,60 @@ class EstimateCoarseAstrometryTask(pipeBase.PipelineTask):
                                    wcs_initial_with_sip=wcs_initial_with_sip,
                                    jitter_table=None)
 
-        # Get quaternion from PEF planned observation
-        quat_dict = planned_obs.quaternions
-        quat = np.array([
-            quat_dict["q1"],
-            quat_dict["q2"],
-            quat_dict["q3"],
-            quat_dict["q4"]
-        ], dtype=np.float64)  # Ensures full 64-bit precision
-        logging.info(f"quat : {quat}")
+        if self.config.use_coarse_correction:
+            self.log.info(f"Attempting on-the-fly coarse correction for Det {array_id}.")
 
-        # Obtain pointing from planned observation
+            # Get Slew Group Key (small slew counter)
+            sps_id = spximg.header["OBSID"]
+            obs_from_sps = ObservationId(sps_id)
+
+            # Build the final corrected WCS for this detector
+            crpix = (rp.Jactive + 1)/2, (rp.Kactive + 1)/2,
+            linear_wcs = get_corrected_linear_wcs(planned_obs, obs_from_sps, array_id, crpix)
+
+        else:
+            self.log.info(f"No systematic correction appplied to linear WCS for Det {array_id}.")
+            # Get boresight planned pointing from quaternion
+            quat_dict = planned_obs.quaternions
+            quat = np.array([
+                quat_dict["q1"],
+                quat_dict["q2"],
+                quat_dict["q3"],
+                quat_dict["q4"]
+            ], dtype=np.float64)
+            planned_ra, planned_dec, planned_pa = get_ra_dec_lon_lat_from_quat(quat)
+            linear_wcs = get_initial_linear_wcs(planned_ra, planned_dec, array_id, planned_pa)
+
+        # Obtain header info from planned observation
         ra_eq = planned_obs.ra.value
         dec_eq = planned_obs.dec.value
-        roll = planned_obs.pa_eq.value
+        pa_eq = roll = planned_obs.pa_eq.value
         print(f"ra = {ra_eq}, dec = {dec_eq}, roll = {roll}")
         lon_ecl = planned_obs.lon_ecl
         lat_ecl = planned_obs.lat_ecl
         pa_ecl = planned_obs.pa_ecl
 
-        array = spximg.getArrayId()
+        logging.info(linear_wcs.to_header(relax=True))
+        wcs_header = linear_wcs.to_header(relax=True)
 
-        rp = ReadoutParameters.from_metadata(spximg.meta)
+        crpix_x = linear_wcs.wcs.crpix[0]
+        crpix_y = linear_wcs.wcs.crpix[1]
+        center_x = (rp.Jactive + 1) / 2
+        center_y = (rp.Kactive + 1) / 2
 
-        wcs_initial_linear = get_initial_linear_wcs(ra_boresight=ra_eq,
-                                                    dec_boresight=dec_eq,
-                                                    array=array,
-                                                    roll=roll,
-                                                    pixel_size=c.pix_scale,
-                                                    nx=rp.Jactive+rp.jref,
-                                                    ny=rp.Kactive+rp.kref,
-                                                    edge_pixels=0)
-        logging.info(wcs_initial_linear.to_header(relax=True))
+        if crpix_x != center_x and crpix_y != center_y:
+            raise ValueError(
+                "WCS CRPIX is not in center of array. "
+                f"center:{center_x} {center_y}"
+                f"CRPIX:{crpix_x} {crpix_y}"
+            )
 
-        wcs_initial_with_sip = get_initial_wcs_with_sip(wcs_initial_linear,
-                                                        initial_distortion_table,
-                                                        array=array,
-                                                        nx=rp.Jactive+rp.jref,
-                                                        ny=rp.Kactive+rp.kref,
-                                                        edge_pixels=0)
-
-        logging.info(wcs_initial_with_sip.to_header(relax=True))
-        wcs_header = wcs_initial_with_sip.to_header(relax=True)
-
-        if (wcs_initial_with_sip.wcs.crpix[0] != (rp.Jactive+rp.jref+1)/2
-                and wcs_initial_with_sip.wcs.crpix[1] != (rp.Kactive+rp.kref+1)/2):
-            raise ValueError(f"WCS CRPIX is not in center of array. {wcs_initial_with_sip.wcs.crpix[0]} "
-                             f"{wcs_initial_with_sip.wcs.crpix[1]}")
-
-        # Initial WCS with initial SIP distortion solution.
-        spximg_out.wcs = copy.deepcopy(wcs_initial_with_sip)
+        # Initial coarse linear WCS
+        spximg_out.wcs = copy.deepcopy(linear_wcs)
 
         # Shift WCS to Level-1 format
-        spximg_out.wcs.wcs.crpix[0] += (rp.Mphan * rp.nchannel)
+        spximg_out.wcs.wcs.crpix[0] += (rp.Mphan * rp.nchannel + rp.jref/2)
+        spximg_out.wcs.wcs.crpix[1] += (rp.kref/2)
 
         # Lat, Lon, PA in header.
         spximg_out.setFreeFormatHeaderCard(
@@ -241,21 +252,6 @@ class EstimateCoarseAstrometryTask(pipeBase.PipelineTask):
 
         # Equatorial Ra, Dec, PA in header
         if not self.config.only_ecl_in_header:
-            # We can add RA_EQ, DEC_EQ, PA_EQ of the corresponding detector
-            # In this case all the values should be for the middle of the detector
-            #
-            # if array in (2, 5):
-            #     pa_eq = roll
-            # else:
-            #     pa_left, _, pa_right = compute_side_pas(boresight_ra=ra_eq,
-            #                                             boresight_dec=dec_eq,
-            #                                             boresight_pa=roll)
-            #     if array in (1, 4):
-            #         pa_eq = pa_left
-            #     elif array in (3, 6):
-            #         pa_eq = pa_right
-            #
-            pa_eq = roll % 360
             spximg_out.setFreeFormatHeaderCard(
                 "SPS_RA", ra_eq, 6,
                 "[deg] Equatorial longitude of planned telescope boresight")
@@ -272,6 +268,4 @@ class EstimateCoarseAstrometryTask(pipeBase.PipelineTask):
         spximg_out.header["NAXIS2"] = rp.Jframe  # 2072
 
         return pipeBase.Struct(spximg_out=spximg_out,
-                               wcs_header=wcs_header,
-                               wcs_initial_with_sip=wcs_initial_with_sip,
-                               jitter_table=None)
+                               wcs_header=wcs_header)

@@ -12,11 +12,10 @@ import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 
 # Local application/library specific imports
-from spx_data import SPHERExImage, SpectralWCS, Flag, ReadoutParameters
+from spx_data import SPHERExImage, SpectralWCS, Flag, ReadoutParameters, NonfuncData
 from spx_utils import active_area_range, with_extra_refs
 from spx_utils.utils import is_device_detcoord
 from spx_tasks import add_history
-
 # ==============================================================================
 
 
@@ -36,6 +35,13 @@ class CreateImageDataFilesConnections(pipeBase.PipelineTaskConnections,
         dimensions=["instrument", "detector"],
         isCalibration=True
     )
+    # nonfunc_map = cT.PrerequisiteInput(
+    #     name="nonfunc",
+    #     doc="Permanently unusable.",
+    #     storageClass="NonfuncData",
+    #     dimensions=["instrument", "detector"],
+    #     isCalibration=True
+    # )
     dichroic_cut_map = cT.PrerequisiteInput(
         name="dichroic",
         doc="Low efficiency due to dichroic.",
@@ -56,6 +62,9 @@ class CreateImageDataFilesConnections(pipeBase.PipelineTaskConnections,
         storageClass="SPHERExImage",
         dimensions=("instrument", "exposure"),
     )
+
+    def __init__(self, *, config=None):
+        super().__init__(config=config)
 
 
 class CreateImageDataFilesConfig(pipeBase.PipelineTaskConfig,
@@ -135,7 +144,15 @@ class CreateImageDataFilesTask(pipeBase.PipelineTask):
 
         # Apply NONFUNC flags to active and reference (with extra reads) pixels.
         if nonfunc_map is not None:
-            nonfunc_map_nrefs = with_extra_refs(rp, nonfunc_map.data)
+            if isinstance(nonfunc_map, SPHERExImage):
+                nonfunc_map_nrefs = with_extra_refs(rp, nonfunc_map.data)
+            elif isinstance(nonfunc_map, NonfuncData):
+                # COMBINED plane (1=bad, 0=good) from NonfuncData
+                nonfunc_mask = nonfunc_map.get_combined_data()
+                nonfunc_map_nrefs = with_extra_refs(rp, nonfunc_mask)
+            else:
+                raise TypeError(f"Unsupported type for nonfunc_map: {type(nonfunc_map)}"
+                                f"Expected SPHERExImage or NonfuncData.")
             spximg_out.setFlagsFromMask(nonfunc_map_nrefs, Flag.NONFUNC, area=actv_ref_area)
 
         # Apply DICHROIC flags to active pixels.

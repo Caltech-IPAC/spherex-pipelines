@@ -41,7 +41,7 @@ def flags_summary(spximg: SPHERExImage, image_stats_dict: dict):
         mask = spximg.getFlagsAsMask(1 << bit_num)
         num_flags = np.count_nonzero(mask)
         flag_str = f"{flag} FLAGS"
-        image_stats_dict[flag_str] = num_flags
+        image_stats_dict[flag_str] = int(num_flags)
 
 
 def log_threshold_test(logger: Logger, test_dict: dict, warning_message: str):

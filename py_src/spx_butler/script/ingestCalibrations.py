@@ -75,6 +75,7 @@ def ingestCalibrations(repo,
             (dt.nonlinear_pars, "NonLinearityParameters"),
             (dt.readnoise_pars, "ReadNoiseParameters"),
             (dt.nonfunc_map, "SPHERExImage"),
+            # (dt.nonfunc_map_v2, "NonfuncData"),
             (dt.dichroic_cut_map, "SPHERExImage"),
             (dt.ff_calib, "SPHERExImage"),
             (dt.dc_calib, "SPHERExImage"),
@@ -143,7 +144,9 @@ def ingestCalibrations(repo,
 
             # non-functional pixel map - set as a pixel flag
             nonfunc_map = fake_products.fake_nonfunc_map(detector)
+            # nonfunc_map_v2 = fake_products.fake_nonfunc_v2_map(detector)
             butler.put(nonfunc_map, dt.nonfunc_map, dataId=dataid, run=run)
+            # butler.put(nonfunc_map_v2, dt.nonfunc_map_v2, dataId=dataid, run=run)
 
             # dichroic cut map - set as a pixel flag
             dichroic_cut_map = fake_products.fake_dichroic_cut_map(detector)

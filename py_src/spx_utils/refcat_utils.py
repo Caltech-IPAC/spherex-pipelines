@@ -1,4 +1,4 @@
-__all__ = ["get_magnitudes", "get_mag_cols", "CatalogConstants"]
+__all__ = ["get_magnitudes", "get_mag_cols", "CatalogConstants", "mag_to_flux", "EmptySourceCatalogError"]
 
 # Standard library imports
 
@@ -37,6 +37,11 @@ class CatalogConstants:
 
 class AstrometricPSFError(ValueError):
     """Custom exception to indicate astrometric/PSF source errors."""
+    pass
+
+
+class EmptySourceCatalogError(ValueError):
+    """Custom exception to indicate empty source catalog errors."""
     pass
 
 
@@ -279,3 +284,25 @@ def color_correction(gaia_flux: np.array) -> np.array:
     b = CatalogConstants.color_corr_b
     gaia_flux[gaia_flux > 0] = 10**(m * np.log10(gaia_flux[gaia_flux > 0]) + b)
     return gaia_flux
+
+
+def mag_to_flux(mag_ab):
+    """
+    Converts AB magnitude to flux in Janskys (Jy).
+
+    The conversion formula is:
+    F_Jy = 3631 * 10^(-0.4 * mag_AB)
+    where 3631 Jy is the zero-point flux for the AB system.
+
+    Parameters
+    ----------
+    mag_ab : float or np.ndarray
+        AB magnitude(s).
+
+    Returns
+    -------
+    float or np.ndarray
+        Flux in Janskys (Jy).
+    """
+    flux_jy = (mag_ab * u.ABmag).to(u.Jy).value
+    return flux_jy

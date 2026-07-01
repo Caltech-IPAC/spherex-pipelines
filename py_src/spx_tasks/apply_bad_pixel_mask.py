@@ -136,4 +136,25 @@ class ApplyBadPixelMaskTask(pipeBase.PipelineTask):
         npix_flagged_cold = np.sum((spximg.flags & Flag.COLD) > 0)
         spximg.header["HIERARCH L2 N_COLD"] = (npix_flagged_cold,
                                                "number of pixels flagged cold")
+
+        # Define the "bad" pixel mask (matching DQA function)
+        bad_mask = (spximg.flags & (Flag.NONFUNC | Flag.HOT | Flag.COLD)) > 0
+        not_bad_mask = ~bad_mask
+
+        # Get masks for transient and persistence
+        transient_mask = (spximg.flags & Flag.TRANSIENT) > 0
+        persistence_mask = (spximg.flags & Flag.PERSIST) > 0
+
+        # Count "transient" pixels that are "not bad"
+        n_transient_not_bad = np.count_nonzero(transient_mask & not_bad_mask)
+
+        # Count "persistence" pixels that are "not bad"
+        n_persistence_not_bad = np.count_nonzero(persistence_mask & not_bad_mask)
+
+        # Add counts to the header
+        spximg.header["HIERARCH L2 N_TRAN_NB"] = (n_transient_not_bad,
+                                                  "number of not bad transient pixels")
+        spximg.header["HIERARCH L2 N_PERS_NB"] = (n_persistence_not_bad,
+                                                  "number of persistence and not bad pixels")
+
         return pipeBase.Struct(spximg_out=spximg)

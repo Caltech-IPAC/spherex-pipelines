@@ -127,10 +127,6 @@ class RemoveReferencePixelsTask(pipeBase.PipelineTask):
 
         if spximg_out.getArrayId() in [4, 5, 6]:
             spximg = copy.deepcopy(spximg_out)
-            # Flip WCS
-            spximg_out.wcs.wcs.pc[0, 0] *= -1  # PC1_1
-            spximg_out.wcs.wcs.pc[1, 0] *= -1  # PC_2_1
-
             # Flip Data
             spximg_out.data = spximg.data[:, ::-1]
             spximg_out.uncertainty = spximg.uncertainty[:, ::-1]

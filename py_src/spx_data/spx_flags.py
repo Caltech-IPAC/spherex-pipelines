@@ -32,6 +32,10 @@ class Flag(IntFlag):
     GHOST_FPA = 1 << 23
     GHOST_EXT = 1 << 24
     STREAK = 1 << 25
+    BLOOM = 1 << 26
+    SNOWBALL = 1 << 27
+    HALO = 1 << 28
+    SATELLITE_HALO = 1 << 29
 
 
 class PhotometryFlag(IntFlag):
@@ -116,6 +120,14 @@ def flag_description(flag: Flag) -> str:
             desc = "Pixel affected by a bright source outside FOV"
         case Flag.STREAK:
             desc = "Pixel affected by a streak"
+        case Flag.BLOOM:
+            desc = "Pixel part of a bloom artifact"
+        case Flag.SNOWBALL:
+            desc = "Pixel part of a snowball artifact"
+        case Flag.HALO:
+            desc = "Pixel part of a transient halo"
+        case Flag.SATELLITE_HALO:
+            desc = "Pixel part of a satellite streak halo"
 
     if desc is None:
         raise ValueError(f"Unknown bit flag {flag}")

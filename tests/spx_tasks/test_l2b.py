@@ -2,11 +2,12 @@ import unittest
 from unittest.mock import MagicMock, patch
 from astropy.table import Table
 from astropy.io.fits import HDUList
-from astropy.wcs import WCS, Sip
+from astropy.wcs import WCS
 import numpy as np
 from lsst.pipe.base import Struct
 from spx_data import SPHERExImage, PSFZoneData
 from spx_tasks.l2b import L2bTask, L2bConfig
+from spx_tests import sample_data
 
 
 def generate_dark(spx_img: SPHERExImage) -> SPHERExImage:
@@ -58,7 +59,7 @@ class TestL2bTask(unittest.TestCase):
         self.xtalk_coupling_matrix = MagicMock(spec=SPHERExImage)
 
         # Mock SIP
-        self.sip = MagicMock(spec=Sip)
+        self.sip = sample_data.get_sample_sip(self.spximg)
 
         # Mock Source catalog
         self.srccat = Table()
@@ -81,8 +82,11 @@ class TestL2bTask(unittest.TestCase):
         self.task.apply_dark_flat_field_and_photo_calib.run =\
             MagicMock(return_value=Struct(spximg_out=self.spximg))
 
-        self.task.estimate_fine_astrometry.run =\
-            MagicMock(return_value=Struct(spximg_out=self.spximg, astr_err=0.2))
+        # Mock astrometry diagnostics struct return
+        mock_diagnostics = {"FINAST": 0, "coarse_astrometry": {}}
+        self.task.estimate_fine_astrometry.run = \
+            MagicMock(return_value=Struct(spximg_out=self.spximg, astrometry_diagnostics=mock_diagnostics))
+
         self.task.create_source_mask.run = MagicMock(return_value=Struct(spximg_out=self.spximg))
         self.task.detect_outlier_pixels.run = MagicMock(return_value=Struct(spximg_out=self.spximg))
         self.task.get_zodi_model.run = MagicMock(return_value=Struct(spximg_out=self.spximg))
@@ -96,7 +100,7 @@ class TestL2bTask(unittest.TestCase):
             spximg=self.spximg,
             abs_gain_matrix=self.abs_gain_matrix,
             dark=self.dark,
-            # sip=self.sip,
+            sip=None,
             srccat=self.srccat,
             # xtalk_coupling_matrix=self.xtalk_coupling_matrix,
             psf_avg=self.psf_avg,
@@ -115,7 +119,7 @@ class TestL2bTask(unittest.TestCase):
         self.task.apply_dark_flat_field_and_photo_calib.run.assert_called_once_with(self.spximg,
                                                                                     self.abs_gain_matrix,
                                                                                     self.dark)
-        self.task.estimate_fine_astrometry.run.assert_called_once_with(self.spximg, self.srccat)
+        self.task.estimate_fine_astrometry.run.assert_called_once_with(self.spximg, self.srccat, sip=None)
 
 
 if __name__ == '__main__':

@@ -27,6 +27,10 @@ def get_sim_img() -> SPHERExImage:
     sample_file = test_root / "data/cutout_L2.fits"
     assert sample_file.exists(), f"Sample file {sample_file} does not exist."
     spximg = SPHERExImage.read(sample_file, unit="electron / s")
+    # Mock the flags attribute, which is None because the test FITS file
+    # doesn't have a FLAGS extension. This is needed for the n_transients calculation.
+    if spximg.flags is None:
+        spximg.flags = np.zeros(spximg.data.shape, dtype=np.uint32)
     sip = sample_data.get_sample_sip(spximg)
     # Fake initial SIP, all zero.
     spximg.wcs.sip = sip
@@ -75,6 +79,7 @@ def test_EstimateFineAstrometry():
     # Test Case 1: Successful run
     config = EstimateFineAstrometryConfig()
     config.min_ncalibrators = 100
+    config.min_sources = 100
     task = EstimateFineAstrometryTask(config=config)
     spximg = get_sim_img()
     crpix_in = spximg.wcs.wcs.crpix
@@ -93,8 +98,8 @@ def test_EstimateFineAstrometry():
     crpix_out = output.spximg_out.wcs.wcs.crpix
     # Check that CRPIX is unchanged.
     assert crpix_in.all() == crpix_out.all()
-    assert output.spximg_out.header['OMEGA_MEDIAN'] is not None, "solid angle median is missing."
-    assert output.spximg_out.header['OMEGA_STDDEV'] is not None, "solid angle stddev is missing."
+    assert output.spximg_out.header['HIERARCH OMEGA_MEDIAN'] is not None, "solid angle median is missing."
+    assert output.spximg_out.header['HIERARCH OMEGA_STDDEV'] is not None, "solid angle stddev is missing."
 
     # Check header updates
     header = output.spximg_out.header

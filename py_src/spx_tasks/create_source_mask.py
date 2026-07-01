@@ -20,6 +20,7 @@ from spx_data import SPHERExImage, Flag
 from spx_tasks import add_history
 from spx_data import ReadoutParameters
 from spx_utils import log_dqa_result
+from spx_utils import refcat_utils
 
 
 def two_exponential_func(x, a, b, c, d, e):
@@ -296,151 +297,374 @@ def mask_crosstalk(spximg: SPHERExImage,
     whpl_type2mask = image_mask[xoff: xoff + jact, yoff: yoff + kact] > 0.1
     return whpl_type2mask
 
-    # return image_mask
 
-
-def mask_ghosts(spximg: SPHERExImage,
-                cat: Table,
-                ghost_radius: int,
-                dbs_params: list,
-                edge_mag_limit: float,
-                edge_offset: tuple,
-                plot_this: bool = True):
-    """Mask ghost artifacts.
+def mask_dbs_ghosts(spximg: SPHERExImage,
+                    cat: Table,
+                    params_edge: dict,
+                    params_main: dict,
+                    roi_edge: dict,
+                    roi_main: dict,
+                    bleed_flux_thresh: float,
+                    bleed_roi: list,
+                    verbose: bool = False) -> np.ndarray:
+    """Masks DBS ghosts: main field and edge field.
 
     Parameters
     ----------
     spximg : `SPHERExImage`
-        The SPHEREx image object.
+        The SPHEREx image object (to get band, shape, and WCS).
     cat : `Table`
-        Source catalog.
-    ghost_radius : int
-        Radius of the ghost mask.
-    dbs_params : `list`
-        Parameters for DBS masking.
-    edge_mag_limit : `float`
-        Magnitude limit for edge ghost masking.
-    edge_offset : `tuple`
-        Offsets for edge ghost masking.
-    plot_this : `bool`, optional
-        Whether to plot the ghost mask.
+        Source catalog for the corresponding dichroic pair.
+    params_edge : `dict`
+        Dictionary of edge ghost model parameters, keyed by band.
+    params_main : `dict`
+        Dictionary of main field ghost model parameters, keyed by band.
+    roi_edge : `dict`
+        Dictionary of edge ghost source ROIs, keyed by band.
+    roi_main : `dict`
+        Dictionary of main field ghost source ROIs, keyed by band.
+    bleed_flux_thresh : `float`
+        Flux threshold (Jy) for Band 4 optical bleeding.
+    bleed_roi : `list`
+        Band 4 optical bleeding mask region [x_min, x_max, y_min, y_max].
+    verbose : `bool
+        Print verbose debug statements if True, default is False.
 
     Returns
     -------
-    `np.ndarray` : The ghost mask.
+    `np.ndarray`
+        Integer flag mask (dtype=np.int32) of the same shape as
+        spximg.data, containing the ghost flags.
 
     Notes
     -----
-    Implemented in R6.1; needs validation.
+    - This function implements the geometric transformation model for
+    main field (Bands 4, 5, 6) and edge region (Bands 3, 4) ghosts.
+    It also handles the special optical bleeding effect for bright
+    edge-region sources in Band 4.
+    - Specific H-band flux values from the refcat are not propagated
+    to the srccats. Thus, a proxy for the H-band flux is derived
+    from other bands based on the implementation:
+      - For Band 3: Uses flux from `mag_det3`.
+      - For Band 4: Uses the average flux from `mag_det1` and `mag_det4`.
+      - For Band 5: Uses flux from `mag_det2`.
+      - For Band 6: Uses flux from `mag_det3`.
     """
-    nx, ny = spximg.data.shape
-    ghost_mask = np.zeros((nx, ny))
     band = spximg.getArrayId()
+    ny, nx = spximg.data.shape  # Get detector bounds
+    ghost_mask = np.zeros((ny, nx), dtype=np.int32)
 
-    # Mask DBS ghosts
-    for src in cat:
-        # Ensure the source meets the flux threshold in the WISE W1 band
-        if src['WISE_W1'] >= 2e8:  # µJy
-            print(f"Processing source with WISE_W1={src['WISE_W1']}")
-            # Retrieve the DBS parameters for the current band
-            params = dbs_params.get(band, None)
-            if not params:
-                print(f"No DBS parameters available for band {band}. Skipping...")
+    # Bands 1 and 2 do not have DBS ghosts
+    if band in [1, 2]:
+        return ghost_mask
+
+    # Pre-calculate pixel coordinates and flux
+    cat_proc = cat.copy()
+
+    # Use WCS to get source pixel coordinates (xs, ys)
+    try:
+        ix, iy = spximg.wcs.world_to_pixel_values(cat_proc['ra'], cat_proc['dec'])
+        cat_proc['__ix'] = ix
+        cat_proc['__iy'] = iy
+    except Exception as e:
+        print(f"Error during WCS transformation: {e}. Skipping DBS masking.")
+        return ghost_mask
+
+    # Calculate H-band proxy flux (B) in Janskys
+    try:
+        if band == 3:
+            flux_jy = refcat_utils.mag_to_flux(cat_proc['mag_det3'])
+        elif band == 4:
+            # Average flux from Band 1 and Band 4
+            flux_b1 = refcat_utils.mag_to_flux(cat_proc['mag_det1'])
+            flux_b4 = refcat_utils.mag_to_flux(cat_proc['mag_det4'])
+            fluxes = np.array([flux_b1, flux_b4])
+            # Compute nan-safe mean along axis 0 (per-source average)
+            # This handles sources present in only one of the bands.
+            flux_jy = np.nanmean(fluxes, axis=0)
+        elif band == 5:
+            flux_jy = refcat_utils.mag_to_flux(cat_proc['mag_det2'])  # Using Band 2 as proxy
+        else:  # band == 6
+            flux_jy = refcat_utils.mag_to_flux(cat_proc['mag_det3'])  # Using Band 3 as proxy
+
+    except KeyError as e:
+        print(f"Error accessing mag column for H-band proxy flux: {e}")
+        flux_jy = np.full(len(cat_proc), np.nan)  # Fallback to NaN
+
+    # First, dynamically find the absolute minimum flux threshold
+    # for the current band and filter by that.
+    cat_proc['__h_flux_jy'] = flux_jy
+
+    # Pre-filter catalog
+    # Find the minimum flux threshold (B_lim or bleed_flux_thresh)
+    # that could possibly trigger any ghost for this band.
+    thresholds = []
+    if band in params_edge:
+        thresholds.append(params_edge[band][0])  # B_lim is the first param
+    if band in params_main:
+        thresholds.append(params_main[band][0])  # B_lim is the first param
+    if band == 4:
+        thresholds.append(bleed_flux_thresh)
+
+    # If no ghost parameters are defined, min_thresh will be 0.0,
+    # and no sources will be filtered by flux (which is correct).
+    min_flux_thresh = np.min(thresholds) if thresholds else 0.0
+
+    # Create a boolean mask to filter the catalog.
+    # This selects sources that are bright enough.
+    # It also implicitly filters out sources with NaN flux,
+    # since (np.nan > min_flux_thresh) is False.
+    bright_enough_mask = cat_proc['__h_flux_jy'] > min_flux_thresh
+    cat_proc_filtered = cat_proc[bright_enough_mask]
+
+    band4_bleed_triggered = False
+    # Flag from the first source that triggers bleed
+    triggering_bleed_flag = 0
+
+    # Iterate over the filtered table
+    for src in cat_proc_filtered:
+        try:
+            # Get pre-computed values
+            xs, ys = src['__ix'], src['__iy']
+            flux_h = src['__h_flux_jy']  # This is the H-band proxy flux in Jy
+
+        except (KeyError, TypeError):
+            continue  # Skip sources with missing data
+
+        # We know flux_h is finite, just check pixel coords
+        if not np.isfinite(xs) or not np.isfinite(ys):
+            continue
+
+        # Derive ghost flag based on source pixel position
+        # (0 <= xs < nx) and (0 <= ys < ny) means the source is on this detector.
+        # Otherwise, it's external. GHOST_FPA is ignored.
+        if (0 <= xs < nx) and (0 <= ys < ny):
+            flag_to_set = Flag.GHOST
+            flag_name = "GHOST"
+        else:
+            flag_to_set = Flag.GHOST_EXT
+            flag_name = "GHOST_EXT"
+
+        if verbose:
+            # This prints debug info for *all* bright sources
+            print(f"--- Potential {flag_name} Source (Band {band}) ---")
+            print(f"  RA, Dec: ({src['ra']:.6f}, {src['dec']:.6f})")
+            print(f"  Pix Coords (xs, ys): ({xs:.2f}, {ys:.2f})")
+            print(f"  H-band Proxy Flux (Jy): {flux_h:.4e}")
+            # Try to print the original AB mags that created the proxy
+            mag_info = []
+            if band == 3 and 'mag_det3' in src.colnames:
+                mag_info.append(f"mag_det3: {src['mag_det3']:.4f}")
+            elif band == 4:
+                if 'mag_det1' in src.colnames:
+                    mag_info.append(f"mag_det1: {src['mag_det1']:.4f}")
+                if 'mag_det4' in src.colnames:
+                    mag_info.append(f"mag_det4: {src['mag_det4']:.4f}")
+            elif band == 5 and 'mag_det2' in src.colnames:
+                mag_info.append(f"mag_det2: {src['mag_det2']:.4f}")
+            elif band == 6 and 'mag_det3' in src.colnames:
+                mag_info.append(f"mag_det3: {src['mag_det3']:.4f}")
+
+            if mag_info:
+                print(f"  Source AB Mag(s): {', '.join(mag_info)}")
+            print("-------------------------------------------------")
+
+        # List to store (params, flag) tuples for ghosts from this one source
+        ghosts_to_create = []
+
+        # Check for Main Field Ghosts
+        if band in params_main:
+            B_lim, axx, axy, aox, ayx, ayy, aoy, r = params_main[band]
+            x_min, x_max, y_min, y_max = roi_main[band]
+            if (x_min < xs < x_max) and (y_min < ys < y_max) and (flux_h > B_lim):
+                ghosts_to_create.append((axx, axy, aox, ayx, ayy, aoy, r, flag_to_set))
+
+        # Check for Edge Region Ghosts
+        if band in params_edge:
+            B_lim, axx, axy, aox, ayx, ayy, aoy, r = params_edge[band]
+            x_min, x_max, y_min, y_max = roi_edge[band]
+            if (x_min < xs < x_max) and (y_min < ys < y_max) and (flux_h > B_lim):
+                ghosts_to_create.append((axx, axy, aox, ayx, ayy, aoy, r, flag_to_set))
+
+        # Check for Band 4 Optical Bleeding
+        if band == 4 and not band4_bleed_triggered:
+            x_min, x_max, y_min, y_max = roi_edge[4]  # Edge ROI
+            if (x_min < xs < x_max) and (y_min < ys < y_max) and (flux_h > bleed_flux_thresh):
+                band4_bleed_triggered = True
+                triggering_bleed_flag = flag_to_set  # Store the flag
+
+        # Apply Ghost Masks (for this source)
+        for params in ghosts_to_create:
+            axx, axy, aox, ayx, ayy, aoy, r, flag = params
+
+            # Geometric transformation (Eqs. 2 & 3)
+            xg = (1 + axx) * xs + axy * ys + aox
+            yg = (1 + ayy) * ys + ayx * xs + aoy
+
+            if not np.isfinite(xg) or not np.isfinite(yg) or r <= 0:
                 continue
 
-            # Extract DBS parameters, Eq. (1)
-            alpha_xx, alpha_xy, offset_x, alpha_yx, alpha_yy, offset_y = params
-            # Source coordinates
-            x_s = src['ix']
-            y_s = src['iy']
+            # Create circular mask region
+            pixcoord = regions.PixCoord(x=xg, y=yg)
+            aperture = regions.CirclePixelRegion(pixcoord, r)
 
-            # Apply the transformation to calculate ghost coordinates
-            x_g = x_s + alpha_xx * x_s + alpha_xy * y_s + offset_x
-            y_g = y_s + alpha_yx * x_s + alpha_yy * y_s + offset_y
+            try:
+                mask = aperture.to_mask(mode='exact')
+            except regions.NoOverlap:
+                print("No Overlap when trying to make circle pixel region. Continuing...")
+                continue
 
-            print(f"Ghost coordinates: x_g={x_g}, y_g={y_g}")
-            # Define the ghost mask region
-            pixcoord = regions.PixCoord(x_g, y_g)
-            ghost_region = regions.CirclePixelRegion(center=pixcoord, radius=ghost_radius)
-            mask = ghost_region.to_mask(mode='exact')
+            bbox = aperture.bounding_box
+            iymin, iymax = bbox.iymin, bbox.iymax
+            ixmin, ixmax = bbox.ixmin, bbox.ixmax
 
-            # Get bounding box and apply the mask
-            bbox = mask.bbox
-            x_slice = slice(max(0, bbox.ixmin), min(nx, bbox.ixmax))
-            y_slice = slice(max(0, bbox.iymin), min(ny, bbox.iymax))
+            # Clip bounding box to image dimensions
+            iymin_clip = max(iymin, 0)
+            iymax_clip = min(iymax, ny)
+            ixmin_clip = max(ixmin, 0)
+            ixmax_clip = min(ixmax, nx)
 
-            # Accumulate the mask in the ghost_mask array
-            ghost_mask[x_slice, y_slice] += mask.data[:x_slice.stop - x_slice.start,
-                                                      :y_slice.stop - y_slice.start]
-            # Set the appropriate masking flag
-            # Source and ghost fall on the same detector
-            if src['detector'] == band:
-                ghost_flag = Flag.GHOST
-            # Ghost on a different detector
-            elif src['detector'] != band and src['detector'] in [3, 4, 5, 6]:
-                ghost_flag = Flag.GHOST_FPA
+            if iymin_clip >= iymax_clip or ixmin_clip >= ixmax_clip:
+                continue
 
-            # Update the flags for the region
-            ghost_mask[x_slice, y_slice] = np.where(ghost_mask[x_slice, y_slice] > 0,
-                                                    ghost_flag,
-                                                    ghost_mask[x_slice, y_slice])
-            # Accumulate the mask with the appropriate flag
-            ghost_mask[x_slice, y_slice] = np.where(
-                mask.data[:x_slice.stop - x_slice.start, :y_slice.stop - y_slice.start] > 0,
-                ghost_flag,
-                ghost_mask[x_slice, y_slice]
+            mask_yslice = slice(iymin_clip - iymin, iymax_clip - iymin)
+            mask_xslice = slice(ixmin_clip - ixmin, ixmax_clip - ixmin)
+            target_slice = (slice(iymin_clip, iymax_clip), slice(ixmin_clip, ixmax_clip))
+
+            if mask.data is None:
+                continue
+
+            mask_data = mask.data[mask_yslice, mask_xslice]
+            new_mask_pixels = (mask_data > 0)
+
+            # Use bitwise_or to add the flag
+            ghost_mask[target_slice][new_mask_pixels] = np.bitwise_or(
+                ghost_mask[target_slice][new_mask_pixels],
+                flag
             )
 
-    # Mask frame edge ghosts
-    for src in cat:
-        # Calculate the distance from the source to the edges of the detector
-        dist_left = src['ix']
-        dist_right = nx - src['ix']
-        dist_top = ny - src['iy']
-        dist_bottom = src['iy']
+    # Apply Band 4 Optical Bleeding Mask (if triggered)
+    if band4_bleed_triggered:
+        # Mask region: –52 < x < 2092, y > 1920
+        _x_min, _x_max, _y_min, _y_max = bleed_roi
+        x_min_bleed = max(0, _x_min)
+        x_max_bleed = min(nx, _x_max)
+        y_min_bleed = max(0, _y_min)
+        y_max_bleed = min(ny, _y_max)
 
-        # Find the minimum distance to any edge
-        min_dist_to_edge = min(dist_left, dist_right, dist_top, dist_bottom)
+        if y_min_bleed < y_max_bleed and x_min_bleed < x_max_bleed:
+            bleed_slice = (slice(y_min_bleed, y_max_bleed), slice(x_min_bleed, x_max_bleed))
 
-        # Check if the source is within 10 to 45 virtual pixels
-        # (60 to 280 arcseconds) from the edge
-        if 10 <= min_dist_to_edge <= 45 and src[f'mag_det{band}'] <= edge_mag_limit:
-            # Calculate the length and width of the rectangular mask
-            length = np.ceil(11 * (25000 * 10 ** (-src[f'mag_det{band}']/2.5)))
-            width = np.ceil(4 * (25000 * 10 ** (-src[f'mag_det{band}']/2.5)))
-
-            # Determine the center position of the rectangle
-            if min_dist_to_edge == dist_left:  # Nearest to left edge
-                center_x = length / 2
-                center_y = src['iy']
-            elif min_dist_to_edge == dist_right:  # Nearest to right edge
-                center_x = nx - length / 2
-                center_y = src['iy']
-            elif min_dist_to_edge == dist_top:  # Nearest to top edge
-                center_x = src['ix']
-                center_y = ny - width / 2
-            else:  # Nearest to bottom edge
-                center_x = src['ix']
-                center_y = width / 2
-
-            # Define the rectangular region
-            pixcoord = regions.PixCoord(x=center_x, y=center_y)
-            edge_region = regions.RectanglePixelRegion(center=pixcoord, width=length, height=width)
-            mask = edge_region.to_mask(mode='subpixels', subpixels=32)
-
-            # Get bounding box and apply mask
-            bbox = mask.bbox
-            x_slice = slice(max(0, bbox.ixmin), min(nx, bbox.ixmax))
-            y_slice = slice(max(0, bbox.iymin), min(ny, bbox.iymax))
-
-            # Accumulate the mask with the GHOST_EXT flag
-            ghost_mask[x_slice, y_slice] = np.where(
-                mask.data[:x_slice.stop - x_slice.start, :y_slice.stop - y_slice.start] > 0,
-                Flag.GHOST_EXT,
-                ghost_mask[x_slice, y_slice]
+            # Use the flag from the first source that triggered the bleed
+            ghost_mask[bleed_slice] = np.bitwise_or(
+                ghost_mask[bleed_slice],
+                triggering_bleed_flag
             )
 
     return ghost_mask
+
+
+def dqa_check_dbs_ghost_ext_corners(spximg: SPHERExImage,
+                                    srccat: Table,
+                                    roi_edge_band: list,
+                                    corner_box_size: float = 20.0) -> dict:
+    """Check that external sources exist near the corners of the DBS
+    GHOST_EXT edge ROI (used for det 3 and 4).
+
+    Parameters
+    ----------
+    spximg : `SPHERExImage`
+        Image whose WCS defines the pixel coordinate system.
+    srccat : `Table`
+        Source catalog (no magnitude cut applied).
+    roi_edge_band : `list`
+        Edge ROI [x_min, x_max, y_min, y_max] for this band.
+    corner_box_size : `float`, optional
+        Size (in pixels) of the small corner boxes along each corner
+        of the ROI where we require at least one external source.
+
+    Returns
+    -------
+    `dict`
+        DQA result dict with "result" and "description".
+    """
+    band = spximg.getArrayId()
+    ny, nx = spximg.data.shape
+
+    if roi_edge_band is None:
+        result = {
+            "result": "FAIL",
+            "description": (
+                f"No DBS edge ROI defined for Band {band}. "
+                "Cannot perform GHOST_EXT corner check."
+            )
+        }
+        log_dqa_result("dbs ghost_ext corner dqa", result)
+        return result
+
+    x_min, x_max, y_min, y_max = roi_edge_band
+
+    # Compute pixel coordinates for all catalog sources
+    try:
+        ix, iy = spximg.wcs.world_to_pixel_values(srccat["ra"], srccat["dec"])
+    except Exception as e:
+        result = {
+            "result": "FAIL",
+            "description": (
+                f"Could not compute pixel coords for DBS GHOST_EXT corner check "
+                f"for Band {band}: {e}"
+            )
+        }
+        log_dqa_result("dbs ghost_ext corner dqa", result)
+        return result
+
+    ix = np.asarray(ix)
+    iy = np.asarray(iy)
+
+    # External sources (would produce GHOST_EXT)
+    external = (ix < 0) | (ix >= nx) | (iy < 0) | (iy >= ny)
+
+    # Define two small corner boxes at opposite corners of the ROI
+    # Corner 1: near (x_min, y_min)
+    c1 = (ix >= x_min) & (ix <= x_min + corner_box_size) & \
+         (iy >= y_min) & (iy <= y_min + corner_box_size) & external
+
+    # Corner 2: near (x_max, y_max)
+    c2 = (ix >= x_max - corner_box_size) & (ix <= x_max) & \
+         (iy >= y_max - corner_box_size) & (iy <= y_max) & external
+
+    n_c1 = int(np.count_nonzero(c1))
+    n_c2 = int(np.count_nonzero(c2))
+
+    if (n_c1 > 0) and (n_c2 > 0):
+        result = {
+            "result": "PASS",
+            "description": (
+                f"DBS GHOST_EXT corner check (Band {band}): "
+                f"found {n_c1} external sources near one ROI corner and "
+                f"{n_c2} near the opposite corner."
+            )
+        }
+    else:
+        missing_parts = []
+        if n_c1 == 0:
+            missing_parts.append("first corner box")
+        if n_c2 == 0:
+            missing_parts.append("second corner box")
+        missing_str = " and ".join(missing_parts) if missing_parts else "corners"
+
+        result = {
+            "result": "FAIL",
+            "description": (
+                f"DBS GHOST_EXT corner check (Band {band}): "
+                f"no external sources found in {missing_str} of the edge ROI "
+                f"[x_min={x_min}, x_max={x_max}, y_min={y_min}, y_max={y_max}]. "
+                "This may indicate insufficient srccat coverage near the ROI corners."
+            )
+        }
+
+    log_dqa_result("dbs ghost_ext corner dqa", result)
+    return result
 
 
 def dqa_check_masked_sources(spximg: SPHERExImage, srccat: Table, threshold: float = 3.) -> dict:
@@ -508,7 +732,8 @@ def dqa_check_masked_sources(spximg: SPHERExImage, srccat: Table, threshold: flo
 def dqa_check_ghost_flux(spximg: SPHERExImage, threshold: float = 1000.0) -> dict:
     """Check that the flagged GHOST pixels have flux greater than the threshold."""
     ghost_mask = (spximg.flags & Flag.GHOST) > 0
-    ghost_pix_flux = spximg.data[ghost_mask]
+    ghost_mask_ext = (spximg.flags & Flag.GHOST_EXT) > 0
+    ghost_pix_flux = spximg.data[ghost_mask | ghost_mask_ext]
     n_flagged = ghost_pix_flux.size
     n_total = spximg.data.size
     frac = 100 * n_flagged / n_total
@@ -704,37 +929,37 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
     )
 
     ghost_radius = Field(
-        doc="Ghost masking radius, pixels.",
+        doc="Ghost masking radius, pixels. (Used by old mask_ghosts function/tests)",
         dtype=int,
         default=52
     )
 
     dbs_params_3 = ListField(
-        doc="DBS ghost masking parameters, detector 3.",
+        doc="DBS ghost masking parameters, detector 3. (Used by old mask_ghosts function/tests)",
         dtype=float,
         default=[-0.0051, 0.0013, -7.4, 0.0, 255.0, 0.0]
     )
 
     dbs_params_4 = ListField(
-        doc="DBS ghost masking parameters, detector 4.",
+        doc="DBS ghost masking parameters, detector 4. (Used by old mask_ghosts function/tests)",
         dtype=float,
         default=[-0.0040, 0.0013, -8.9, 0.0, 255.0, 0.0]
     )
 
     dbs_params_5 = ListField(
-        doc="DBS ghost masking parameters, detector 5.",
+        doc="DBS ghost masking parameters, detector 5. (Used by old mask_ghosts function/tests)",
         dtype=float,
         default=[-0.0042, 0.0005, 0.1, 0.0, 255.0, 0.0]
     )
 
     dbs_params_6 = ListField(
-        doc="DBS ghost masking parameters, detector 6.",
+        doc="DBS ghost masking parameters, detector 6. (Used by old mask_ghosts function/tests)",
         dtype=float,
         default=[-0.0043, 0.0013, 9.4, 0.0, 225.0, 0.0]
     )
 
     edge_mag_limit = Field(
-        doc="Edge ghost mask magnitude limit.",
+        doc="Edge ghost mask magnitude limit. (Used by old mask_ghosts function/tests)",
         dtype=float,
         default=11.0
     )
@@ -750,6 +975,7 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
         dtype=float,
         default=45.0
     )
+
     radius_model_params_det1 = ListField(
         doc="Best-fit params (a, b, c, d, e) for masking radius model for det1.",
         dtype=float,
@@ -759,6 +985,7 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
                  21.696403344092296,
                  -0.11422932918227133]
     )
+
     radius_model_params_det2 = ListField(
         doc="Best-fit params (a, b, c, d, e) for masking radius model for det2.",
         dtype=float,
@@ -768,6 +995,7 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
                  452.0548207163596,
                  -0.0025746614583621237]
     )
+
     radius_model_params_det3 = ListField(
         doc="Best-fit params (a, b, c, d, e) for masking radius model for det3.",
         dtype=float,
@@ -777,6 +1005,7 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
                  396.44018424776357,
                  -0.00023170701247192225]
     )
+
     radius_model_params_det4 = ListField(
         doc="Best-fit params (a, b, c, d, e) for masking radius model for det4.",
         dtype=float,
@@ -786,6 +1015,7 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
                  1102.5221283727544,
                  -0.00025050799854754794]
     )
+
     radius_model_params_det5 = ListField(
         doc="Best-fit params (a, b, c, d, e) for masking radius model for det5.",
         dtype=float,
@@ -806,11 +1036,84 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
                  -0.00021954695317821506]
     )
 
+    dbs_ghost_params_edge_3 = ListField(
+        doc="DBS ghost model parameters for Band 3 (Edge): [B_lim, axx, axy, aox, ayx, ayy, aoy, r]",
+        dtype=float,
+        default=[100.0, -0.0051, 0.0013, -5.0, 0.0, 0.0, 225.0, 52]
+    )
+
+    dbs_ghost_params_edge_4 = ListField(
+        doc="DBS ghost model parameters for Band 4 (Edge): [B_lim, axx, axy, aox, ayx, ayy, aoy, r]",
+        dtype=float,
+        default=[100.0, 0.0, 0.0, 10.0, 0.0, 0.0, 221.0, 52]
+    )
+
+    dbs_ghost_params_main_4 = ListField(
+        doc="DBS ghost model parameters for Band 4 (Main): [B_lim, axx, axy, aox, ayx, ayy, aoy, r]",
+        dtype=float,
+        default=[3000.0, 0.0, 0.0, 5.0, 0.0, 0.0, 221.0, 52]
+    )
+
+    dbs_ghost_params_main_5 = ListField(
+        doc="DBS ghost model parameters for Band 5 (Main): [B_lim, axx, axy, aox, ayx, ayy, aoy, r]",
+        dtype=float,
+        default=[10000.0, -0.0042, 0.0005, 0.1, 0.0, 0.0, 225.0, 52]
+    )
+
+    dbs_ghost_params_main_6 = ListField(
+        doc="DBS ghost model parameters for Band 6 (Main): [B_lim, axx, axy, aox, ayx, ayy, aoy, r]",
+        dtype=float,
+        default=[10000.0, -0.0043, 0.0013, 9.4, 0.0, 0.0, 225.0, 52]
+    )
+
+    dbs_ghost_roi_edge_3 = ListField(
+        doc="DBS ghost source ROI for Band 3 (Edge): [x_min, x_max, y_min, y_max]",
+        dtype=int,
+        default=[-52, 2092, -250, 175]
+    )
+
+    dbs_ghost_roi_edge_4 = ListField(
+        doc="DBS ghost source ROI for Band 4 (Edge): [x_min, x_max, y_min, y_max]",
+        dtype=int,
+        default=[-52, 2092, 1535, 2040]
+    )
+
+    dbs_ghost_roi_main_4 = ListField(
+        doc="DBS ghost source ROI for Band 4 (Main): [x_min, x_max, y_min, y_max]",
+        dtype=int,
+        default=[-52, 2092, 52, 2261]
+    )
+
+    dbs_ghost_roi_main_5 = ListField(
+        doc="DBS ghost source ROI for Band 5 (Main): [x_min, x_max, y_min, y_max]",
+        dtype=int,
+        default=[-52, 2092, 52, 2265]
+    )
+
+    dbs_ghost_roi_main_6 = ListField(
+        doc="DBS ghost source ROI for Band 6 (Main): [x_min, x_max, y_min, y_max]",
+        dtype=int,
+        default=[-52, 2092, 52, 2265]
+    )
+
+    band4_bleed_flux_thresh = Field(
+        doc="Flux threshold (Jy) for Band 4 optical bleeding.",
+        dtype=float,
+        default=3000.0
+    )
+
+    band4_bleed_roi = ListField(
+        doc="Band 4 optical bleeding mask region [x_min, x_max, y_min, y_max].",
+        dtype=int,
+        default=[-52, 2092, 1920, 2048]  # Default y_max is clipped to ny.
+    )
+
     mask_ghosts = Field(
         doc="Do ghost masking.",
         dtype=bool,
-        default=False
+        default=True
     )
+
     mask_xtalk = Field(
         doc="Do crosstalk masking.",
         dtype=bool,
@@ -845,7 +1148,7 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
     ConfigClass = CreateSourceMaskConfig
     full_name = "Create Source Mask"
     ssdc_pipe_level = 2
-    ssdc_doc_tag = "SSDC-MS-019 v3"
+    ssdc_doc_tag = "SSDC-MS-019 v3.3"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -910,9 +1213,6 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
         # Crosstalk masking parameters
         t_int = spximg.header["TINT"]  # Integration time from header
 
-        # Combined masks
-        spx_mask = np.zeros_like(sky_image, dtype=bool)
-
         params_dict = {1: self.config.radius_model_params_det1,
                        2: self.config.radius_model_params_det2,
                        3: self.config.radius_model_params_det3,
@@ -921,37 +1221,84 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
                        6: self.config.radius_model_params_det6,
                        }
 
-        source_mask = mask_sources(spximg=spximg, cat=catalog,
-                                   minmag=self.config.minmag,
-                                   maxmag=self.config.maxmag,
-                                   dmag=self.config.dmag,
-                                   params_dict=params_dict)
+        # Mask construction (SOURCE / CROSSTALK / GHOST) is WCS-dependent.
+        # If WCS blows up with InvalidCoordinateError and FINAST!=0, skip masks.
+        try:
+            source_mask = mask_sources(spximg=spximg, cat=catalog,
+                                       minmag=self.config.minmag,
+                                       maxmag=self.config.maxmag,
+                                       dmag=self.config.dmag,
+                                       params_dict=params_dict)
 
-        if self.config.mask_xtalk:
-            # FIXME
-            xtalk_coupling_matrix = None
-            xtalk_mask = mask_crosstalk(spximg=spximg,
-                                        cat=catalog,
-                                        limiting_xtalk_current=self.config.limiting_xtalk_current,
-                                        t_int=t_int,
-                                        xtalk_coupling_matrix=xtalk_coupling_matrix.data,
-                                        xtalk_amplitude_thresh=self.config.xtalk_amplitude_thresh,
-                                        abs_gain_matrix=abs_gain_matrix)
-        dbs_params = {
-            3: self.config.dbs_params_3,
-            4: self.config.dbs_params_4,
-            5: self.config.dbs_params_5,
-            6: self.config.dbs_params_6
-        }
-        edge_offset = (self.config.edge_offset_min, self.config.edge_offset_min)
-        if self.config.mask_ghosts:
-            ghost_mask = mask_ghosts(spximg=spximg,
-                                     cat=catalog,
-                                     ghost_radius=self.config.ghost_radius,
-                                     dbs_params=dbs_params,
-                                     edge_mag_limit=self.config.edge_mag_limit,
-                                     edge_offset=edge_offset)
-            spx_mask = np.logical_or(spx_mask, ghost_mask)
+            if self.config.mask_xtalk:
+                # FIXME
+                xtalk_coupling_matrix = None
+                xtalk_mask = mask_crosstalk(spximg=spximg,
+                                            cat=catalog,
+                                            limiting_xtalk_current=self.config.limiting_xtalk_current,
+                                            t_int=t_int,
+                                            xtalk_coupling_matrix=xtalk_coupling_matrix.data,
+                                            xtalk_amplitude_thresh=self.config.xtalk_amplitude_thresh,
+                                            abs_gain_matrix=abs_gain_matrix)
+
+            # Assemble DBS ghost parameter dicts from config
+            dbs_params_edge = {
+                3: self.config.dbs_ghost_params_edge_3,
+                4: self.config.dbs_ghost_params_edge_4,
+            }
+            dbs_params_main = {
+                4: self.config.dbs_ghost_params_main_4,
+                5: self.config.dbs_ghost_params_main_5,
+                6: self.config.dbs_ghost_params_main_6,
+            }
+            dbs_roi_edge = {
+                3: self.config.dbs_ghost_roi_edge_3,
+                4: self.config.dbs_ghost_roi_edge_4,
+            }
+            dbs_roi_main = {
+                4: self.config.dbs_ghost_roi_main_4,
+                5: self.config.dbs_ghost_roi_main_5,
+                6: self.config.dbs_ghost_roi_main_6,
+            }
+
+            ghost_mask = np.zeros_like(sky_image, dtype=np.int32)
+            if self.config.mask_ghosts:
+                # Transpose (.T) the result (Kactive, Jactive) to (Jactive, Kactive)
+                # to match the shape of source_mask, xtalk_mask, and spximg.flags
+                ghost_mask = mask_dbs_ghosts(
+                    spximg=spximg,
+                    cat=catalog,
+                    params_edge=dbs_params_edge,
+                    params_main=dbs_params_main,
+                    roi_edge=dbs_roi_edge,
+                    roi_main=dbs_roi_main,
+                    bleed_flux_thresh=self.config.band4_bleed_flux_thresh,
+                    bleed_roi=self.config.band4_bleed_roi,
+                    verbose=verbose
+                )
+        except Exception as e:
+            finast = int(spximg.header.get("FINAST", 0))
+            if finast != 0:
+                self.log.warning(
+                    "CreateSourceMask: WCS-related failure with FINAST=%s; "
+                    "skipping SOURCE/CROSSTALK/GHOST masking. Error: %s",
+                    finast, str(e)
+                )
+                spximg_out = copy.copy(spximg)
+                if self.config.save_srcmask_percent:
+                    spximg_out.header["PXSRCMSK"] = (0.0, "Percentage of pixels with SOURCE flag")
+                spximg_out.header["HIERARCH L2 N_SOURCE"] = (0, "number of source flagged pixels")
+                if self.config.mask_xtalk:
+                    spximg_out.header["HIERARCH L2 N_XTALK"] = (0, "number of crosstalk flagged pixels")
+                if self.config.mask_ghosts:
+                    spximg_out.header["HIERARCH L2 N_GHOST"] = (0, "number of ghost flagged pixels")
+                    spximg_out.header["HIERARCH L2 N_GHOST_FPA"] = (0, "number of ghost_fpa flagged pixels")
+                    spximg_out.header["HIERARCH L2 N_GHOST_EXT"] = (0, "number of ghost_ext flagged pixels")
+
+                return pipeBase.Struct(spximg_out=spximg_out)
+
+            # if FINAST==0, then this is a real bug.
+            raise
 
         # Combine source and crosstalk masks
         # combined_mask = np.logical_or(source_mask, xtalk_mask)
@@ -1096,10 +1443,18 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
             spx_xtalk = whpl_type2mask  # whpl_type2mask[rp.jref//2: -rp.jref//2, rp.kref//2: -rp.kref//2]
             spximg_out.setFlagsFromMask(spx_xtalk, Flag.CROSSTALK)
 
-        # Set ghost mask flags if applicable
+        # Set ghost mask flags
         if self.config.mask_ghosts:
-            # this is wrong: 3 flags will be set for the same pixels
-            spximg_out.setFlagsFromMask(ghost_mask, Flag.GHOST | Flag.GHOST_FPA | Flag.GHOST_EXT)
+            # ghost_mask is an integer mask (Jactive, Kactive)
+            # with flag bits already set.
+            # Create boolean masks for each flag type and apply them.
+            ghost_bool = (ghost_mask & Flag.GHOST) > 0
+            ghost_fpa_bool = (ghost_mask & Flag.GHOST_FPA) > 0
+            ghost_ext_bool = (ghost_mask & Flag.GHOST_EXT) > 0
+
+            spximg_out.setFlagsFromMask(ghost_bool, Flag.GHOST)
+            spximg_out.setFlagsFromMask(ghost_fpa_bool, Flag.GHOST_FPA)
+            spximg_out.setFlagsFromMask(ghost_ext_bool, Flag.GHOST_EXT)
 
         # save percentage of the masked pixels
         if self.config.save_srcmask_percent:
@@ -1107,27 +1462,60 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
                                              "Percentage of pixels with SOURCE flag")
 
         # Perform validation checks
-        _ = dqa_check_masked_sources(spximg, srccat)
-        _ = dqa_check_ghost_flux(spximg)
-        _ = dqa_check_crosstalk_flux(spximg)
+        _ = dqa_check_masked_sources(spximg_out, srccat)
+        _ = dqa_check_ghost_flux(spximg_out)
+        _ = dqa_check_crosstalk_flux(spximg_out)
+
+        # Additional DBS GHOST_EXT coverage check for Bands 3 and 4
+        if self.config.mask_ghosts and det_id in (3, 4):
+            roi_edge_band = dbs_roi_edge.get(det_id)
+            _ = dqa_check_dbs_ghost_ext_corners(spximg=spximg_out,
+                                                srccat=srccat,
+                                                roi_edge_band=roi_edge_band,
+                                                corner_box_size=20.0,  # pix
+                                                )
 
         # Add DQA info and stats to header
-        # spximg_out.header["XTTHRESH"] = (self.config.limiting_xtalk_current,
-        #                                  "[e-/s] crosstalk threshold")
         numpix_flagged_source = len(spximg_out.data[(spximg_out.flags & Flag.SOURCE) > 0])
-        # len(spximg_out.data[(spximg_out.flags & Flag.CROSSTALK) > 0])
-        # len(spximg_out.data[(spximg_out.flags & Flag.GHOST) > 0])
-        # len(spximg_out.data[(spximg_out.flags & Flag.GHOST_FPA) > 0])
-        # len(spximg_out.data[(spximg_out.flags & Flag.GHOST_EXT) > 0])
+        # Number of pixels source flagged
         spximg_out.header["HIERARCH L2 N_SOURCE"] = (numpix_flagged_source,
                                                      "number of source flagged pixels")
-        # spximg_out.header["HIERARCH L2 N_XTALK"] = (numpix_flagged_xtalk,
-        # "number of crosstalk flagged pixels")
-        # spximg_out.header["HIERARCH L2 N_GHOST"] = (numpix_flagged_ghost,
-        # "number of ghost flagged pixels")
-        # spximg_out.header["HIERARCH L2 N_GHOST_FPA"] = (numpix_flagged_ghost_fpa,
-        # "number of ghost_fpa flagged pixels")
-        # spximg_out.header["HIERARCH L2 N_GHOST_EXT"] = (numpix_flagged_ghost_ext,
-        # "number of ghost_ext flagged pixels")
+        # Number of pixels xtalk flagged
+        if self.config.mask_xtalk:
+            # xtalk threshold
+            spximg_out.header["XTTHRESH"] = (self.config.limiting_xtalk_current,
+                                             "[e-/s] crosstalk threshold")
+            numpix_flagged_xtalk = np.count_nonzero((spximg_out.flags & Flag.CROSSTALK))
+            spximg_out.header["HIERARCH L2 N_XTALK"] = (numpix_flagged_xtalk,
+                                                        "number of crosstalk flagged pixels")
+        # Number of pixels ghost flagged
+        if self.config.mask_ghosts:
+            numpix_flagged_ghost = np.count_nonzero((spximg_out.flags & Flag.GHOST))
+            numpix_flagged_ghost_fpa = np.count_nonzero((spximg_out.flags & Flag.GHOST_FPA))
+            numpix_flagged_ghost_ext = np.count_nonzero((spximg_out.flags & Flag.GHOST_EXT))
+
+            spximg_out.header["HIERARCH L2 N_GHOST"] = (numpix_flagged_ghost,
+                                                        "number of ghost flagged pixels")
+            spximg_out.header["HIERARCH L2 N_GHOST_FPA"] = (numpix_flagged_ghost_fpa,
+                                                            "number of ghost_fpa flagged pixels")
+            spximg_out.header["HIERARCH L2 N_GHOST_EXT"] = (numpix_flagged_ghost_ext,
+                                                            "number of ghost_ext flagged pixels")
+
+        # Calculate BLOOM/SNOW pixels that are not flagged as SOURCE
+        is_source = (spximg_out.flags & Flag.SOURCE) > 0
+        is_bloom = (spximg_out.flags & Flag.BLOOM) > 0
+        is_snow = (spximg_out.flags & Flag.SNOWBALL) > 0
+
+        # Count BLOOM pixels that are not SOURCE
+        numpix_bloom_not_source = np.count_nonzero(is_bloom & ~is_source)
+
+        # Count SNOW pixels that are not SOURCE
+        numpix_snow_not_source = np.count_nonzero(is_snow & ~is_source)
+
+        # Add counts to the header
+        spximg_out.header["HIERARCH L2 N_BLOOM_NS"] = (numpix_bloom_not_source,
+                                                       "number of BLOOM flagged pixels not flagged SOURCE")
+        spximg_out.header["HIERARCH L2 N_SNOW_NS"] = (numpix_snow_not_source,
+                                                      "number of SNOW flagged pixels not flagged SOURCE")
 
         return pipeBase.Struct(spximg_out=spximg_out)

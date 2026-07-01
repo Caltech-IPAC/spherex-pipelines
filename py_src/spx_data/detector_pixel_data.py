@@ -1,6 +1,6 @@
 __all__ = ["DetectorPixelData", "NonLinearityParameters", "PersistenceParameters",
            "PersistenceState", "PersistenceStateModelPars", "ReadNoiseParameters",
-           "PersistenceLookupTable"]
+           "PersistenceLookupTable", "NonfuncData"]
 
 # Standard library imports
 import re
@@ -113,6 +113,41 @@ class DetectorPixelData:
     def validate(self):
         self._check_required_extensions()
         self._check_optional_extensions()
+
+
+class NonfuncData(DetectorPixelData):
+    """
+    Per-detector permanently bad-pixel masks with typed categories.
+    1 = bad, 0 = good
+    """
+    required_extensions = [
+        "COMBINED",
+        "DARKCURR",
+        "HIGHDRIFT",
+        "SPECCAL",
+        "TRANSIENT",
+        "OVERFLOW",
+    ]
+    optional_extensions = []  # nothing optional for now
+
+    def get_combined_data(self) -> np.ndarray:
+        """Return the COMBINED extension data (1=bad, 0=good)."""
+        return self.get_extension_data("COMBINED")
+
+    def get_combined_bad_mask(self) -> np.ndarray:
+        """Boolean mask where True marks bad pixels from COMBINED."""
+        data = self.get_combined_data()
+        return (data == 1)
+
+    def get_type_bad_masks(self) -> dict[str, np.ndarray]:
+        """Return boolean masks for each category (True = bad)."""
+        return {
+            "DARKCURR": (self.get_extension_data("DARKCURR") == 1),
+            "HIGHDRIFT": (self.get_extension_data("HIGHDRIFT") == 1),
+            "SPECCAL": (self.get_extension_data("SPECCAL") == 1),
+            "TRANSIENT": (self.get_extension_data("TRANSIENT") == 1),
+            "OVERFLOW": (self.get_extension_data("OVERFLOW") == 1),
+        }
 
 
 class NonLinearityParameters(DetectorPixelData):

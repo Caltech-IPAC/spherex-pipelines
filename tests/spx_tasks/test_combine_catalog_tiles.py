@@ -102,7 +102,7 @@ def run_casc(deferred_meas_table_list: list[MockDeferredDatasetHandle]) -> pa.Ta
         A table of all-sky catalog measurements for a single HEALpix.
     """
     # No filtering; no pass through columns
-    config = CreateAllSkyCatalogConfig(sort_on="source_id", pass_thru_cols=[],
+    config = CreateAllSkyCatalogConfig(sort_on="lambda", merge_refcat=False, pass_thru_cols=["name"],
                                        filter_spherex_class=0)
     task = CreateAllSkyCatalogTask(config=config)
     output = task.run(deferred_meas_table_list)
@@ -116,16 +116,17 @@ def test_combine_catalog_tiles():
     with patch.dict("os.environ", {"SSDC_CENTER_WAVELENGTH_DIR": tmpdir.name}):
         # Point source sample (15x15 image cutout; 6 sources; HEALPix 19644)
         ps_file = get_sample_file("point source")
-        ps_config = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=False, pass_thru_cols=[])
+        ps_config = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=False, merge_srccat=True,
+                                                  pass_thru_cols=["name"])
         ps_healpixes = run_pfp(ps_config, [ps_file], runs=2)
         ps_id = next(iter(ps_healpixes))
         ps_allsky = run_casc([MockDeferredDatasetHandle(ps_healpixes[ps_id])])
 
         # Galaxy sample (10x10 image cutout; 1 source; HEALPix 27259)
         gal_file = get_sample_file("galaxy")
-        gal_config = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=False, pass_thru_cols=[],
-                                                   cut_side_length=2, frame_width=1, bkg_side_length=4,
-                                                   bkg_box_size=1)
+        gal_config = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=False, merge_srccat=True,
+                                                   pass_thru_cols=["name"], cut_side_length=2, frame_width=1,
+                                                   bkg_side_length=4, bkg_box_size=1)
         gal_healpixes = run_pfp(gal_config, [gal_file], runs=5)
         gal_id = next(iter(gal_healpixes))
         gal_allsky = run_casc([MockDeferredDatasetHandle(gal_healpixes[gal_id])])

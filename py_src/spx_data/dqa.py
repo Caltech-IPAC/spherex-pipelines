@@ -75,6 +75,7 @@ class Level2DQA(BaseModel):
     update_field_distortion: dict
     # psf_solid_angle_check: dict
     finast_check: dict
+    srccat_coverage_check: dict
     overall_result: str = "UNKNOWN"
 
     @field_validator("*", mode="before")

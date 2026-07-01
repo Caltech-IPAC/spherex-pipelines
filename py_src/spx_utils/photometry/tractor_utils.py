@@ -213,8 +213,8 @@ class SPHERExTractorPSF(tractor.ducks.Params, tractor.ducks.ImageCalibration):
         assert y0_hires % self._psf.oversampling == 0
 
         # downsampling
-        outimg = resize(hires_psf, dsize=None, fx=1/self._psf.oversampling,
-                        fy=1/self._psf.oversampling, interpolation=INTER_AREA)
+        outimg = resize(hires_psf, dsize=None, fx=1/self._psf.oversampling, fy=1/self._psf.oversampling,
+                        interpolation=INTER_AREA)
         outimg /= outimg.sum()
         ix0 = x0_hires // self._psf.oversampling
         iy0 = y0_hires // self._psf.oversampling
@@ -513,10 +513,12 @@ def tractor_fit_spherex(
 
     # Optimize the fit with Tractor, positions frozen
     optres = trac_spherex.optimize_forced_photometry(variance=True)
+    optres_inv_var = optres.IV
 
-    # Build the output table with fluxes and errors
+    # Build the output table with photometry measurements
     if keep_frame_sources is False:  # filter frame sources out
         tractor_source_objs = tractor_source_objs[source_list["central_source"]]
+        optres_inv_var = optres_inv_var[source_list["central_source"]]
         source_list = source_list[source_list["central_source"]]
 
     phot_meas_arr = np.empty(shape=len(tractor_source_objs),
@@ -525,6 +527,9 @@ def tractor_fit_spherex(
                                     ("dec", "float64"),
                                     ("x_image", "float32"),
                                     ("y_image", "float32"),
+                                    ("mjd", "float64"),
+                                    ("lambda", "float32"),
+                                    ("lambda_width", "float32"),
                                     ("flux", "float32"),
                                     ("flux_err", "float32"),
                                     ("flux_bkg", "float32"),
@@ -532,11 +537,14 @@ def tractor_fit_spherex(
                                     ("ext_flg", "bool"),
                                     ("flags", "int64"),
                                     ("fit_ql", "float32"),
+                                    ("deep_flg", "bool"),
+                                    ("lvf_id", "int64"),
+                                    ("det_id", "uint8"),
                                     (hips_name, "int32")])
     for i in range(0, len(source_list)):
         # Calculate source flux/flux error
         src_flux = tractor_source_objs[i].getParams()[0]
-        src_flux_err = 1 / np.sqrt(optres.IV[i])
+        src_flux_err = 1 / np.sqrt(optres_inv_var[i])
 
         # Get background from local estimate cutout if available, otherwise set
         # to zero (will be populated with global background estimate later in
@@ -553,36 +561,27 @@ def tractor_fit_spherex(
 
         # Get source region pixels
         source_center = PixCoord(x=position_xidx, y=position_yidx)
-        source_region = CirclePixelRegion(center=source_center, radius=2.5)
-        mask_pix = source_region.to_mask(mode="center")
-        mask_bbox = mask_pix.bbox
+        reg_mask = CirclePixelRegion(center=source_center, radius=2.5).to_mask(mode="center")
 
-        # For central sources near the boundary of corner/edge windows,
-        # adjust slices to be within limits of window indices
-        x_slice = slice(
-            mask_bbox.ixmin if (mask_bbox.ixmin >= spx_cutout.xmin_cutout) else spx_cutout.xmin_cutout,
-            mask_bbox.ixmax if (mask_bbox.ixmax <= spx_cutout.xmax_cutout) else spx_cutout.xmax_cutout
-        )
-        y_slice = slice(
-            mask_bbox.iymin if (mask_bbox.iymin >= spx_cutout.ymin_cutout) else spx_cutout.ymin_cutout,
-            mask_bbox.iymax if (mask_bbox.ixmax <= spx_cutout.xmax_cutout) else spx_cutout.xmax_cutout
-        )
+        # To account for edge/corner sources: get the bounding box slices
+        # overlapping the window (with respect to the cutout/bbox origin),
+        # then extract masked pixels
+        slices_cutout, slices_mask = reg_mask.get_overlap_slices(shape=spx_cutout.data.shape)
+        submask = reg_mask.data[slices_mask].astype(bool)
 
         # Calculate fit quality
         fit_ql = np.nanmean(
-            np.abs((spx_cutout.data.value - trac_spherex.getModelImage(0))[y_slice, x_slice])
-            / np.sqrt(spx_variance[y_slice, x_slice]))
+            np.abs((spx_cutout.data.value - trac_spherex.getModelImage(0))[slices_cutout][submask])
+            / np.sqrt(spx_variance[slices_cutout][submask]))
 
         # Set photometry flag
         bad_pixel_flags = (Flag.TRANSIENT | Flag.OVERFLOW | Flag.SUR_ERROR | Flag.NONFUNC | Flag.DICHROIC
                            | Flag.MISSING_DATA | Flag.HOT | Flag.COLD | Flag.NONLINEAR | Flag.CROSSTALK
-                           | Flag.GHOST | Flag.GHOST_FPA | Flag.GHOST_EXT | Flag.STREAK)
-        phot_flag = 0
-        bad_phot = False
-        for flag_cut_pixel in np.nditer(spx_flags[y_slice, x_slice]):
-            phot_flag |= flag_cut_pixel
-            if (flag_cut_pixel & bad_pixel_flags) != 0:
-                bad_phot = True
+                           | Flag.GHOST | Flag.GHOST_FPA | Flag.GHOST_EXT | Flag.STREAK | Flag.PERSIST
+                           | Flag.BLOOM | Flag.SNOWBALL | Flag.HALO | Flag.SATELLITE_HALO)
+        src_reg_flags = spx_flags[slices_cutout][submask]
+        phot_flag = np.bitwise_or.reduce(src_reg_flags)
+        bad_phot = np.any((src_reg_flags & bad_pixel_flags) != 0)
         if bad_phot:
             phot_flag |= PhotometryFlag.CONTAINS_BAD_PIXEL
 
@@ -592,20 +591,29 @@ def tractor_fit_spherex(
             phot_flag |= PhotometryFlag.FIT_ERROR
 
         # Populate array element with column values
+        # NOTE: To save memory, we populate flux_bkg (in global case), mjd,
+        # lambda, lambda_width, deep_flg, lvf_id, and det_id with their true
+        # values in the Perform Forced Photometry run method.
         phot_meas_arr[i] = (
-            source_list["SPHERExRefID"][i],
-            source_list["ra"][i],
-            source_list["dec"][i],
-            source_list["x_image"][i],
-            source_list["y_image"][i],
-            src_flux,
-            src_flux_err,
-            src_bkgd,
-            local_bkg_flg,
-            True if type(tractor_source_objs[i]) is SersicGalaxy else False,
-            phot_flag,
-            fit_ql,
-            source_list[hips_name][i],
+            source_list["SPHERExRefID"][i],                                      # SPHERExRefID
+            source_list["ra"][i],                                                # ra
+            source_list["dec"][i],                                               # dec
+            source_list["x_image"][i],                                           # x_image
+            source_list["y_image"][i],                                           # y_image
+            0,                                                                   # mjd
+            0,                                                                   # lambda
+            0,                                                                   # lambda_width
+            src_flux,                                                            # flux
+            src_flux_err,                                                        # flux_err
+            src_bkgd,                                                            # flux_bkg
+            local_bkg_flg,                                                       # local_bkg_flg
+            True if type(tractor_source_objs[i]) is SersicGalaxy else False,     # ext_flg
+            phot_flag,                                                           # flags
+            fit_ql,                                                              # fit_ql
+            0,                                                                   # deep_flg
+            0,                                                                   # lvf_id
+            0,                                                                   # det_id
+            source_list[hips_name][i]                                            # <hips_name>
         )
 
     if return_fit:

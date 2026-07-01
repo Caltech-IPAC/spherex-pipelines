@@ -176,6 +176,14 @@ def runL2a(repo, collections, output_run,
     # idempotent output dataset type registration
     butler.registry.registerDatasetType(datasetType)
 
+    datasetTypeDiag = DatasetType(
+        "bsh_diag_img",
+        dimension_universe.conform(("instrument", "exposure")),
+        "SPHERExImage",
+        universe=dimension_universe,
+    )
+    butler.registry.registerDatasetType(datasetTypeDiag)
+
     # dataset type for persistence state
     datasetTypePersistenceState = \
         DatasetType(dataset_types.persistence_state,
@@ -328,6 +336,10 @@ def runL2a(repo, collections, output_run,
                 with butler.transaction():
                     if result.spximg_out is not None:
                         butler.put(result.spximg_out, datasetType, dataid, run=run)
+
+                    if result.bsh_diag_img is not None:
+                        butler.put(result.bsh_diag_img, datasetTypeDiag, dataid, run=run)
+
                     if result.persistence_image is not None:
                         butler.put(result.persistence_image, dataset_types.persistence_image, dataid, run=run)
                     if result.persistence_state_out is not None:

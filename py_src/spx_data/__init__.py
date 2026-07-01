@@ -1,3 +1,4 @@
+from .astr_diag import *
 from .background import *
 from .detector_pixel_data import *
 from .dqa import *

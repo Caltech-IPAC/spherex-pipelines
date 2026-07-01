@@ -2,6 +2,7 @@ from .astropy_image import *
 from .astropy_parquet import *
 from .astropy_sip import *
 from .background_mesh import *
+from .nonfunc_data import *
 from .nonlinearity_parameters import *
 from .readnoise_parameters import *
 from .persistence_data import *

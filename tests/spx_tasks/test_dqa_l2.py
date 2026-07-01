@@ -25,7 +25,7 @@ def get_sample_img() -> SPHERExImage:
 
 
 def get_mock_srccat() -> Table:
-    return Table({
+    t = Table({
         "ra": [150.0, 151.0] * u.deg,
         "dec": [2.0, 2.5] * u.deg,
         "spherex_class": [1, 2],
@@ -38,6 +38,69 @@ def get_mock_srccat() -> Table:
         "iy": [150, 250],
         "dQ": [1000.0, 1100.0],
     })
+
+    # Provide the footer metadata the task expects
+    t.meta["user_metadata"] = {
+        "schema_version": "1.0",
+        "producer": "spherex-pipelines",
+        "refcat_run": "refcat_v073",
+        "refcat_version": "SPHEREx_RefCat_v0.73",
+        "created_utc": "2025-08-27T12:34:56Z",
+    }
+    return t
+
+
+def get_mock_srccat_pass(spximg: SPHERExImage, pad: int = 300) -> Table:
+    """
+    Create a mock srccat whose sky positions cover the image
+    with expected number of pad pixels on all sides.
+    """
+    ny, nx = spximg.data.shape
+    w = spximg.wcs
+
+    # pixel-frame coverage points
+    px = np.array([
+        -pad,            # left
+        nx - 1 + pad,    # right
+        nx // 2,         # center-x
+        nx // 2
+    ])
+    py = np.array([
+        ny // 2,         # center-y
+        ny // 2,
+        -pad,            # bottom
+        ny - 1 + pad     # top
+    ])
+
+    # convert to sky coords
+    world = w.pixel_to_world(px, py)
+
+    ra = world.ra.degree
+    dec = world.dec.degree
+
+    t = Table({
+        "ra": ra * u.deg,
+        "dec": dec * u.deg,
+        "spherex_class": [1, 1, 1, 1],
+        "WISE_W1": [1e5, 1e5, 1e5, 1e5],
+        "LS_z": [1e5, 1e5, 1e5, 1e5],
+        "Gaia_DR3_source_id": [1, 2, 3, 4],
+        "mag_det1": [10.0, 11.0, 12.0, 13.0],
+        "detector": [1, 1, 1, 1],
+        "ix": px,
+        "iy": py,
+        "dQ": [1000.0, 1000.0, 1000.0, 1000.0]
+    })
+
+    t.meta["user_metadata"] = {
+        "schema_version": "1.0",
+        "producer": "spherex-pipelines",
+        "refcat_run": "refcat_v073",
+        "refcat_version": "SPHEREx_RefCat_v0.73",
+        "created_utc": "2025-08-27T12:34:56Z",
+    }
+
+    return t
 
 
 def check_flag_counts(img_hdr: Header, flg_hdr: Header, keywords: list[str]):
@@ -90,7 +153,7 @@ class TestL2DQA(unittest.TestCase):
         self.spximg.uncertainty = VarianceUncertainty(variance)
         self.spximg.uncertainty.unit = Unit("MJy/sr")**2
         # Mock catalog
-        srccat = get_mock_srccat()
+        srccat = get_mock_srccat_pass(self.spximg)
         # Fake IDQR parameters
         self.spximg.header["SPS_FLAGS"] = "deep_north"
         self.spximg.flags = np.zeros(self.spximg.data.shape, dtype=np.int32)
@@ -101,6 +164,14 @@ class TestL2DQA(unittest.TestCase):
         obs = output.idqr_obs.observations["2025W52_2V_0573_1"]
         assert obs.survey_plan_indicator  # check True for no re-observe flag
         assert obs.images[1].status == "good"  # check below transient threshold
+
+        self.assertIn("HIERARCH REFCAT.VERSION", output.spximg_out.header)
+        self.assertEqual(output.spximg_out.header["HIERARCH REFCAT.VERSION"], "SPHEREx_RefCat_v0.73")
+        # srccat coverage check
+        self.assertIn("srccat_coverage_check", output.dqa_l2.model_dump())
+        self.assertEqual(output.dqa_l2.srccat_coverage_check["result"],
+                         "PASS",
+                         "srccat_coverage_check should PASS in test_pass_case")
 
     def test_fail_case(self):
         self.spximg.header["ARRAY"] = 1
@@ -153,6 +224,15 @@ class TestL2DQA(unittest.TestCase):
         # The re-observe logic is now handled by the ODIR workflow.
         self.assertTrue(obs.survey_plan_indicator)
         self.assertEqual(obs.images[1].status, "good")
+
+        self.assertIn("HIERARCH REFCAT.VERSION", output.spximg_out.header)
+        self.assertEqual(output.spximg_out.header["HIERARCH REFCAT.VERSION"], "SPHEREx_RefCat_v0.73")
+
+        # srccat coverage check
+        self.assertIn("srccat_coverage_check", output.dqa_l2.model_dump())
+        self.assertEqual(output.dqa_l2.srccat_coverage_check["result"],
+                         "FAIL",
+                         "srccat_coverage_check should FAIL in test_fail_case")
 
 
 if __name__ == "__main__":

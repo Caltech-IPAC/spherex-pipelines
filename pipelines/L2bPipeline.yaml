@@ -7,7 +7,7 @@ tasks:
       connections.spximg: "level2a"
       connections.abs_gain_matrix: "abs_gain_matrix"
       connections.dark: "dark"
-      # connections.sip: "sip"
+      connections.sip: "sip"
       connections.srccat: "srccat"
       connections.spectral_wcs: "spectral_wcs"
       # connections.xtalk_coupling_matrix: "xtalk_coupling_matrix"
@@ -16,3 +16,4 @@ tasks:
       connections.spximg_out: "level2"
       connections.dqa_l2: "dqa_l2"
       connections.idqr_obs: "idqr_obs"
+      connections.astr_diag: "astr_diag"

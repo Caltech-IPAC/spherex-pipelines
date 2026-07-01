@@ -59,14 +59,15 @@ class TestSPHERExImage(unittest.TestCase):
             self.assertEqual(len(hdulist), 4)
 
         # test layers read/write
-        psf_in = get_sample_psf()
-        spherex_image.psfcube = psf_in
         ssocat_in = get_sample_ssocat()
         spherex_image.ssocat = ssocat_in
         sur_in = get_sample_sur()
         spherex_image.sur = sur_in
         zodi_in = get_sample_zodi(spherex_image.data.shape)
         spherex_image.zodi = zodi_in
+        psf_in = get_sample_psf()
+        spherex_image.psfcube = psf_in
+        spherex_image_layers = [k for k in spherex_image.layers.keys()]
 
         path1 = os.path.join(self.root, "small_with_layers.fits")
         spherex_image.write(path1, wcs_relax=True, key_uncertainty_type="UTYPE")
@@ -76,6 +77,8 @@ class TestSPHERExImage(unittest.TestCase):
         ssocat_diff: Table = setdiff(ssocat_in, ssocat_out)
         sur_out = spherex_image_with_layers.sur
         zodi_out = spherex_image_with_layers.zodi
+        spherex_image_read_layers = [k for k in spherex_image_with_layers.layers.keys()]
+        self.assertTrue(spherex_image_layers == spherex_image_read_layers)
         self.assertTrue(psf_in == psf_out)
         self.assertTrue(ssocat_diff.colnames == ssocat_in.colnames)
         self.assertTrue(len(ssocat_diff) == 0)

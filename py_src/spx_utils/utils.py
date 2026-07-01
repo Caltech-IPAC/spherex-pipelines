@@ -1,17 +1,23 @@
-__all__ = ["add_detcoord", "is_device_detcoord", "get_data_file", "get_overflow_threshold"]
+__all__ = ["add_detcoord", "is_device_detcoord", "get_data_file",
+           "get_overflow_threshold", "get_refcat_provenance"]
 
 # Standard library imports
 from pathlib import Path
 import importlib.resources as resources
+import logging
 
 # Related third party imports
 import numpy as np
 from astropy.io import fits
+from astropy.table import Table
 
 # Local application/library specific imports
 from spx_data import ReadoutParameters
 from spx_data import SPHERExImage, PSFZoneData
 from astropy.io.fits import HDUList
+
+
+logger = logging.getLogger(__name__)
 
 
 def add_detcoord(obj, device_coord: bool = False):
@@ -202,3 +208,34 @@ def get_overflow_threshold(header: fits.header, primary_key: str) -> int:
         else:
             # Fallback to default value used prior to 2024/05/15 for simulated images.
             return 30000  # Value in electrons, equivalent to ADU with a gain of 1 e-/ADU.
+
+
+def get_refcat_provenance(srccat: Table) -> tuple[str | None, str | None]:
+    """Extract reference-catalog provenance from an srccat table.
+
+    Parameters
+    ----------
+    srccat : `astropy.table.Table`
+        Source catalog table (e.g., produced by QueryReferenceCatalogTask).
+
+    Returns
+    -------
+    run : `str` or `None`
+        Butler run/collection name for the reference catalog
+        (e.g., ``"refcat_v073"``). ``None`` if unavailable.
+    version : `str` or `None`
+        Human-readable reference-catalog version label
+        (e.g., ``"SPHEREx_RefCat_v0.73"``). ``None`` if unavailable.
+    """
+    run = ver = None
+
+    # Get user_metadata from srccat
+    um = srccat.meta.get("user_metadata")
+    if isinstance(um, dict):
+        run = um.get("refcat_run") or run
+        ver = um.get("refcat_version") or ver
+
+    if run is None or ver is None:
+        logger.warning("Reference catalog provenance not found in srccat metadata")
+
+    return run, ver

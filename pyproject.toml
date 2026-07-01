@@ -21,7 +21,7 @@ dependencies = [
     "alive-progress",
     "astropy",
     "opencv-python-headless",
-    "click <8.2",
+    "click >=8.2.0,<8.3.0",
     "healpy >=1.17.1",
     "joblib",
     "kete==1.0.6",
@@ -31,10 +31,12 @@ dependencies = [
     "matplotlib",
     "numba",
     "numpy",
+    "parsl==2025.11.10",
     "photutils <=1.13.0",
     "pyarrow",
     "pydantic >=2.3, <3.0",
     "scipy >=1.6",
+    "scikit-image",
     "scikit-learn",
     "slack_sdk",
     "sqlalchemy",
@@ -70,6 +72,7 @@ tractor = [
 [project.scripts]
 plan-tools = "spx_apps.plan_tools.script.cli_plan_tools:cli"
 photometry-tool = "spx_apps.photometry_tool.script.cli_photometry_tool:main"
+mosaic-tool = "spx_apps.mosaic_tool.script.cli_mosaic_tool:main"
 [tool.setuptools.packages.find]
 where = ["py_src"]
 

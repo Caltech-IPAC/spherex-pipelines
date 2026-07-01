@@ -3,7 +3,6 @@ import datetime
 import logging
 import tempfile
 from typing import Optional, Literal
-
 from astropy.table import Table
 from astropy.time import Time
 from lsst.daf.butler import (
@@ -161,7 +160,8 @@ def get_unique_dataset_refs(dataset_refs: list[list[DatasetRef]]) -> list[Datase
 
 
 def get_unique_calibration_refs(butler: Butler,
-                                collections: str) -> list[DatasetRef]:
+                                collections: str,
+                                use_simulator_bandpass: bool) -> list[DatasetRef]:
     """Get unique dataset references for solid angle pixel map calibration products.
 
     Parameters
@@ -170,6 +170,8 @@ def get_unique_calibration_refs(butler: Butler,
         Instance of Butler, which contains all available LVF products and calibrations.
     collections :
         Calibration collection expr.
+    use_simulator_bandpass :
+        If True, spectral_wcs calibration is not used.
 
     Returns
     -------
@@ -177,7 +179,9 @@ def get_unique_calibration_refs(butler: Butler,
         De-duplicated list of the calibration product dataset references.
     """
     calibration_refs: list[DatasetRef] = []
-    calibration_types = [dsTypes.solid_angle_pixel_map, dsTypes.spectral_wcs]
+    calibration_types = [dsTypes.solid_angle_pixel_map]
+    if not use_simulator_bandpass:
+        calibration_types.append(dsTypes.spectral_wcs)
 
     # for each calibration dataset type, pull *all* matching refs in one go
     for dtype in calibration_types:
@@ -320,19 +324,25 @@ def ingest_srccat(temp_butler: Butler,
     return src_tbl
 
 
-def collect_inputs_in_temp_butler(
-        butler: Butler,
+def collect_inputs_for_temp_butler(
+        butler_repo: str,
         target_table: Table,
         tmp_dir: str,
         time_interval: Optional[tuple[Time, Time]] = None,
         detectors: Optional[list[int]] = None,
-) -> Butler:
-    """Get temporary butler with all the inputs necessary to run spectrophotometry.
+        use_simulator_bandpass: bool = False
+) -> None:
+    """Find and export all necessary inputs from a source Butler to run
+    spectrophotometry.
+
+    Runs in an isolated process and places the path to the temporary Butler,
+    export file path, coverage table and srccat ids into the provided queue
+    with a status result.
 
     Parameters
     ----------
-    butler :
-        LSST Butler instance.
+    butler_repo : str
+        Path to the source Butler repository to query.
     target_table :
         Astropy table with "ra" and "dec" columns.
     tmp_dir :
@@ -341,11 +351,10 @@ def collect_inputs_in_temp_butler(
         Time interval, with ``None`` used for open end; default is ``None``.
     detectors :
         Detector IDs to filter on, default is ``None``.
-
-    Returns
-    -------
-    result :
-        Temporary Butler with all the inputs necessary to run spectrophotometry.
+    use_simulator_bandpass :
+        If True, Perform Forced Photometry will use simulator wavelength model to
+        calculate wavelength and bandwidth for each measurement. Otherwise, it will use
+        spectral_wcs calibration file.
 
     Raises
     ------
@@ -356,6 +365,7 @@ def collect_inputs_in_temp_butler(
     if instrument not in ["spx", "simu"]:
         raise ValueError("Unsupported instrument: {instrument}")
     lvf_dataset_type_name = os.getenv("SPXPHOTO_L2_DATASET_TYPE", "level2")
+    butler = Butler(butler_repo)
     # verify that dataset type is registered
     # lsst.daf.butler.MissingDatasetTypeError is raised if not registered
     _ = butler.get_dataset_type(lvf_dataset_type_name)
@@ -363,7 +373,7 @@ def collect_inputs_in_temp_butler(
     # Find LVF images that contain ra and dec from the target table
     # Coverage table tells how many images are found per source
     # if the value in "n_img" column is 0, no images are found.
-    input_coll = os.getenv("SPXPHOTO_INPUT_COLL", "IRSA-qr1-visible")
+    input_coll = os.getenv("SPXPHOTO_INPUT_COLL", "IRSA-qr2-visible")
     coverage_table, dataset_refs = lvf_lookup(butler,
                                               target_table,
                                               time_interval=time_interval,
@@ -381,15 +391,17 @@ def collect_inputs_in_temp_butler(
 
     # Unique LVF image references
     unique_dataset_refs = get_unique_dataset_refs(dataset_refs)
-
     if len(unique_dataset_refs) < 1:
         raise EmptyLVFQueryResultError(n_src_no_matches,
                                        instrument=instrument,
                                        dataset_type=lvf_dataset_type_name)
 
     # Unique calibration product references
-    calibration_collections = os.getenv("SPXPHOTO_CALIBRATION_COLL", "IRSA-qr1-tools")
-    unique_calibration_refs = get_unique_calibration_refs(butler, calibration_collections)
+    calibration_collections = os.getenv("SPXPHOTO_CALIBRATION_COLL", "IRSA-qr2-tools")
+
+    unique_calibration_refs = get_unique_calibration_refs(butler,
+                                                          calibration_collections,
+                                                          use_simulator_bandpass)
 
     # Create temporary butler directory, which will also act as export directory
     timestamp = datetime.datetime.now().strftime("%y%m%dT%H%M%S")
@@ -402,14 +414,47 @@ def collect_inputs_in_temp_butler(
                     export_file=export_file,
                     export_directory=str(temp_butler_root))
 
+    # Get unique source catalog data ids for the input LVF images
+    srccat_dataids = get_unique_srccat_dataids(unique_dataset_refs)
+
+    results = {
+        "temp_butler_root": str(temp_butler_root),
+        "export_file": str(export_file),
+        "coverage_table": coverage_table,
+        "srccat_dataids": srccat_dataids
+    }
+    return results
+
+
+def populate_temp_butler_from_export(
+        temp_butler_root: str,
+        export_file: str,
+        coverage_table: Table,
+        srccat_dataids: list[dict]
+) -> None:
+    """Create and populate a new temporary Butler from exported data.
+
+    Runs in an isolated process and places the path to the temporary Butler
+    into the provided queue with a status result.
+
+    Parameters
+    ----------
+    temp_butler_root : str
+        Path to the directory where the new temporary Butler will be created.
+    export_file : str
+        Path to the ``export.yaml`` file generated by the collection step.
+    coverage_table : astropy.table.Table
+        Astropy table with coverage information needed to ingest source catalogs.
+    srccat_dataids : list[dict]
+        A list of data IDs for the source catalogs to be ingested.
+    """
+    instrument = os.getenv("SPXPHOTO_INSTRUMENT", "spx")
+
     # Create temporary Butler
     temp_butler = create_temp_butler_registry(temp_butler_root, instrument_name=instrument)
 
     # Import LVF images and related calibrations
     temp_butler.import_(filename=export_file, transfer=None)
-
-    # Get unique source catalog data ids for the input LVF images
-    srccat_dataids = get_unique_srccat_dataids(unique_dataset_refs)
 
     # Ingest source catalogs into temporary butler
     # We are using the same source catalog for all data ids:
@@ -417,4 +462,14 @@ def collect_inputs_in_temp_butler(
     # the sources outside the image.
     ingest_srccat(temp_butler, coverage_table, srccat_dataids)
 
-    return temp_butler
+    temp_butler_root = None
+
+    for datastore_root in temp_butler.get_datastore_roots().values():
+        temp_butler_root = datastore_root
+        logging.info(f"Temporary Butler Datastore Root URI: {datastore_root}")
+
+    results = {
+        "temp_butler_root": str(temp_butler_root.ospath)
+    }
+
+    return results

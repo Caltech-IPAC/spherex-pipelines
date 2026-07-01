@@ -1,0 +1,35 @@
+name: spxpipe-L3
+channels:
+    - conda-forge
+    - default
+dependencies:
+    - alive-progress
+    - astromatic-scamp
+    - astromatic-source-extractor
+    - astrometry
+    - astropy
+    - astropy-healpix
+    - boto3
+    - botocore
+    - click
+    - deprecated
+    - healpy
+    - joblib
+    - networkx
+    - numba
+    - numpy
+    - pandas
+    - photutils
+    - pip
+    - psutil
+    - psycopg2
+    - pyarrow
+    - pydantic >=2.3, <3.0
+    - python >=3.10.0, <3.12
+    - pyyaml
+    - requests
+    - scipy
+    - scikit-image
+    - spiceypy
+    - sqlalchemy
+    - swig

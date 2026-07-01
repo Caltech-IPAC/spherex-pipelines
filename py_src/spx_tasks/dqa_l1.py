@@ -208,7 +208,7 @@ class DQAL1Task(pipeBase.PipelineTask):
 
         # Flag array has the correct size and bit depth
         shape_cond = (spximg.flags.shape == (2072, 2176))
-        bit_cond = (spximg.flags.dtype == np.int16)
+        bit_cond = (spximg.flags.dtype == np.int32)
         message = f"Flag array has shape {spximg.flags.shape} and "\
                   f"element type {spximg.flags.dtype.name}."
         flags_test_1 = {

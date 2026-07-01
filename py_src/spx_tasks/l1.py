@@ -133,6 +133,7 @@ class L1Connections(pipeBase.PipelineTaskConnections,
     )
 
     def __init__(self, *, config=None):
+        super().__init__(config=config)
         if not config.gds_image_association.useSband:
             del self.sband
             del self.sband_mnemonics
@@ -140,7 +141,6 @@ class L1Connections(pipeBase.PipelineTaskConnections,
             del self.spk
         if not config.gds_image_association.useSgt:
             del self.sgt
-        super().__init__(config=config)
 
 
 class SPHERExL1ImageConfig(SPHERExImageConfig):
@@ -278,6 +278,7 @@ class L1Task(pipeBase.PipelineTask):
                           spk,
                           sband_mnemonics)
         spximg = result.spximg_out
+
         # Estimate coarse astrometry
         task: EstimateCoarseAstrometryTask = getattr(self, "estimate_coarse_astrometry")
         result = task.run(spximg, planned_obs, initial_distortion_table)
@@ -324,7 +325,7 @@ class L1Task(pipeBase.PipelineTask):
             level1_img=spximg,
             dqa_l1=dqa_l1,
             sur_diag=sur_diag,
-            odir_obs=odir_obs,
+            odir_obs=odir_obs
         )
 
         return output

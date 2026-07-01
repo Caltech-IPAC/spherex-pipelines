@@ -1,102 +1,46 @@
-import yaml
 __all__ = ["perform_photometry"]
 
 # Standard library imports
-import atexit
 import logging
 import os
 import pathlib
-import re
 import shutil
 import signal
 import sys
-import time
 import traceback
-from datetime import datetime
 from importlib import resources
-from collections import Counter
+import multiprocessing
 # Related 3rd-party imports
 import click
 import numpy as np
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
-from astropy.time import Time
 from lsst.daf.butler import Butler, MissingDatasetTypeError
 
 # Local application/library-specific imports
-from ..temp_butler import collect_inputs_in_temp_butler, get_skypix_ids
+from ..temp_butler import collect_inputs_for_temp_butler, populate_temp_butler_from_export, \
+    get_skypix_ids
 from ..photometry import run_photometry
 from ..exceptions import EmptyLVFQueryResultError, PipetaskError, VOTableSearchError
 from ..votable import make_votable
 from spx_apps import photometry_tool
-from spx_apps.common_cli import runid_option, jobid_option, result_dir_option, \
-    err_dir_option, tmp_dir_option, log_dir_option, make_runid_default
 
 from spx_tasks import PerformForcedPhotometryConfig
+
+
+from spx_apps.common_cli import runid_option, jobid_option, result_dir_option, \
+    err_dir_option, tmp_dir_option, log_dir_option, make_runid_default, \
+    setup_exit_handlers, extract_log_config_and_ids_from_argv, force_override_runid, \
+    extract_err_dir_from_argv, log_start_time, safe_exit, generate_error_summary, \
+    parse_detectors, parse_time, fake_option
 
 # Global variables for timing
 _start_time = None
 _script_name = "photometry_tool"
 
-
-def log_start_time():
-    """Log the script start time"""
-    global _start_time
-    _start_time = time.time()
-    start_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    logging.info(f"=== {_script_name} STARTED at {start_datetime} ===")
-    return _start_time
-
-
-def log_end_time(exit_code=None):
-    """Log the script end time and duration"""
-    end_time = time.time()
-    end_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-    if _start_time:
-        duration = end_time - _start_time
-        duration_str = f"{duration:.2f} seconds"
-        if duration > 60:
-            minutes = int(duration // 60)
-            seconds = duration % 60
-            duration_str = f"{minutes}m {seconds:.2f}s"
-    else:
-        duration_str = "unknown (start time not recorded)"
-
-    exit_info = f" (exit code: {exit_code})" if exit_code is not None else ""
-    # Make it crystal clear this is the final log entry from the main process
-    logging.info("=" * 80)
-    logging.info(f"FINAL LOG ENTRY - {_script_name} MAIN PROCESS ENDED")
-    logging.info(f"End time: {end_datetime}")
-    logging.info(f"Duration: {duration_str}{exit_info}")
-    logging.info("NOTE: Subprocess logs may appear after this message due to buffering")
-    logging.info("=" * 80)
-
-
-def setup_exit_handlers():
-    """Setup handlers to ensure end time is logged regardless of how script exits"""
-    atexit.register(log_end_time)
-
-    def signal_handler(signum, frame):
-        signal_name = signal.Signals(signum).name
-        logging.warning(f"Received signal {signal_name} ({signum}), shutting down...")
-        log_end_time(exit_code=128 + signum)
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
-
-    for sig in [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]:
-        try:
-            signal.signal(sig, signal_handler)
-        except (OSError, ValueError):
-            pass
-
-
-def safe_exit(code):
-    """Exit with logging"""
-    atexit.unregister(log_end_time)  # Prevent duplicate call
-    log_end_time(exit_code=code)
-    sys.exit(code)
+# Starts a fresh python interpreter process
+multiprocessing.set_start_method("spawn", force=True)
 
 
 @click.group()
@@ -113,8 +57,7 @@ def cli(ctx, version):
 
 def parse_point(ctx, param, value):
     """
-    Parse multiple --point options into a list of SkyCoord and name tuples.
-
+    Parse multiple --point options into a list of dictionaries, preserving order.
     Parameters
     ----------
     ctx : click.Context
@@ -126,91 +69,37 @@ def parse_point(ctx, param, value):
 
     Returns
     -------
-    list of tuple
-        List of tuples with (SkyCoord, name) for each point.
-
-    Raises
-    ------
-    click.BadParameter
-        If the input format is invalid or contains duplicate names.
-    """
-    points = []
-    names_seen = ctx.ensure_object(dict).setdefault("names_seen", set())
-
-    for v in value:
-        parts = v.split(",")
-        if len(parts) < 2 or len(parts) > 3:
-            raise click.BadParameter(f"{v}. Use ra,dec[,name]",
-                                     param_hint="--point")
-        try:
-            ra, dec = float(parts[0]), float(parts[1])
-            name = parts[2] if len(parts) == 3 else f"{ra}_{dec}"
-        except Exception:
-            raise click.BadParameter(f"{v}. Use ra,dec[,name]",
-                                     param_hint="--point")
-
-        if name in names_seen:
-            raise click.BadParameter(f"Duplicate point name: {name}",
-                                     param_hint="--point")
-        names_seen.add(name)
-        try:
-            coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
-            points.append((coord, name))
-        except Exception:
-            raise click.BadParameter(f"Invalid point: {v}",
-                                     param_hint="--point")
-
-    return points
-
-
-def parse_time(value) -> tuple[Time, Time] | None:
-    """
-    Parse --time option into a tuple of astropy.time.Time objects using MJD.
-
-    Parameters
-    ----------
-    value : `str`
-        Time range as 'min,max' using MJD values.
-        Use '-Inf' or '+Inf' for open-ended bounds.
-
-    Returns
-    -------
-    `tuple` of `astropy.time.Time` or ``None``
-        Tuple of (min_time, max_time).
-
+    List[`dict`]
+        List of dictionaries with point attributes and argument order.
     Raises
     ------
     click.BadParameter
         If the input format is invalid.
     """
-    try:
-        if value is None:
-            return value
+    points = []
+    for idx, v in enumerate(value):
+        parts = v.split(",")
+        if len(parts) < 2 or len(parts) > 3:
+            raise click.BadParameter(f"{v}. Use ra,dec[,name]", param_hint="--point")
+        try:
+            ra, dec = float(parts[0]), float(parts[1])
+            name = parts[2] if len(parts) == 3 else None
+        except Exception:
+            raise click.BadParameter(f"{v}. Use ra,dec[,name]", param_hint="--point")
 
-        parts = value.split(",")
-        if len(parts) != 2:
-            raise ValueError
-
-        parsed_parts = []
-        if parts[0] == "-Inf" or parts[0] == "":
-            # '2024-01-01T00:00:00'
-            parsed_parts.append(Time(60310.0, format="mjd", scale="utc"))
-        else:
-            parsed_parts.append(Time(float(parts[0]), format="mjd", scale="utc"))
-        if parts[1] == "+Inf" or parts[1] == "":
-            # '2050-01-01T00:00:00'
-            parsed_parts.append(Time(69807.0, format="mjd", scale="utc"))
-        else:
-            parsed_parts.append(Time(float(parts[1]), format="mjd", scale="utc"))
-        return tuple(parsed_parts)
-    except Exception:
-        raise click.BadParameter(f"{value}. Use 'min,max' with MJD values.",
-                                 param_hint="--time")
+        coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+        points.append({
+            "type": "point",
+            "coord": coord,
+            "name": name,
+            "order": ctx.obj.get("_arg_order", []).pop(0) if ctx.obj else idx
+        })
+    return points
 
 
 def parse_elliptical(ctx, param, value):
     """
-    Parse multiple --elliptical options into a list of elliptical source definitions.
+     Parse multiple --elliptical options into a list of dictionaries, preserving order.
 
     Parameters
     ----------
@@ -232,71 +121,27 @@ def parse_elliptical(ctx, param, value):
         If the input format is invalid or contains duplicate names.
     """
     ellipses = []
-    names_seen = ctx.meta.setdefault("names_seen", set())
-
-    for v in value:
+    for idx, v in enumerate(value):
         parts = v.split(",")
         if len(parts) < 6 or len(parts) > 7:
-            raise click.BadParameter(
-                f"{v}; expected: ra,dec,sersic,ratio,pa,effrad[,name].",
-                param_hint="--elliptical")
+            raise click.BadParameter(f"{v}; expected: ra,dec,sersic,ratio,pa,effrad[,name].",
+                                     param_hint="--elliptical")
 
         ra, dec, sersic, ratio, pa, effrad = map(float, parts[:6])
-        name = parts[6] if len(parts) == 7 else f"{ra}_{dec}"
-
-        if name in names_seen:
-            raise click.BadParameter(f"Duplicate name: {name}",
-                                     param_hint="--elliptical")
-        names_seen.add(name)
-
+        name = parts[6] if len(parts) == 7 else None
         coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
-        ellipses.append((coord, sersic, ratio, pa, effrad, name))
 
+        ellipses.append({
+            "type": "elliptical",
+            "coord": coord,
+            "name": name,
+            "sersic": sersic,
+            "ab_ratio": ratio,
+            "phi": pa,
+            "shape_r": effrad,
+            "order": ctx.obj.get("_arg_order", []).pop(0) if ctx.obj else idx
+        })
     return ellipses
-
-
-def parse_detectors(value) -> list[int] | None:
-    """
-    Parse multiple --detector options into a list of detector IDs.
-
-    Parameters
-    ----------
-    value : `tuple` of `str`
-        Tuple of detector labels, e.g. (``D3``, ``D4``)
-
-    Returns
-    -------
-    `list` of `int` or `None`
-        List of integer detector ids from 1 to 6,
-        or `None` if no detectors were specified.
-
-    Raises
-    ------
-    click.BadParameter
-        If the input value contains duplicate or invalid detector label.
-    """
-    if not value:
-        return None
-    else:
-        counts = Counter(value)
-        duplicates = [item for item, count in counts.items() if count > 1]
-        if len(duplicates) > 0:
-            raise click.BadParameter(f"duplicate label: {duplicates}.",
-                                     param_hint="--detector")
-
-        pattern = re.compile(r"^D(\d+)$")
-        detectors = []
-        for det_str in value:
-            match = pattern.fullmatch(det_str)
-            if not match:
-                raise click.BadParameter(f"{det_str}; unexpected detector label format.",
-                                         param_hint="--detector")
-            det = int(match.group(1))
-            if det < 1 or det > 6:
-                raise click.BadParameter(f"D{det}; detector id must be an integer from 1 to 6.",
-                                         param_hint="--detector")
-            detectors.append(det)
-        return detectors
 
 
 def validate_bkg_region(value: int) -> None:
@@ -333,88 +178,60 @@ def generate_input_table(point, elliptical) -> Table:
     -------
     result : astropy.table.Table
     """
-    records = []
-
-    # Point sources
-    # -9999 is used in ref catalog for null values
-    for coord, name in point or []:
-        records.append({
-            "input_type": "point",
-            "ra": coord.ra.deg,
-            "dec": coord.dec.deg,
-            "name": name,
-            "sersic": -9999.0,
-            "ab_ratio": -9999.0,
-            "phi": -9999.0,
-            "shape_r": -9999.0,
-        })
-
-    # Elliptical sources
-    for coord, sersic, ratio, pa, effrad, name in elliptical or []:
-        records.append({
-            "input_type": "elliptical",
-            "ra": coord.ra.deg,
-            "dec": coord.dec.deg,
-            "name": name,
-            "sersic": sersic,
-            "ab_ratio": ratio,
-            "phi": pa,
-            "shape_r": effrad,
-        })
-
-    if not records:
+    all_sources = (point or []) + (elliptical or [])
+    if not all_sources:
         raise ValueError("No input sources to record.")
+
+    # Sort by original input order
+    all_sources = sorted(all_sources, key=lambda s: s["order"])
+
+    records = []
+    counter = 1
+
+    for src in all_sources:
+        name = src.get("name")
+        if name is None:
+            name = f"Target_{counter:04d}"
+
+        if src["type"] == "point":
+            records.append({
+                "input_type": "point",
+                "ra": src["coord"].ra.deg,
+                "dec": src["coord"].dec.deg,
+                "name": name,
+                "sersic": -9999,
+                "ab_ratio": -9999,
+                "phi": -9999,
+                "shape_r": -9999,
+            })
+        else:
+            records.append({
+                "input_type": "elliptical",
+                "ra": src["coord"].ra.deg,
+                "dec": src["coord"].dec.deg,
+                "name": name,
+                "sersic": src["sersic"],
+                "ab_ratio": src["ab_ratio"],
+                "phi": src["phi"],
+                "shape_r": src["shape_r"],
+            })
+
+        counter += 1
 
     table = Table(rows=records, names=[
         "input_type", "ra", "dec", "name", "sersic", "ab_ratio", "phi", "shape_r"
     ])
+    table["SPHERExRefID"] = np.arange(1, len(table)+1)
 
-    # Add SPHERExRefID column (mimicking df.index)
-    table["SPHERExRefID"] = np.arange(len(table))
-
-    # Cast float columns to float32
     for name in ("sersic", "ab_ratio", "phi", "shape_r"):
         table[name] = table[name].astype(np.float32)
 
-    # units requires by source catalog validator
     required_units = [("ra", u.deg), ("dec", u.deg), ("shape_r", u.arcsec)]
     for col, unit in required_units:
         table[col].unit = unit
+    logging.info(table)
 
     return table
-
-
-def generate_error_summary(message="", error_dir=None, write_to_file=False, error_type="fatal"):
-    """
-    Generate a JSON-style error summary based on an exit code.
-
-    Args:
-        message (str, optional): A descriptive error message.
-        Defaults to an empty string.
-        error_dir (str, optional): Directory to write
-        the errorSummary.yaml file. Defaults to None.
-        write_to_file (bool, optional): Whether to write
-        the error summary to a file. Defaults to False.
-        error_type (str, optional): Type of error
-        (e.g., "fatal", "warning"). Defaults to "fatal".
-
-    Returns:
-        dict: The error summary structure.
-    """
-    # Construct error summary structure
-    error_summary = {
-        "errorType": error_type,
-        "message": str(message)
-    }
-
-    # Optionally write to file
-    if write_to_file and error_dir:
-        os.makedirs(error_dir, exist_ok=True)
-        error_path = os.path.join(error_dir, "errorSummary.yaml")
-        with open(error_path, 'w') as f:
-            yaml.dump(error_summary, f)
-
-    return error_summary
 
 
 @click.command()
@@ -424,6 +241,7 @@ def generate_error_summary(message="", error_dir=None, write_to_file=False, erro
 @jobid_option()
 @tmp_dir_option()
 @log_dir_option()
+@fake_option()
 @click.option("--point", multiple=True, callback=parse_point,
               help="Point-like target in format ra,dec[,name].\n"
               "[One of  --point OR --elliptical is required.]")
@@ -439,17 +257,6 @@ def generate_error_summary(message="", error_dir=None, write_to_file=False, erro
               help="Allow positions to float in Tractor fit. (Not implemented.)\n"
               "[optional flag]")
 @click.option(
-    '--fake',
-    type=click.Choice(['normal', 'error-short', 'error-detail', 'error-signal']),
-    default=None,
-    help='Run a simulated job. Modes: '
-         '"normal" = simulate successful run, '
-         '"error-short" = create errorSummary.yaml, '
-         '"error-detail" = create errorSummary.yaml and symlink "error" to actual error file, '
-         '"error-signal" = exit with SIGINT.\n'
-         '[optional flag]'
-)
-@click.option(
     '--verbose/--no-verbose',
     default=False,
     show_default=True,
@@ -458,8 +265,26 @@ def generate_error_summary(message="", error_dir=None, write_to_file=False, erro
         "Defaults to --no-verbose. Translated within the science tools to logging control options."
     )
 )
+@click.option(
+    '--use-simulator-bandpass/--no-use-simulator-bandpass',
+    default=False,
+    show_default=True,
+    help=(
+        "If True, simulator bandpass model is used to populate measurement wavelength"
+        " and bandwidth. Otherwise, spectral_wcs calibration product is used."
+    )
+)
+@click.option(
+    '--add-image-ids/--no-add-image-ids',
+    default=False,
+    show_default=True,
+    help=(
+        "If True, image ids are included in the resulting VOTable. Defaults to False. "
+    )
+)
 def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, bkg_region, fit_positions,
-                       err_dir: str, verbose: bool, log_dir: str, fake: str, runid: str, jobid: str):
+                       err_dir: str, verbose: bool, log_dir: str, fake: str, use_simulator_bandpass: bool,
+                       runid: str, jobid: str, add_image_ids: bool):
     log_file = None
     for handler in logging.getLogger().handlers:
         if isinstance(handler, logging.FileHandler):
@@ -478,13 +303,16 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
         detectors = parse_detectors(detector)
         # Real run
         logging.info(f"Result directory: {result_dir}")
+        logging.info(point)
+        logging.info(elliptical)
+        for p in point:
+            logging.info(
+                f"Target '{p['name']}': RA = {p['coord'].ra.deg:.6f}, DEC = {p['coord'].dec.deg:.6f} (ICRS)")
 
-        for coord, name in point:
-            logging.info(f"Target '{name}': RA = {coord.ra.deg:.6f}, DEC = {coord.dec.deg:.6f} (ICRS)")
-
-        for coord, sersic, ratio, pa, effrad, name in elliptical:
-            logging.info(f"Elliptical '{name}': RA = {coord.ra.deg:.6f}, DEC = {coord.dec.deg:.6f}, "
-                         f"sersic={sersic}, ratio={ratio}, pa={pa}, effrad={effrad}")
+        for e in elliptical:
+            logging.info(f"Elliptical '{e['name']}': \
+                         RA = {e['coord'].ra.deg:.6f}, DEC = {e['coord'].dec.deg:.6f}, "
+                         f"sersic={e['sersic']}, ratio={e['ab_ratio']}, pa={e['phi']}, effrad={e['shape_r']}")
 
         if time:
             logging.info(f"Time filter: MJD range = {time}")
@@ -519,16 +347,31 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
 
         temp_butler_root = None
         try:
-            temp_butler = collect_inputs_in_temp_butler(
-                butler=butler,
-                target_table=target_table,
-                tmp_dir=tmp_dir,
-                time_interval=time,
-                detectors=detectors
-            )
-            for datastore_root in temp_butler.get_datastore_roots().values():
-                temp_butler_root = datastore_root
-                logging.info(f"Temporary Butler Datastore Root URI: {datastore_root}")
+            # Create pool for collect process
+            with multiprocessing.Pool(processes=1) as pool:
+                collect_result = pool.apply_async(
+                    collect_inputs_for_temp_butler,
+                    args=(butler_repo, target_table, tmp_dir, time, detectors, use_simulator_bandpass)
+                )
+                # This will automatically propagate exceptions from the child process
+                collect_results = collect_result.get()
+
+            # Create pool for populate process
+            with multiprocessing.Pool(processes=1) as pool:
+                populate_result = pool.apply_async(
+                    populate_temp_butler_from_export,
+                    args=(
+                        collect_results["temp_butler_root"],
+                        collect_results["export_file"],
+                        collect_results["coverage_table"],
+                        collect_results["srccat_dataids"]
+                    )
+                )
+                # This will also automatically propagate exceptions
+                populate_results = populate_result.get()
+
+            temp_butler_root = populate_results["temp_butler_root"]
+
         except MissingDatasetTypeError as mdte:
             logging.error(f"Error: {mdte}")
             exit_code = 12
@@ -542,7 +385,7 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
             logging.error(f"Error: {elqe}")
             exit_code = 13
             generate_error_summary(message=elqe, error_dir=err_dir,
-                                   write_to_file=True, error_type="fatal")
+                                   write_to_file=True, error_type="fatal", user_error=True)
             if log_dir is not None:
                 error_symlink.unlink(missing_ok=True)
                 error_symlink.symlink_to(log_file)
@@ -551,8 +394,9 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
         # Run L3a and create primary catalog
         try:
             skypix_ids_constraint: str = get_skypix_ids(butler, target_table)
-            run_photometry(temp_butler_root.ospath, skypix_ids_constraint, bkg_region,
-                           log_file=log_file, verbose=verbose)
+            run_photometry(temp_butler_root, skypix_ids_constraint, bkg_region,
+                           log_file=log_file, verbose=verbose,
+                           use_simulator_bandpass=use_simulator_bandpass)
         except PipetaskError as pte:
             logging.error(f"{pte.short_desc}. Temp butler: {temp_butler_root}")
             if pte.err.stderr:
@@ -575,7 +419,7 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
             safe_exit(exit_code)
 
         # Find combined catalog file
-        combined_cat_glob = pathlib.Path(f"{temp_butler_root.ospath}/allsky_cat_combined").rglob(
+        combined_cat_glob = pathlib.Path(f"{temp_butler_root}/allsky_cat_combined").rglob(
             pattern="*.parq")
         combined_cat_path = next(combined_cat_glob, None)
         if combined_cat_path is None:
@@ -596,8 +440,9 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
 
         # Make VOTable
         try:
-            make_votable(catalog_path=combined_cat_path, votab_path=dest_file, schema="tool",
-                         extra_resource=extra_resource)
+            make_votable(catalog_path=combined_cat_path, votab_path=dest_file,
+                         schema="tool", extra_resource=extra_resource,
+                         add_publisher_did=add_image_ids, target_table=target_table)
         except VOTableSearchError as vtse:
             logging.error(vtse)
             exit_code = 17
@@ -628,8 +473,8 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
         except EmptyLVFQueryResultError as mdte:
             logging.error(mdte)
             generate_error_summary(message="No level2 image matches for the provided sources.",
-                                   error_dir=err_dir,
-                                   write_to_file=True, error_type="fatal")
+                                   error_dir=err_dir, write_to_file=True,
+                                   error_type="fatal", user_error=True)
             if log_dir is not None:
                 error_symlink.unlink(missing_ok=True)
                 error_symlink.symlink_to(log_file)
@@ -664,79 +509,12 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
     logging.info(f"Copied VOTable to {dest_file} and symlinked as {symlink_path}")
 
 
-def extract_err_dir_from_argv(default=os.getcwd()):
-    argv = sys.argv
-    if '--err-dir' in argv:
-        try:
-            return argv[argv.index('--err-dir') + 1]
-        except IndexError:
-            return default
-    for arg in argv:
-        if arg.startswith('--err-dir='):
-            return arg.split('=', 1)[1]
-    return default
-
-
-def extract_log_config_and_ids_from_argv(default_runid=None, default_jobid=None):
-    argv = sys.argv
-
-    # Defaults
-    log_dir = os.getcwd()
-    verbose = False
-    runid = default_runid
-    jobid = default_jobid
-
-    def extract_arg(key):
-        if key in argv:
-            try:
-                return argv[argv.index(key) + 1]
-            except IndexError:
-                return None
-        for arg in argv:
-            if arg.startswith(f'{key}='):
-                return arg.split('=', 1)[1]
-        return None
-
-    # Parse arguments
-    log_dir = extract_arg('--log-dir') or log_dir
-    runid = extract_arg('--runid') or runid
-    jobid = extract_arg('--jobid') or jobid
-
-    if '--verbose' in argv:
-        verbose = True
-    if '--no-verbose' in argv:
-        verbose = False  # Overrides --verbose if both are present
-
-    return log_dir, verbose, runid, jobid
-
-
-def force_override_runid(new_value):
-    # Remove all existing --runid or --runid=XYZ entries
-    new_argv = []
-    skip_next = False
-    for i, arg in enumerate(sys.argv):
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--runid":
-            skip_next = True  # skip the next value
-            continue
-        elif arg.startswith("--runid="):
-            continue
-        else:
-            new_argv.append(arg)
-
-    # Append our forced --runid value
-    new_argv += ["--runid", new_value]
-    sys.argv = new_argv
-
-
 cli.add_command(perform_photometry)
 
 
 def main():
     # Setup exit handlers first, before any other code
-    setup_exit_handlers()
+    setup_exit_handlers(_script_name)
 
     try:
         # Extract log dir and associated flags.
@@ -777,7 +555,8 @@ def main():
             message=message,
             error_dir=err_dir,
             write_to_file=True,
-            error_type="fatal"
+            error_type="fatal",
+            user_error=True
         )
         logging.error(e)
         logging.error(message)
@@ -792,7 +571,8 @@ def main():
             message=message,
             error_dir=err_dir,
             write_to_file=True,
-            error_type="fatal"
+            error_type="fatal",
+            user_error=True
         )
         logging.error(e)
         logging.error(message)
@@ -803,12 +583,13 @@ def main():
 
     except (Exception) as e:
         logging.error(e)
-        logging.error(traceback.format_exc())
+        message = str(traceback.format_exc())
+        logging.error(message)
         generate_error_summary(
-            message="Unknown error",
+            message="Unknown error " + message,
             error_dir=err_dir,
             write_to_file=True,
-            error_type="fatal"
+            error_type="fatal",
         )
         if log_dir is not None and error_symlink is not None:
             error_symlink.unlink(missing_ok=True)

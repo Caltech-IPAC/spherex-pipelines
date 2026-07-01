@@ -18,14 +18,14 @@ from spx_butler.tests import temp_butler
 from spx_butler.defaults.dataset_types import DatasetTypes
 from spx_data import (SPHERExImage, ImageMetadata, ImageMetadataStats,
                       PSFZoneData, BackgroundMesh, GainFactors,
-                      NonLinearityParameters, ReadNoiseParameters,
+                      NonLinearityParameters, ReadNoiseParameters, NonfuncData,
                       PersistenceState, PlannedObservation)
 from spx_butler.formatters import (SPHERExImageFormatter, AstropyImageFormatter,
                                    AstropyParquetFormatter,
                                    SPHERExPSFFormatter, AstropySIPFormatter,
                                    BackgroundMeshFormatter, PyarrowTableFormatter,
                                    NonlinearityParametersFormatter, ReadNoiseParametersFormatter,
-                                   PersistenceStateFormatter)
+                                   PersistenceStateFormatter, NonfuncDataFormatter)
 from spx_tests import sample_data
 
 TEST_ROOT = Path(__file__).parent.parent.absolute()
@@ -165,6 +165,14 @@ FORMATTERS = [
         "storage_pytype": ImageMetadataStats,
         "get_pyobject": sample_data.get_sample_image_metadata_stats
     },
+    {
+        "formatter_class": NonfuncDataFormatter,
+        "dataset_type": "test_nonfunc",
+        "storage_class": "NonfuncData",
+        "storage_pytype": NonfuncData,
+        "get_pyobject": sample_data.get_fake_nonfunc_v2_map
+    },
+
 ]
 # Avoid pytest warning about file closure
 MEMMAP_FORMATTERS = [AstropyImageFormatter]  # NonlinearityParametersFormatter,
@@ -329,8 +337,8 @@ class FormattersTests(unittest.TestCase):
         self.assertTrue(np.array_equal(sip.crpix, out.crpix), error[0])
         self.assertTrue(np.array_equal(sip.a, out.a), error[1])
         self.assertTrue(np.array_equal(sip.b, out.b), error[2])
-        self.assertEqual(sip.ap, out.ap, error[3])
-        self.assertEqual(sip.bp, out.bp, error[4])
+        self.assertTrue(np.array_equal(sip.ap, out.ap), error[3])
+        self.assertTrue(np.array_equal(sip.bp, out.bp), error[4])
         self.assertEqual(sip.a_order, out.a_order, error[5])
         self.assertEqual(sip.ap_order, out.ap_order, error[6])
         self.assertEqual(sip.b_order, out.b_order, error[7])
@@ -543,6 +551,49 @@ class FormattersTests(unittest.TestCase):
             "PEF data are not equal"
         ]
         self.assertTrue(planned_obs == out, error[0])
+
+    @pytest.mark.filterwarnings("ignore::ResourceWarning")
+    def test_nonfunc_formatter(self):
+        """Round-trip NonfuncData via NonfuncDataFormatter and verify content."""
+        # Build sample object
+        nonfunc_in = sample_data.get_fake_nonfunc_v2_map()
+        self.assertIsInstance(nonfunc_in, NonfuncData)
+
+        # Persist
+        self.butler.put(nonfunc_in, "test_nonfunc", dataId=DATA_ID, run="test")
+
+        # Retrieve
+        nonfunc_out = self.butler.get("test_nonfunc", dataId=DATA_ID, collections="test")
+        self.assertIsInstance(nonfunc_out, NonfuncData, "Retrieved type is not NonfuncData")
+
+        # Verify required EXTNAMEs exist (mirrors NonfuncData.required_extensions)
+        required_exts = {
+            "COMBINED", "DARKCURR", "HIGHDRIFT", "SPECCAL", "TRANSIENT", "OVERFLOW"
+        }
+        out_extnames = {h.header.get("EXTNAME") for h in nonfunc_out.hdulist if hasattr(h, "header")}
+        missing = required_exts - out_extnames
+        self.assertFalse(missing, f"Missing required EXTNAMEs: {missing}")
+
+        # Verify data equality per extension present in both
+        # (Primary HDU generally has no .data; skip those without data arrays)
+        for h_in in nonfunc_in.hdulist:
+            extname = h_in.header.get("EXTNAME")
+            if extname is None:
+                continue
+            # Find matching ext in out
+            matches = [h for h in nonfunc_out.hdulist if h.header.get("EXTNAME") == extname]
+            self.assertTrue(matches, f"Missing EXTNAME '{extname}' in output HDUList")
+            h_out = matches[0]
+
+            # Compare headers (exact string match is fine here—same writer/reader)
+            self.assertTrue(h_in.header == h_out.header, f"Header changed for EXTNAME '{extname}'")
+
+            # Compare data (mask-only maps are integer/bool arrays; use array_equal)
+            if h_in.data is not None:
+                self.assertTrue(
+                    np.array_equal(h_in.data, h_out.data),
+                    f"Data changed for EXTNAME '{extname}'"
+                )
 
 
 if __name__ == '__main__':

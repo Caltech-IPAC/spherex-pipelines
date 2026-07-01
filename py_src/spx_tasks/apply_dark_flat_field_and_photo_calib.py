@@ -178,5 +178,6 @@ class ApplyDarkFlatFieldAndPhotoCalibTask(pipeBase.PipelineTask):
 
         # L2 DQA
         _ = dqa_check_flat_field(spximg_out, abs_gain_matrix)
+        spximg_out.header["BUNIT"] = "MJy/sr"
 
         return pipeBase.Struct(spximg_out=spximg_out)

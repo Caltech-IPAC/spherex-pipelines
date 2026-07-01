@@ -122,6 +122,17 @@ class CreateSpectralImageTask(pipeBase.PipelineTask):
         # explicitly remove `TINT`
         spximg_out.header.remove("TINT", ignore_missing=True)
 
+        # Remove unwanted diagnostic header keywords from earlier modules
+        keywords_to_remove = [
+            "SNWCIRCL", "SATSTRKS", "SNW7-5CT", "SNW3-1CT", "SNW2-5CT",
+            "SNW6-5CT", "HIGHTRNS", "NBLMSRCS", "NSNOWSRC", "NBLM5SCS",
+            "TRANSFRC", "MXTRNSFR", "XTENDRAD", "MINOVRFL", "WTAVGCTR",
+            "MAXOVRLP", "MAXSNWLP", "SATHALOM", "SATHALOF", "BRDRMIND",
+        ]
+
+        for key in keywords_to_remove:
+            spximg_out.header.remove(key, ignore_missing=True)
+
         # Force FITS-friendly string representation for headers
         spximg_out.header["BUNIT"] = ("MJy/sr", "Unit of pixel value")
         # Force FITS-friendly string representation for headers

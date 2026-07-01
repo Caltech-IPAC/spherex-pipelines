@@ -1,4 +1,4 @@
-# Photometry tool instructions
+# Spectrophotometry Tool instructions
 ```
 photometry-tool perform-photometry --help
 Usage: photometry-tool perform-photometry [OPTIONS]
@@ -11,9 +11,9 @@ Options:
                                   'result' in that directory pointing to the
                                   'principal' result  [default: .]
   --err-dir DIRECTORY             Directory in which an error document for the
-                                  job, if any, willbe deposited by the tool.
-                                  Defaults to “.”, the current
-                                  workingdirectory.  [default: .]
+                                  job, if any, will be deposited by the tool.
+                                  Defaults to “.”, the current working
+                                  directory.  [default: .]
   --runid TEXT                    Allows specifying a UWS 'runid', essentially
                                   a job name, which may be used in log
                                   messages or other metadata. Defaults to a
@@ -31,20 +31,27 @@ Options:
                                   and passed to the tool via the --runid
                                   option.  [required]
   --tmp-dir DIRECTORY             Directory available for use as temporary
-                                  scratch space for thejob. Defaults to “.”,
-                                  the current working directory. When exe-
-                                  cuting in the UWS system, tmp-dir should
-                                  never be the sameas result-dir, unless it's
-                                  deliberately intended for temporaryfiles to
+                                  scratch space for the job. Defaults to “.”,
+                                  the current working directory. When
+                                  executing in the UWS system, tmp-dir should
+                                  never be the same as result-dir, unless it's
+                                  deliberately intended for temporary files to
                                   be returned to the user as results.
                                   [default: .]
   --log-dir DIRECTORY             Directory into which any log files from the
                                   job will be deposited.Defaults to “.”, the
-                                  current working directory. When execut-ing
-                                  in the UWS system, log-dir should never be
-                                  the same asresult-dir, unless it's
-                                  deliberately intended for any logs to
-                                  bereturned to the user as results.
+                                  current working directory. When executing in
+                                  the UWS system, log-dir should never be the
+                                  same as result-dir, unless it's deliberately
+                                  intended for any logs to be returned to the
+                                  user as results.
+  --fake [normal|error-short|error-detail|error-signal]
+                                  Run a simulated job. Modes: "normal" =
+                                  simulate successful run, "error-short" =
+                                  create errorSummary.yaml, "error-detail" =
+                                  create errorSummary.yaml and symlink "error"
+                                  to actual error file, "error-signal" = exit
+                                  with SIGINT. [optional flag]
   --point TEXT                    Point-like target in format ra,dec[,name].
                                   [One of  --point OR --elliptical is
                                   required.]
@@ -61,20 +68,22 @@ Options:
   --fit-positions / --no-fit-positions
                                   Allow positions to float in Tractor fit.
                                   (Not implemented.) [optional flag]
-  --fake [normal|error-short|error-detail|error-signal]
-                                  Run a simulated job. Modes: "normal" =
-                                  simulate successful run, "error-short" =
-                                  create errorSummary.yaml, "error-detail" =
-                                  create errorSummary.yaml and symlink "error"
-                                  to actual error file, "error-signal" = exit
-                                  with SIGINT. [optional flag]
   --verbose / --no-verbose        Turns on additional verbosity in a job's
                                   logging; should not affect the output
                                   visible to the user. Defaults to --no-
                                   verbose. Translated within the science tools
                                   to logging control options.  [default: no-
                                   verbose]
-  --help                          Show this message and exit.
+  --use-simulator-bandpass / --no-use-simulator-bandpass
+                                  If True, simulator bandpass model is used to
+                                  populate measurement wavelength and
+                                  bandwidth. Otherwise, spectral_wcs
+                                  calibration product is used.  [default: no-
+                                  use-simulator-bandpass]
+  --add-image-ids / --no-add-image-ids
+                                  If True, image ids are included in the
+                                  resulting VOTable. Defaults to False.
+                                  [default: no-add-image-ids]
 ```
 
 

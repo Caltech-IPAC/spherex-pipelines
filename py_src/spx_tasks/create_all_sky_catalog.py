@@ -1,6 +1,7 @@
 __all__ = ["CreateAllSkyCatalogConfig", "CreateAllSkyCatalogTask"]
 
 # Standard library imports
+from collections.abc import Mapping
 from typing import Literal
 
 # Related third party imports
@@ -8,13 +9,16 @@ import numpy as np
 import pyarrow as pa
 from astropy.table import meta, Column
 from lsst.pex.config import ListField, ChoiceField, Field
-from lsst.daf.butler import DeferredDatasetHandle
+from lsst.daf.butler import DataCoordinate, DeferredDatasetHandle
+import astropy.units as u
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 
 # Local application/library specific imports
+from spx_butler import REFCAT_SKYPIX_NAME
 from spherex_parameters import load_spherex_parameters
 from spx_data.spx_version import SSDC_PIPELINES_VERSION
+from spx_utils.utils import get_refcat_provenance
 
 params = load_spherex_parameters()
 # ==============================================================================
@@ -67,54 +71,6 @@ def compute_nyquist_metric(wavelengths, params) -> float:
     return max(0, min(1, nyquist_metric))
 
 
-def add_pass_thru(col_name: str, output_fields: list):
-    """Add a pass-through column to the list of pyarrow fields for the output
-    parquet table.
-
-    Parameters
-    ----------
-    col_name : `str`
-        Column name in input source catalog.
-    input_cat : `astropy.table.Table`
-        Input source catalog.
-    output_tab : `astropy.table.Table`
-        Output photometry measurement table.
-    """
-    pass_thru_lookup = {
-        "external_source_id": {
-            "final_idx": 2,
-            "pa_type": pa.string()
-        },
-        "external_survey": {
-            "final_idx": 1,
-            "pa_type": pa.uint8()
-        },
-        "name": {
-            "final_idx": 1,
-            "pa_type": pa.string()
-        },
-        "parallax": {
-            "final_idx": 8,
-            "pa_type": pa.float32()
-        },
-        "pm_dec": {
-            "final_idx": 7,
-            "pa_type": pa.float32()
-        },
-        "pm_ra": {
-            "final_idx": 6,
-            "pa_type": pa.float32()
-        },
-        "spherex_class": {
-            "final_idx": 3,
-            "pa_type": pa.int32()
-        },
-    }
-
-    output_fields.insert(pass_thru_lookup[col_name]["final_idx"],
-                         (col_name, pass_thru_lookup[col_name]["pa_type"]))
-
-
 def add_meta_yaml(meta_yaml: list, mode: Literal["field", "version"], field_dict: dict | None = None):
     """Add field or version metadata to a list of text lines with YAML header
     content.
@@ -158,16 +114,43 @@ def add_meta_yaml(meta_yaml: list, mode: Literal["field", "version"], field_dict
     return
 
 
+def hips6_to_hips5(hips6: int) -> int:
+    """Convert child HiPS 6 ID to parent HiPS 5 ID by bit shifting.
+
+    Parameters
+    ----------
+    hips6 : `int`
+        HiPS 6 ID.
+
+    Returns
+    -------
+    `int`
+        Corresponding parent HiPS 5 ID.
+    """
+    parent_order = 5
+    child_order = 6
+    shift = 2 * (child_order - parent_order)
+    return hips6 >> shift
+
+
 class CreateAllSkyCatalogConnections(pipeBase.PipelineTaskConnections,
                                      dimensions={"instrument", "hips6"},
                                      defaultTemplates={}):
     meas_table_list = cT.Input(
         name="phot_meas",
-        doc="Input astropy table per HEALPix.",
+        doc="List of input photometry measurement tables per HEALPix.",
         storageClass="AstropyParquet",
         dimensions=["instrument", "exposure", "hips6"],
         multiple=True,
         deferLoad=True)
+    refcat = cT.PrerequisiteInput(
+        name="refcat",
+        doc="Reference catalog.",
+        storageClass="AstropyTable",
+        dimensions=[REFCAT_SKYPIX_NAME],
+        deferLoad=True,
+        multiple=True,
+        minimum=1)
     allsky_cat = cT.Output(
         name="allsky_cat",
         doc="Filtered all sky catalog per HEALPix.",
@@ -176,6 +159,37 @@ class CreateAllSkyCatalogConnections(pipeBase.PipelineTaskConnections,
 
     def __init__(self, *, config=None):
         super().__init__(config=config)
+
+        if not config.merge_refcat:
+            del self.refcat
+
+    def adjustQuantum(self, inputs: dict, outputs: Mapping, label: str, data_id: DataCoordinate):
+        """Filters out input reference catalog shards if they do not overlap
+        with the corresponding input photometry measurement tables.
+        """
+        # Only need to adjust if using reference catalog
+        if "refcat" not in inputs:
+            return super().adjustQuantum(inputs, outputs, label, data_id)
+
+        # Determine HiPS6 and HiPS5 IDs for this quantum
+        hips6 = data_id["hips6"]
+        hips5 = hips6_to_hips5(hips6)
+
+        # Filter reference catalog dataset references and validate only 1 match
+        connection, old_refs = inputs["refcat"]
+        new_refs = [ref for ref in old_refs if ref.dataId.get(REFCAT_SKYPIX_NAME) == hips5]
+        assert len(new_refs) == 1, (
+            f"Expected 1 'refcat' dataset reference for {REFCAT_SKYPIX_NAME}={hips5} found {len(new_refs)}.")
+
+        # Update inputs
+        adjusted_inputs = {"refcat": (connection, new_refs)}
+        inputs.update(adjusted_inputs)
+
+        # Ignore empty outputs from super
+        super().adjustQuantum(inputs, outputs, label, data_id)
+
+        # Only return modified connections
+        return adjusted_inputs, {}
 
 
 class CreateAllSkyCatalogConfig(pipeBase.PipelineTaskConfig,
@@ -191,24 +205,42 @@ class CreateAllSkyCatalogConfig(pipeBase.PipelineTaskConfig,
     sort_on = ChoiceField(
         doc="Column to use to sort additional measurements stored as arrays.",
         dtype=str,
-        default="mjd",
+        default="lambda",
         allowed={
-            "source_id": "Unique SPHEREx Reference Catalog ID",
             "mjd": "Timestamp (up to ms precision) of midpoint of exposure",
             "lambda": "Native wavelengths of observations"})
 
     filter_spherex_class = Field(
         doc="Bitmask to filter SPHEREx class values. If 0, no filtering is applied.",
         dtype=int,
-        default=0  # Default means no filtering is applied
-    )
+        default=0)  # Default means no filtering is applied
+
+    merge_refcat = Field(
+        doc="If True, adds 'pass_thru_cols' from the reference catalog to the output all sky catalog."
+            " Default is True.",
+        dtype=bool,
+        default=True)
 
     pass_thru_cols = ListField(
         doc="List of columns to pass through to the output catalog, in order of relative placement in the"
             " output catalog.",
         dtype=str,
-        default=["external_survey", "external_source_id", "spherex_class", "pm_ra", "pm_dec", "parallax"]
-    )
+        default=["coord_src", "spherex_class", "pmra", "pmdec", "parallax", "ra", "dec"])
+
+    def update(self, **kw):
+        """Override default update method to validate upon field changes.
+        """
+        super().update(**kw)
+        self.validate()
+
+    def validate(self):
+        """Override default validate method to include inter-field checks.
+        """
+        super().validate()
+
+        # If merging refcat data,  1+ pass-through columns must be specified
+        if self.merge_refcat and (len(self.pass_thru_cols) == 0):
+            raise ValueError("To merge data from the refcat, 1+ pass-through columns must be specified.")
 
 
 class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
@@ -242,7 +274,8 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def run(self, meas_table_list: list[DeferredDatasetHandle]) -> pipeBase.Struct:
+    def run(self, meas_table_list: list[DeferredDatasetHandle],
+            refcat: DeferredDatasetHandle = None) -> pipeBase.Struct:
         """Returns a condensed table of all source measurements for one
         HEALPix.
 
@@ -273,15 +306,157 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
         num_tables = len(meas_table_list)
         self.log.debug(f"Number of input tables: {num_tables}")
 
-        # Store source IDs and index so can quickly append measurements
-        done = {}
-        # Only doing this task for one HEALPix at a time
-        rows = []
+        # If using reference catalog, get the data and prepare indexing
+        if refcat is not None:
+            # Fetch reference catalog data and validate
+            refcat = refcat[0].get()  # TODO: can reading this be filtered in QR2 butler?
+            if len(np.unique(refcat["SPHERExRefID"])) != len(refcat):
+                raise ValueError("Duplicate 'SPHERExRefID' values found in reference catalog.")
 
-        meas_table = None
+            # Indexing
+            refcat_ids = refcat["SPHERExRefID"].data
+            sorted_idx = np.argsort(refcat_ids)
+            refcat_sorted = refcat[sorted_idx]
+
+        # If pass-through columns requested, prepare lookup dictionary
+        if len(self.config.pass_thru_cols) > 0:
+            # Lookup for adding columns to astropy table and/or pyarrow schema
+            pass_thru_lookup = {
+                "coord_src": {
+                    "final_name": "external_survey",
+                    "description": "Identifier of external survey",
+                    "dtype": np.uint8,
+                    "unit": None,
+                    "final_idx": 1,
+                    "pa_type": pa.uint8(),
+                },
+                "dec": {
+                    "final_name": "dec",
+                    "description": "DEC of the source in the reference catalog",
+                    "dtype": np.float64,
+                    "unit": u.degree,
+                    # NOTE: no final_idx/pa_type since replacing existing col
+                },
+                "name": {
+                    # NOTE: no description/dtype/unit since only need to add
+                    #       to pyarrow schema
+                    "final_name": "name",
+                    "final_idx": 1,
+                    "pa_type": pa.string(),
+                },
+                "parallax": {
+                    "final_name": "parallax",
+                    "description": "Parallax (from reference catalog)",
+                    "dtype": np.float32,
+                    "unit": u.mas,
+                    "final_idx": 7,
+                    "pa_type": pa.float32(),
+                },
+                "pmdec": {
+                    "final_name": "pm_dec",
+                    "description": "Proper motion in Decl. (from reference catalog)",
+                    "dtype": np.float32,
+                    "unit": u.mas/u.year,
+                    "final_idx": 6,
+                    "pa_type": pa.float32(),
+                },
+                "pmra": {
+                    "final_name": "pm_ra",
+                    "description": "Proper motion in R.A. (from reference catalog)",
+                    "dtype": np.float32,
+                    "unit": u.mas/u.year,
+                    "final_idx": 5,
+                    "pa_type": pa.float32(),
+                },
+                "ra": {
+                    "final_name": "ra",
+                    "description": "R.A. of the source in the reference catalog",
+                    "dtype": np.float64,
+                    "unit": u.degree,
+                    # NOTE: no final_idx/pa_type since replacing existing col
+                },
+                "spherex_class": {
+                    "final_name": "spherex_class",
+                    "description": "Source origin in reference catalog",
+                    "dtype": np.int32,
+                    "unit": None,
+                    "final_idx": 2,
+                    "pa_type": pa.int32(),
+                },
+            }
+
+        # Fetch data from measurement tables
+        done = {}  # Store source IDs and index so can quickly append measurements
+        rows = []  # Only doing this task for one HEALPix at a time
+        ref_ver = None  # Keep a local copy for reuse when writing parquet metadata
+        meas_table = None  # Keep a copy for getting field-level metadata
         for deferred_meas_table in meas_table_list:
             # Get the data and colnames
             meas_table = deferred_meas_table.get()
+            colnames = meas_table.colnames
+
+            # Extract refcat provenance (version) once from the 1st table.
+            # Stash it and later add it into the output Parquet metadata.
+            if ref_ver is None:
+                try:
+                    _, _ref_ver = get_refcat_provenance(meas_table)
+                except Exception:
+                    _ref_ver = None
+
+                # Fallbacks: top-level meta or nested user_metadata
+                if not _ref_ver:
+                    try:
+                        _ref_ver = (
+                            meas_table.meta.get("refcat_version")
+                            or (meas_table.meta.get("user_metadata") or {}).get("refcat_version")
+                        )
+                    except Exception:
+                        _ref_ver = None
+
+                if _ref_ver:
+                    ref_ver = str(_ref_ver)  # keep it locally
+                    self.metadata.add("refcat_version", ref_ver)  # and in task metadata
+
+            # If requested, add pass-through columns from refcat
+            if self.config.merge_refcat:
+                # Double check all source IDs have a match
+                if not np.all(np.isin(meas_table["source_id"], refcat_ids)):
+                    raise ValueError("1+ photometered sources were not found in the reference catalog.")
+
+                # Find matches and add columns
+                matched_idx = np.searchsorted(refcat_sorted["SPHERExRefID"], meas_table["source_id"])
+                # NOTE: Double check "spherex_class", which can be pass-through
+                #       in PFP or CASC.
+                if (
+                    ("spherex_class" in self.config.pass_thru_cols)
+                    and ("spherex_class" in meas_table.colnames)
+                ):
+                    missing_cols = [col for col in self.config.pass_thru_cols if col != "spherex_class"]
+                else:
+                    missing_cols = self.config.pass_thru_cols
+                for col in missing_cols:
+                    if col == "ra" or col == "dec":
+                        meas_table.replace_column(
+                            name=col,
+                            col=Column(
+                                data=refcat[col][matched_idx],
+                                name=col,
+                                unit=pass_thru_lookup[col]["unit"],
+                                description=pass_thru_lookup[col]["description"],
+                                dtype=pass_thru_lookup[col]["dtype"]))
+                    else:
+                        meas_table.add_column(
+                            Column(
+                                data=refcat[col][matched_idx],
+                                name=pass_thru_lookup[col]["final_name"],
+                                unit=pass_thru_lookup[col]["unit"],
+                                description=pass_thru_lookup[col]["description"],
+                                dtype=pass_thru_lookup[col]["dtype"]),
+                            index=pass_thru_lookup[col]["final_idx"])
+                        if col == "spherex_class":
+                            meas_table["spherex_class"].format = None
+
+            # Fetch colnames after possible addition of pass-through columns
             colnames = meas_table.colnames
 
             # Apply filtering efficiently using NumPy bitwise operations
@@ -292,6 +467,7 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
             if len(meas_table) == 0:
                 continue
 
+            # Loop over photometry measurements
             for meas in meas_table:
                 source_id = meas["source_id"]
 
@@ -341,6 +517,8 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
             meta_yaml_str = "\n".join(meta_yaml)
             metadata = {"table_meta_yaml": meta_yaml_str}
             astropy_cols = meas_table.columns
+            if ref_ver:
+                metadata["refcat_version"] = ref_ver
 
         # Sorting measurements based on configured criteria
         self.log.debug(f"Sorting array columns by '{self.config.sort_on}'")
@@ -385,13 +563,17 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
             ("nyquist_comp", pa.float32()),
         ]
 
-        # Add pass through columns
+        # If requested, add pass-through columns to fields for pyarrow schema
         if self.config.pass_thru_cols:
             for col_name in self.config.pass_thru_cols:
-                add_pass_thru(col_name, pa_flds)
-                if col_name == "external_source_id":
-                    # Add numpy string length to metadata
-                    metadata[f"table::len::{col_name}"] = str(astropy_cols.get(col_name).dtype.itemsize // 4)
+                if col_name not in ("ra", "dec"):  # 'ra', 'dec' replace existing columns
+                    pa_flds.insert(
+                        pass_thru_lookup[col_name]["final_idx"],
+                        (pass_thru_lookup[col_name]["final_name"], pass_thru_lookup[col_name]["pa_type"]))
+                    if col_name in ("external_source_id", "name"):
+                        # Add numpy string length to metadata
+                        metadata[f"table::len::{col_name}"] = str(
+                            astropy_cols.get(col_name).dtype.itemsize // 4)
 
         # function to create field with metadata
         def create_pa_fld(name, pa_type):

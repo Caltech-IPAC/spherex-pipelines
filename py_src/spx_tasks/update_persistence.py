@@ -16,7 +16,7 @@ import numpy as np
 from spx_data import (SPHERExImage, Flag, PersistenceState)
 from spx_tests import sample_data
 from spx_tasks import add_history
-from spx_utils import log_dqa_result
+from spx_utils import log_dqa_result, l1_utils
 
 # ==============================================================================
 
@@ -71,29 +71,102 @@ class UpdatePersistenceConfig(pipeBase.PipelineTaskConfig,
         default=[10, 63.1, 398.1, 2511.9, 15849, 100000]
     )
 
+    r_flu1_no_et_bloom = DictField(
+        "Rate at which persistence current increases with fluence and "
+        "is equal to ip_sat/flu_1_no_et_bloom [1/s].",
+        keytype=int,
+        itemtype=float,
+        default={1: 0.000293, 2: 0.000301, 3: 0.000288, 4: 0.000151, 5: 0.000197, 6: 0.000171}
+    )
+
+    flu_1_no_et_bloom = DictField(
+        "Fluence at which the persistence current saturates for each array [e-] (No ET Bloom).",
+        keytype=int,
+        itemtype=float,
+        default={1: 220176., 2: 218671., 3: 218116., 4: 150000., 5: 162593., 6: 159301.}
+    )
+
+    r_flu1_et_bloom = DictField(
+        "Rate at which persistence current increases with fluence and "
+        "is equal to ip_sat/flu_1_et_bloom [1/s].",
+        keytype=int,
+        itemtype=float,
+        default={1: 0.00183, 2: 0.001495, 3: 0.001576, 4: 0.000782, 5: 0.001181, 6: 0.000943}
+    )
+
+    flu_1_et_bloom = DictField(
+        "Fluence at which the persistence current saturates for each array [e-] (ET Bloom).",
+        keytype=int,
+        itemtype=float,
+        default={1: 30799., 2: 38049., 3: 34618., 4: 28290., 5: 25674., 6: 27801.}
+    )
+
+    r_flu2 = DictField(
+        "Rate at which persistence current increases with fluence and "
+        "is equal to ip_sat/flu_sat [1/s].",
+        keytype=int,
+        itemtype=float,
+        default={1: 0.0000432, 2: 0.0000495, 3: 0.00004501, 4: 0.00000433, 5: 0.0000125, 6: 0.00000779}
+    )
+
     flu_sat = DictField(
         "Fluence at which the persistence current saturates for each array [e-].",
         keytype=int,
         itemtype=float,
-        default={1: 295000., 2: 311000., 3: 259000., 4: 183200., 5: 221100., 6: 213700.}
+        default={1: 594907., 2: 706346., 3: 542102., 4: 1361958., 5: 800641., 6: 1541030.}
+    )
+
+    i_off = DictField(
+        "The persistence current offset in each array [e-/s].",
+        keytype=int,
+        itemtype=float,
+        default={1: 55., 2: 55., 3: 53., 4: 22., 5: 30., 6: 26.}
     )
 
     ip_sat = DictField(
         "The maximum persistence current observed in each array [e-/s].",
         keytype=int,
         itemtype=float,
-        default={1: 81.02, 2: 91.05, 3: 77.17, 4: 27.97, 5: 42.76, 6: 38.30}
+        default={1: 80.7, 2: 90., 3: 77.4, 4: 27.9, 5: 40., 6: 38.}
     )
 
-    r_flu = DictField(
-        "rate at which persistence current increases with fluence and is equal to ip sat/flusat [1/s].",
+    ip_sat_a = DictField(
+        "The maximum persistence current observed in each array [e-/s] for Early Overflow.",
         keytype=int,
         itemtype=float,
-        default={1: 0.0002746, 2: 0.0002928, 3: 0.0002980, 4: 0.0001527, 5: 0.0001934, 6: 0.0001792}
+        default={1: 80.7, 2: 90., 3: 77.4, 4: 27.9, 5: 40., 6: 38.}
+    )
+
+    ip_sat_b = DictField(
+        "The maximum persistence current observed in each array [e-/s] for Early Bloom.",
+        keytype=int,
+        itemtype=float,
+        default={1: 80.7, 2: 90., 3: 77.4, 4: 27.9, 5: 40., 6: 38.}
+    )
+
+    ip_sat_c = DictField(
+        "The maximum persistence current observed in each array [e-/s] for Early CR Center.",
+        keytype=int,
+        itemtype=float,
+        default={1: 51.4, 2: 52.8, 3: 50., 4: 19., 5: 22.8, 6: 23.8}
+    )
+
+    ip_sat_d = DictField(
+        "The maximum persistence current observed in each array [e-/s] for Late CR Center.",
+        keytype=int,
+        itemtype=float,
+        default={1: 30.2, 2: 34.2, 3: 38.8, 4: 12.6, 5: 12.7, 6: 14.4}
+    )
+
+    ip_sat_f = DictField(
+        "The maximum persistence current observed in each array [e-/s] for Very Early CR Center.",
+        keytype=int,
+        itemtype=float,
+        default={1: 57.5, 2: 69.7, 3: 62.9, 4: 20.3, 5: 24.3, 6: 25.3}
     )
 
     handle_early_trans = Field(
-        "Fallback to NOT handle early transient case for persistnece flagging.",
+        "Fallback to NOT handle early transient case for persistence flagging.",
         dtype=bool,
         default=False,
     )
@@ -283,7 +356,7 @@ class PersistenceModel:
         """Returns the persistence model state."""
         return self._state
 
-    def _overwrite_b_n(self, b_prev1, array_id) -> np.ndarray:
+    def _overwrite_b_n(self, b_prev1, b_prev1_et_bloom, array_id) -> np.ndarray:
         """Logic to overwrite previous flux based on flags from previous exposure.
            (Only applied to this module).
 
@@ -298,28 +371,36 @@ class PersistenceModel:
         # Masks from table.
         flags = self._state.spximg_prev_flg
 
-        # Match: F_OVERFLOW=1, F_ERROR=1, F_TRANSIENT=0 or 1
-        oversat_msk = ((flags & Flag.OVERFLOW) > 0) & ((flags & Flag.SUR_ERROR) > 0)
+        ftr = (flags & Flag.TRANSIENT) > 0
+        fov = (flags & Flag.OVERFLOW) > 0
+        ferr = (flags & Flag.SUR_ERROR) > 0
+        fbloom = (flags & Flag.BLOOM) > 0
+        fsnow = (flags & Flag.SNOWBALL) > 0
 
-        # Match: F_OVERFLOW=1, F_ERROR=0, F_TRANSIENT=1
-        sat_msk =\
-            ((flags & Flag.OVERFLOW) > 0) & ((flags & Flag.SUR_ERROR) == 0) & ((flags & Flag.TRANSIENT) > 0)
+        # Rule A: Ft=0, Fov=1, Ferr=1, Fbloom=(0 or 1), Fsnow=(0 or 1)
+        mask_a = (~ftr) & fov & ferr
 
-        # Match: F_OVERFLOW=0, F_ERROR=1, F_TRANSIENT=1
-        if self.config.handle_early_trans is True:
-            early_trans = (((flags & Flag.OVERFLOW) == 0)
-                           & ((flags & Flag.SUR_ERROR) > 0) & ((flags & Flag.TRANSIENT) > 0))
+        # Rule B: Ftr=1, Fov=1, Ferr=1, Fbloom=1, Fsnow=0
+        mask_b = ftr & fov & ferr & fbloom & (~fsnow)
 
-        # Overwrite flux based on truth table logic.
-        b_prev1_overwrite[np.where(oversat_msk)] = self.config.ip_sat[array_id]
-        b_prev1_overwrite[np.where(sat_msk)] = self.config.ip_sat[array_id]
-        if self.config.handle_early_trans is True:
-            b_prev1_overwrite[np.where(early_trans)] = self.config.ip_sat[array_id]
-        # print(f"ip_sat = {self.config.ip_sat[array_id]}")
+        # Rule C: Ftr=1, Fov=1, Ferr=1, Fbloom=0, Fsnow=1
+        mask_c = ftr & fov & ferr & (~fbloom) & fsnow
 
-        # _print_flag_combinations(oversat_msk, flags, "oversat_msk")
-        # _print_flag_combinations(sat_msk, flags, "sat_msk")
-        # _print_flag_combinations(early_trans, flags, "early_trans")
+        # Rule D: Ftr=1, Fov=1, Ferr=0, Fbloom=0, Fsnow=1
+        mask_d = ftr & fov & (~ferr) & (~fbloom) & fsnow
+
+        # Rule F: Ftr=0, Fov=1, Ferr=0, Fbloom=0, Fsnow=1
+        mask_f = (~ftr) & fov & (~ferr) & (~fbloom) & fsnow
+
+        # Rule G: Ftr=1, Fov=0, Ferr=1, Fbloom=1, Fsnow=0
+        mask_g = ftr & (~fov) & ferr & fbloom & (~fsnow)
+
+        b_prev1_overwrite[np.where(mask_a)] = self.config.ip_sat_a[array_id]
+        b_prev1_overwrite[np.where(mask_b)] = self.config.ip_sat_b[array_id]
+        b_prev1_overwrite[np.where(mask_c)] = self.config.ip_sat_c[array_id]
+        b_prev1_overwrite[np.where(mask_d)] = self.config.ip_sat_d[array_id]
+        b_prev1_overwrite[np.where(mask_f)] = self.config.ip_sat_f[array_id]
+        b_prev1_overwrite[np.where(mask_g)] = b_prev1_et_bloom[np.where(mask_g)]
 
         return b_prev1_overwrite
 
@@ -327,7 +408,8 @@ class PersistenceModel:
                       flux: np.ndarray,
                       band: int,
                       t_int: float,
-                      use_flux: bool = True) -> np.ndarray:
+                      use_flux: bool = True,
+                      use_et_bloom: bool = False) -> np.ndarray:
         """Compute previous exposure coefficients using Bn_flux or Bn_flu from config.
 
         Parameters
@@ -340,6 +422,10 @@ class PersistenceModel:
             Integration time in seconds.
         use_flux : bool, optional
             If True, use Bn_flux(f, t_int); otherwise use Bn_flu(flu). Default is True.
+        use_et_bloom : bool, optional
+            If True, use ET Bloom parameters for r_flu1 and flu_1;
+            otherwise, use non-ET Bloom parameters for r_flu1 and flu_1.
+            Default is False.
 
         Returns
         -------
@@ -349,26 +435,39 @@ class PersistenceModel:
         values = flux if use_flux else flux * t_int
         values = np.asarray(values, dtype=np.float64)
 
-        if use_flux:
-            flu_thresh = self.config.flu_sat[band] / t_int
-            bn = np.where(
-                values <= 0, 0,
-                np.where(
-                    values <= flu_thresh,
-                    self.config.r_flu[band] * values * t_int,
-                    self.config.ip_sat[band]
-                )
-            )
+        if use_et_bloom:
+            flu_1 = self.config.flu_1_et_bloom
+            r_flu1 = self.config.r_flu1_et_bloom
         else:
-            flu_thresh = self.config.flu_sat[band]
-            bn = np.where(
-                values <= 0, 0,
-                np.where(
-                    values <= flu_thresh,
-                    self.config.r_flu[band] * values,
-                    self.config.ip_sat[band]
-                )
-            )
+            flu_1 = self.config.flu_1_no_et_bloom
+            r_flu1 = self.config.r_flu1_no_et_bloom
+
+        flu_sat_thresh = self.config.flu_sat[band] / t_int if use_flux else self.config.flu_sat[band]
+        flu_1_thresh = flu_1[band] / t_int if use_flux else flu_1[band]
+
+        conditions = [
+            values <= 0,
+            values <= flu_1_thresh,
+            (values > flu_1_thresh) & (values <= flu_sat_thresh),
+            values > flu_sat_thresh,
+        ]
+
+        if use_flux:
+            choices = [
+                0,
+                r_flu1[band] * values * t_int,
+                (self.config.r_flu2[band] * values * t_int) + self.config.i_off[band],
+                self.config.ip_sat[band],
+            ]
+        else:
+            choices = [
+                0,
+                r_flu1[band] * values,
+                (self.config.r_flu2[band] * values) + self.config.i_off[band],
+                self.config.ip_sat[band],
+            ]
+
+        bn = np.select(conditions, choices)
 
         return bn
 
@@ -398,7 +497,8 @@ class PersistenceModel:
 
         array_id = spximg.getArrayId()
         b_prev1 = self._lookup_table(flux_prev1, array_id, t_int)
-        b_prev1_overwrite = self._overwrite_b_n(b_prev1, array_id)
+        b_prev1_et_bloom = self._lookup_table(flux_prev1, array_id, t_int, use_et_bloom=True)
+        b_prev1_overwrite = self._overwrite_b_n(b_prev1, b_prev1_et_bloom, array_id)
 
         # Compute *current* exposure A_n coefficient from previous B_n(k-1)(Eq. 2).
         # Array of coefficients per pixel.
@@ -500,7 +600,7 @@ class UpdatePersistenceTask(pipeBase.PipelineTask):
     ConfigClass = UpdatePersistenceConfig
     full_name = "Update Persistence Mask"
     ssdc_pipe_level = 2
-    ssdc_doc_tag = "SSDC-MS-012 v2.1"
+    ssdc_doc_tag = "SSDC-MS-012 v2.2.1"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -572,6 +672,23 @@ class UpdatePersistenceTask(pipeBase.PipelineTask):
         persist_current, persist_flgs = persistence_model.compute_persistence_current(spximg,
                                                                                       t_slew_2_1,
                                                                                       t_int)
+        # Restrict persistence to active area only
+        actv_area = l1_utils.active_area_range(spximg, include_refs=False)
+        # Full-frame boolean mask for the active area
+        active_mask = np.zeros_like(spximg.data, dtype=bool)
+        active_mask[actv_area] = True
+
+        # Mask for non-functional pixels
+        nonfunc_mask = (spximg.flags & Flag.NONFUNC) > 0
+        # Valid pixels for persistence: active area AND not non-functional
+        valid_mask = active_mask & ~nonfunc_mask
+
+        # No persistence current outside the valid region (inactive or NONFUNC)
+        persist_current[~valid_mask] = 0.0
+
+        # And clear persistence flags outside the valid region
+        if persist_flgs is not None:
+            persist_flgs[~valid_mask] = False
 
         # Get Persistence State.
         state = persistence_model.get_model_state()

@@ -67,6 +67,7 @@ def get_planned_obs() -> PlannedObservation:
 
 def test_EstimateCoarseAstrometry():
     spximg = sample_data.get_sample_level1b_img()
+    spximg.header["OBSID"] = 202520204000110
     rp = ReadoutParameters.from_metadata(spximg.meta)
 
     # level-1 format
@@ -108,5 +109,3 @@ def test_EstimateCoarseAstrometry():
     assert spximg_3.data.shape == output3.spximg_out.data.shape, "Input and output image not same shape."
     assert wcs_3.wcs.crpix[0] == expected_crpix1, f"D3 CRPIX1 is not in level-1 format. {wcs_3.wcs.crpix[0]}"
     assert wcs_3.wcs.crpix[1] == expected_crpix2, f"D3 CRPIX2 is not in level-1 format. {wcs_3.wcs.crpix[1]}"
-    assert "SIP" in wcs_3.wcs.ctype[0], "SIP is missing."
-    assert "SIP" in wcs_3.wcs.ctype[1], "SIP is missing."

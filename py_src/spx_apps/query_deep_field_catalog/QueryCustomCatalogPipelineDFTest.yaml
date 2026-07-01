@@ -1,0 +1,12 @@
+# Pipeline definition file for 12/2025 Deep Field Test
+description: QueryCustomCatalogTask
+tasks:
+  query_custom_catalog:
+    class: spx_apps.QueryCustomCatalogTask
+    config:
+      connections.planned_obs: "planned_obs"
+      connections.refcat_allsky: "refcat_allsky"
+      connections.initial_distortion_table: "initial_distortion_table"
+      connections.catalog: "srccat_deep_field_test"
+      selection_cuts: false
+      allow_empty: true

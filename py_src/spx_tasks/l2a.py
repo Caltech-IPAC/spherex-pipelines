@@ -12,14 +12,15 @@ from lsst.pipe.base.connections import InputQuantizedConnection, OutputQuantized
 from spx_data import (SPHERExImage, GainFactors, NonLinearityParameters, ObservationId,
                       ReadNoiseParameters, PersistenceState)
 from spx_tasks.gds_image_association import GdsImageAssociationTask
+from spx_tasks.source_bloom_and_cosmic_ray_halo_flagging import SourceBloomAndCosmicRayHaloFlaggingTask
 from typing import Optional
 from astropy.table import Table
+from astropy.time import Time
 from ._provenance import add_calibration_provenance, get_calibration_inputs
 from .correct_non_linearity import CorrectNonLinearityTask
 from .create_variance_map import CreateVarianceMapTask
 from .update_persistence import UpdatePersistenceTask
 from .dqa_l1 import check_l1_dqa
-
 # ==============================================================================
 
 
@@ -109,6 +110,12 @@ class L2aConnections(pipeBase.PipelineTaskConnections,
         dimensions=["instrument", "observation"],
         isCalibration=False,
     )
+    bsh_diag_img = cT.Output(
+        name="bsh_diag_img",
+        doc="Diagnostic image containing BSH diagnostic layers (BLM_DIAG, SNW_DIAG, HLO_DIAG).",
+        storageClass="SPHERExImage",
+        dimensions=("instrument", "exposure"),
+    )
 
     def __init__(self, *, config=None):
         super().__init__(config=config)
@@ -121,6 +128,8 @@ class L2aConnections(pipeBase.PipelineTaskConnections,
             del self.sgt
         if not config.persistence_prior:
             self.inputs.discard("persistence_state_in")
+        if not config.source_bloom_and_cosmic_ray_halo_flagging.write_diagnostics:
+            del self.bsh_diag_img
 
 
 class L2aConfig(pipeBase.PipelineTaskConfig,
@@ -128,6 +137,10 @@ class L2aConfig(pipeBase.PipelineTaskConfig,
     gds_image_association = pexConfig.ConfigurableField(
         doc="GDS Image Association",
         target=GdsImageAssociationTask
+    )
+    source_bloom_and_cosmic_ray_halo_flagging = pexConfig.ConfigurableField(
+        doc="Source Blooming and Transient Halo Flagging",
+        target=SourceBloomAndCosmicRayHaloFlaggingTask
     )
     correct_non_linearity = pexConfig.ConfigurableField(
         doc="Correct Nonlinearity",
@@ -166,6 +179,7 @@ class L2aTask(pipeBase.PipelineTask):
     def __init__(self, **keyArgs):
         super().__init__(**keyArgs)
         self.makeSubtask("gds_image_association")
+        self.makeSubtask("source_bloom_and_cosmic_ray_halo_flagging")
         self.makeSubtask("correct_non_linearity")
         self.makeSubtask("create_variance_map")
         self.makeSubtask("update_persistence")
@@ -212,6 +226,13 @@ class L2aTask(pipeBase.PipelineTask):
                           sband_mnemonics)
         spximg = result.spximg_out
 
+        # Source bloom and transient halo flagging
+        task: SourceBloomAndCosmicRayHaloFlaggingTask =\
+            getattr(self, "source_bloom_and_cosmic_ray_halo_flagging")
+        result = task.run(spximg)
+        spximg = result.spximg_out
+        bsh_diag_img = result.bsh_diag_img
+
         # Correct Non-linearity
         task: CorrectNonLinearityTask = getattr(self, "correct_non_linearity")
         result = task.run(spximg, nonlinear_pars, gain_factors)
@@ -230,6 +251,10 @@ class L2aTask(pipeBase.PipelineTask):
         persistence_state_out = result.persistence_state_out
         persistence_image = result.persistence_image
 
-        return pipeBase.Struct(spximg_out=spximg,
+        # reset HDU creation time
+        spximg.header["DATE"] = Time.now().to_value(format="fits")
+        spximg.header.comments["DATE"] = "HDU creation time (UTC)"
+
+        return pipeBase.Struct(spximg_out=spximg, bsh_diag_img=bsh_diag_img,
                                persistence_state_out=persistence_state_out,
                                persistence_image=persistence_image)

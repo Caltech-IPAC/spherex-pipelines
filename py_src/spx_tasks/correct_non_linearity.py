@@ -368,12 +368,15 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
         # DQA
         qa_result = dqa_check_nonlinear_flux_with_residuals(spximg_before, spximg,
                                                             threshold=self.config.dqa_nonlinear_threshold)
-        spximg.meta["NL_DQA"] = qa_result["result"]
-        spximg.meta["corlim"] = qa_result["corlim"]
-        spximg.meta["medres"] = qa_result["medres"]
+
+        spximg.meta["NL_DQA"] = (qa_result["result"], "Nonlinearity DQA status (PASS/FAIL)")
+        spximg.meta["corlim"] = (qa_result["corlim"], "Max allowed fractional correction for DQA")
+        spximg.meta["medres"] = (qa_result["medres"],
+                                 "Median fractional correction residual after NL correction")
 
         if qa_result["result"] == "PASS":
-            spximg.meta["n_corr"] = qa_result["n_corr"]
+            spximg.meta["n_corr"] = (qa_result["n_corr"],
+                                     "Number of nonlinear pixels corrected")
         else:
             spximg.meta["ovrcor"] = qa_result["ovrcor"]
             spximg.meta["maxcor"] = qa_result["maxcor"]

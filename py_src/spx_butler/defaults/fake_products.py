@@ -29,7 +29,8 @@ from spx_data import (
     spx_param,
     PersistenceState,
     PersistenceStateModelPars,
-    ReadNoiseParameters
+    ReadNoiseParameters,
+    NonfuncData
 )
 
 from spx_utils import spectral_wcs_lookup_data, get_data_file
@@ -105,6 +106,81 @@ def fake_nonfunc_map(detector_id: int) -> SPHERExImage:
     # add detector coordinate system
     add_detcoord(img, device_coord=True)
     return img
+
+
+def fake_nonfunc_v2_map(detector: int, seed: int | None = 42) -> NonfuncData:
+    """Fake Nonfunctional v2 product, returned as a NonfuncData instance.
+
+    Builds a multi-extension FITS with:
+      - COMBINED (1=bad, 0=good)
+      - DARKCURR, HIGHDRIFT, SPECCAL, TRANSIENT, OVERFLOW (each 1=bad, 0=good)
+
+    Parameters
+    ----------
+    detector : `int`
+        Detector ID written into the PrimaryHDU header.
+
+    Returns
+    -------
+    NonfuncData
+        Parsed wrapper around the generated HDUList.
+    """
+    rng = np.random.default_rng(seed)
+
+    # Match how fake_nonlin_inputs gets its shape
+    ny, nx = spx_param.get_npix_x(), spx_param.get_npix_y()
+
+    def sparse_mask(count: int) -> np.ndarray:
+        """Create a sparse binary mask (1=bad) with ~count bad pixels."""
+        m = np.zeros((ny, nx), dtype=np.uint8)
+        if count <= 0:
+            return m
+        count = min(count, ny * nx)
+        idx = rng.choice(ny * nx, size=count, replace=False)
+        m.flat[idx] = 1
+        return m
+
+    darkcurr = sparse_mask(300)
+    highdrift = sparse_mask(250)
+    speccal = sparse_mask(120)
+    transient = sparse_mask(7000)
+    overflow = sparse_mask(60)
+
+    # Add a couple structured features for easy QA
+    np.fill_diagonal(speccal, 1)      # thin diagonal line
+    box = 24
+    darkcurr[:box, :box] |= 1         # small UL box
+
+    combined = (darkcurr | highdrift | speccal | transient | overflow).astype(np.uint8)
+
+    primary_hdu = fits.PrimaryHDU()
+    primary_hdu.header["DETECTOR"] = detector
+    primary_hdu.header["BPCONV"] = (1, "Bad-pixel convention: 1=bad, 0=good")
+
+    combined_hdu = fits.ImageHDU(data=combined, header=fits.Header({"EXTNAME": "COMBINED"}))
+    darkcurr_hdu = fits.ImageHDU(data=darkcurr, header=fits.Header({"EXTNAME": "DARKCURR"}))
+    highdrift_hdu = fits.ImageHDU(data=highdrift, header=fits.Header({"EXTNAME": "HIGHDRIFT"}))
+    speccal_hdu = fits.ImageHDU(data=speccal, header=fits.Header({"EXTNAME": "SPECCAL"}))
+    transient_hdu = fits.ImageHDU(data=transient, header=fits.Header({"EXTNAME": "TRANSIENT"}))
+    overflow_hdu = fits.ImageHDU(data=overflow, header=fits.Header({"EXTNAME": "OVERFLOW"}))
+
+    hdul = fits.HDUList([
+        primary_hdu,
+        combined_hdu,
+        darkcurr_hdu,
+        highdrift_hdu,
+        speccal_hdu,
+        transient_hdu,
+        overflow_hdu,
+    ])
+
+    # Optional integrity check
+    union = (darkcurr | highdrift | speccal | transient | overflow).astype(bool)
+    cmb = (combined == 1)
+    if np.any(union & ~cmb) or np.any(cmb & ~union):
+        raise ValueError("COMBINED is not the union of category planes.")
+
+    return NonfuncData(hdul, detector=detector)
 
 
 def fake_dichroic_cut_map(detector_id: int) -> SPHERExImage:

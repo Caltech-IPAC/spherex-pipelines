@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
-from spx_utils.astrometry.fine_astrometry_utils import se_run, scamp_run, astronet_run
+from spx_utils.astrometry.fine_astrometry_utils import se_run, scamp_run, astronet_run_b
 import numpy as np
 
 
@@ -49,8 +49,8 @@ class TestFineAstroUtils(unittest.TestCase):
         scamp_out = Path("/mock/path/fulloutcat.fits")
         (contrast, detections, standards,
          ra_shift, dec_shift,
-         daxis1, daxis2, nstars) = scamp_run(img_ldac, refcat_ldac,
-                                             scamp_out, verbose=False)
+         daxis1, daxis2, nstars, _) = scamp_run(img_ldac, refcat_ldac,
+                                                scamp_out, verbose=False)
 
         self.assertAlmostEqual(contrast, 1.34)
         self.assertEqual(detections, 3175)
@@ -61,23 +61,54 @@ class TestFineAstroUtils(unittest.TestCase):
         self.assertAlmostEqual(daxis2, 2.34)
         self.assertEqual(nstars, 2296)
 
-    @patch("astropy.io.fits.PrimaryHDU.writeto")
-    @patch("astropy.io.fits.open")
-    @patch("subprocess.run")
-    @patch("os.path.exists", return_value=True)
-    def test_astronet_run(self, mock_exists, mock_run, mock_fits_open, mock_writeto):
-        # -- Mock subprocess.run --
-        mock_run.return_value = MagicMock(stdout="solve-field completed", returncode=0)
+    @patch("spx_utils.astrometry.fine_astrometry_utils.convolve")
+    @patch("spx_utils.astrometry.fine_astrometry_utils.Gaussian2DKernel")
+    @patch("spx_utils.astrometry.fine_astrometry_utils.sep.extract")
+    @patch("spx_utils.astrometry.fine_astrometry_utils.sigma_clipped_stats")
+    @patch("spx_utils.astrometry.fine_astrometry_utils.fits.PrimaryHDU")
+    @patch("spx_utils.astrometry.fine_astrometry_utils.fits.open")
+    @patch("spx_utils.astrometry.fine_astrometry_utils.subprocess.run")
+    @patch("spx_utils.astrometry.fine_astrometry_utils.os.path.exists", return_value=True)
+    @patch("spx_utils.astrometry.fine_astrometry_utils.shutil.copy")
+    def test_astronet_run(self, mock_copy, mock_exists, mock_run, mock_fits_open,
+                          mock_primary_hdu, mock_sigma_stats,
+                          mock_sep_extract, mock_kernel, mock_convolve):
 
-        # -- Realistic fake image array --
+        # Mock subprocess.run
+        # Provide realistic stdout for your parsers
+        mock_stdout = (
+            "Solving...\n"
+            "log-odds ratio 20.4795, 11 match, 0 conflict\n"
+            "RA,Dec = (285.622,-55.7909), pixel scale 6.25305 arcsec/pix.\n"
+        )
+        mock_run.return_value = MagicMock(stdout=mock_stdout, stderr="", returncode=0)
+
+        # Realistic fake image array
         fake_data = np.random.rand(10, 10).astype(np.float32)
         fake_header = {'CRVAL1': 100.0, 'CRVAL2': -30.0}
 
-        # -- Properly mimic fits.open()[1].data and .header --
+        # Properly mimic fits.open()[1].data and .header
         mock_hdu = MagicMock()
         mock_hdu.data = fake_data
         mock_hdu.header = fake_header
         mock_fits_open.return_value.__enter__.return_value = [None, mock_hdu]
+
+        # Mock the new dependencies
+        mock_sigma_stats.return_value = (0.5, 0.5, 0.1)  # mean, median, std
+
+        # Mock sep.extract to satisfy the convergence loop
+        fake_objects = np.array(
+            [(5, 5, 100, 5)] * 1500,  # 1500 sources
+            dtype=[('y', 'f8'), ('x', 'f8'), ('flux', 'f8'), ('tnpix', 'i4')]
+        )
+        mock_sep_extract.return_value = fake_objects
+
+        mock_convolve.return_value = fake_data  # Return a fake image
+        mock_kernel.return_value = MagicMock()  # Mock the kernel object
+
+        # Mock the PrimaryHDU constructor to return an object
+        mock_hdu_instance = MagicMock()
+        mock_primary_hdu.return_value = mock_hdu_instance
 
         # Inputs
         input_image = Path("/mock/input.fits")
@@ -86,7 +117,7 @@ class TestFineAstroUtils(unittest.TestCase):
         index_dir = "/mock/index"
 
         # Run the function
-        result = astronet_run(
+        result = astronet_run_b(
             input_image=input_image,
             stripped_image=stripped_image,
             wcs_output=wcs_output,
@@ -94,10 +125,17 @@ class TestFineAstroUtils(unittest.TestCase):
             verbose=False
         )
 
-        # Assertions
-        mock_run.assert_called_once()
-        mock_writeto.assert_called_once()
-        assert result == (wcs_output, stripped_image)
+        # Check that .writeto was called on the mock HDU instance
+        mock_hdu_instance.writeto.assert_called_with(stripped_image, overwrite=True)
+
+        # Check the actual 4-tuple return value
+        expected_result = (
+            wcs_output,
+            stripped_image,
+            11,  # number high s/n matches from astrometry.net
+            6.25305  # pixel_scale solution from solve-field
+        )
+        self.assertEqual(result, expected_result)
 
 
 if __name__ == "__main__":

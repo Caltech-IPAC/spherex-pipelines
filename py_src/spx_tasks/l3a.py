@@ -1,7 +1,5 @@
 __all__ = ["L3aConfig", "L3aTask"]
 
-# Standard library imports
-
 # Related third party imports
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
@@ -10,9 +8,11 @@ import numpy as np
 from astropy import units as u
 from astropy.io.fits import HDUList
 from astropy.table import Table
+from lsst.daf.butler import DeferredDatasetHandle
 
 # Local application/library specific imports
 from spx_data import SPHERExImage
+from spx_utils import get_current_rss
 from .estimate_diffuse_background import EstimateDiffuseBackgroundTask
 from .perform_forced_photometry import PerformForcedPhotometryTask
 
@@ -54,7 +54,7 @@ def validate_table(srccat: Table):
             if actual_unit != col["unit"]:
                 raise ValueError(f"Column {col['name']} does not have expected units {col['unit']}")
         else:
-            raise ValueError(f"Expected column {col['name']} is missing in input photometry catalog.")
+            raise ValueError(f"Expected column {col['name']} is missing in input source catalog.")
 
     return
 
@@ -73,6 +73,7 @@ class L3aConnections(pipeBase.PipelineTaskConnections,
         doc="Input catalog.",
         storageClass="AstropyParquet",
         dimensions=("instrument", "dichroicpair", "spsplan", "slewgroup"),
+        deferLoad=True
     )
     solid_angle_pixel_map = cT.PrerequisiteInput(
         name="solid_angle_pixel_map",
@@ -108,14 +109,14 @@ class L3aConnections(pipeBase.PipelineTaskConnections,
         super().__init__(config=config)
 
         if config.perform_forced_photometry.combinedOutput:
-            self.outputs.discard("phot_meas")
+            del self.phot_meas
         else:
-            self.outputs.discard("phot_meas_combined")
+            del self.phot_meas_combined
 
         use_simulator_bandpass_in_edb = config.estimate_diffuse_background.use_simulator_bandpass
         use_simulator_bandpass_in_phot = config.perform_forced_photometry.use_simulator_bandpass
         if use_simulator_bandpass_in_edb and use_simulator_bandpass_in_phot:
-            self.inputs.discard("spectral_wcs")
+            del self.spectral_wcs
 
 
 class L3aConfig(pipeBase.PipelineTaskConfig,
@@ -147,6 +148,7 @@ class L3aTask(pipeBase.PipelineTask):
         self.makeSubtask("perform_forced_photometry")
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
+        self.log.debug(get_current_rss("L3a runQuantum start"))
         if getattr(self, "perform_forced_photometry").config.combinedOutput:
             super().runQuantum(butlerQC, inputRefs, outputRefs)
         else:
@@ -169,16 +171,38 @@ class L3aTask(pipeBase.PipelineTask):
                         # TODO handle other types of output
                         print(f"ERROR: output for connection {name} is not saved")
 
-    def run(self, spximg: SPHERExImage, srccat: Table,
+    def run(self, spximg: SPHERExImage, srccat: DeferredDatasetHandle,
             solid_angle_pixel_map: SPHERExImage,
             spectral_wcs: HDUList = None) -> pipeBase.Struct:
+        # Only read necessary columns from input catalog
+        # NOTE: Need to convert `lsst.pex.config.listField.List` to
+        # `list` for table item access
+        if self.config.perform_forced_photometry.merge_srccat:
+            read_cols = list(self.config.perform_forced_photometry.cat_phot_cols) + \
+                list(self.config.perform_forced_photometry.pass_thru_cols)
+        else:
+            read_cols = list(self.config.perform_forced_photometry.cat_phot_cols)
+
+        try:
+            srccat = srccat.get(
+                parameters={
+                    "columns": read_cols
+                }
+            )
+        except KeyError as e:
+            raise ValueError(f"Requested column {e} is not in the input catalog.")
+        self.log.debug(get_current_rss("L3a run method start"))
+
         # Validate minimal columns required for fitting
         validate_table(srccat)
 
         # Filter out images that failed fine astrometry
         if ("FINAST" not in spximg.header) or (spximg.header["FINAST"] != 0):
             self.log.warning("Input level 2 image failed fine astrometry; skipping level 3 processing.")
-            return pipeBase.Struct(phot_meas=None)
+            if self.config.perform_forced_photometry.combinedOutput:
+                return pipeBase.Struct(phot_meas_combined=None)
+            else:
+                return pipeBase.Struct(phot_meas=None)
 
         # Estimate Diffuse Background
         task: EstimateDiffuseBackgroundTask = getattr(self, "estimate_diffuse_background")
@@ -187,6 +211,7 @@ class L3aTask(pipeBase.PipelineTask):
         else:
             spectral_wcs_edb = spectral_wcs
         result = task.run(spximg, spectral_wcs=spectral_wcs_edb)
+        self.log.debug(get_current_rss("EDB task end"))
         global_bkgd = result.global_bkgd
 
         # Perform Forced Photometry
@@ -196,5 +221,6 @@ class L3aTask(pipeBase.PipelineTask):
         else:
             spectral_wcs_phot = spectral_wcs
         result = task.run(spximg, srccat, global_bkgd, solid_angle_pixel_map, spectral_wcs=spectral_wcs_phot)
+        self.log.debug(get_current_rss("PFP task end"))
 
         return result  # PFP task returns obj with correct output connection

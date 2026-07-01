@@ -1,4 +1,6 @@
 storageClasses:
+  NonfuncData:
+    pytype: spx_data.NonfuncData
   NonLinearityParameters:
     pytype: spx_data.NonLinearityParameters
   ReadNoiseParameters:
@@ -26,6 +28,11 @@ storageClasses:
     pytype: spx_data.PSFZoneData
   AstropyParquet:
     pytype: astropy.table.Table
+    converters:
+      pyarrow.Table: spx_butler.formatters.astropy_parquet.shallow_arrow_to_astropy
+    parameters:
+      - columns
+      - filters
   AstropySIP:
     pytype: astropy.wcs.Sip
   BackgroundMesh:
@@ -58,6 +65,8 @@ storageClasses:
     pytype: spx_data.ODIR
   OdirAgg:
     pytype: spx_data.ODIR
+  AstrDiag:
+    pytype: spx_data.AstrDiag
   SpxPhotoCalib:
     pytype: astropy.table.Table
   SbandMnemonics:

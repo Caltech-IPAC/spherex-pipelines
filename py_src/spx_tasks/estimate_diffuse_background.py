@@ -13,10 +13,11 @@ import lsst.pipe.base.connectionTypes as cT
 import numpy as np
 
 # Local application/library specific imports
-from spx_data import SPHERExImage, Flag, NullGlobal, get_wavelength_mesh
+from spx_data import SPHERExImage, Flag, get_wavelength_mesh
 from spx_data.spx_param import get_npix_x_active, get_npix_y_active
 from spx_tasks.estimate_abs_gain_matrix import (compute_avg_flux_and_wavelength, define_spectral_bins,
                                                 EstimateAbsGainMatrixConfig)
+from spx_utils import get_current_rss
 
 
 # ==============================================================================
@@ -57,7 +58,7 @@ class EstimateDiffuseBackgroundConnections(pipeBase.PipelineTaskConnections,
         super().__init__(config=config)
 
         if config.use_simulator_bandpass:
-            self.inputs.discard("spectral_wcs")
+            del self.spectral_wcs
 
 
 class EstimateDiffuseBackgroundConfig(pipeBase.PipelineTaskConfig,
@@ -157,7 +158,7 @@ class EstimateDiffuseBackgroundTask(pipeBase.PipelineTask):
         spximg : `spx_data.SPHERExImage`
             A 2-D science image.
         spectral_wcs : `~astropy.io.fits.HDUList`, optional
-            Spectral WCS calibration file with center wavelength and center bandwidth.
+            Spectral WCS calibration with central wavelength and bandwidth.
             If not specified, Simulator's wavelength model is used.
 
         Returns
@@ -175,8 +176,6 @@ class EstimateDiffuseBackgroundTask(pipeBase.PipelineTask):
         # Get spectral bins for the detector
         spec_config = EstimateAbsGainMatrixConfig()
         region_msk_iter, region_msk_iter_fine = define_spectral_bins(spximg, spec_config)
-        # assert region_msk_iter.num_regions == spec_config.num_regions
-        # assert region_msk_iter_fine.num_regions == spec_config.num_regions_fine
 
         # Compute the average flux and wavelength in each bin
         if spectral_wcs is None:
@@ -188,7 +187,8 @@ class EstimateDiffuseBackgroundTask(pipeBase.PipelineTask):
 
         flags = (Flag.OVERFLOW | Flag.SUR_ERROR | Flag.NONFUNC | Flag.MISSING_DATA | Flag.HOT | Flag.COLD
                  | Flag.NONLINEAR | Flag.PERSIST | Flag.OUTLIER | Flag.CROSSTALK | Flag.SOURCE | Flag.GHOST
-                 | Flag.GHOST_FPA | Flag.GHOST_EXT | Flag.STREAK)
+                 | Flag.GHOST_FPA | Flag.GHOST_EXT | Flag.STREAK | Flag.BLOOM | Flag.SNOWBALL | Flag.HALO
+                 | Flag.SATELLITE_HALO)
         mask = spximg.getFlagsAsMask(flags)
         img_masked = np.ma.array(spximg.data, mask=mask)
         fluxes_fine, wls_fine = compute_avg_flux_and_wavelength(region_msk_iter_fine, img_masked, lambda_mesh)
@@ -196,6 +196,7 @@ class EstimateDiffuseBackgroundTask(pipeBase.PipelineTask):
         # Attempt to compute 1D spectral model
         try:
             spl_fit = make_smoothing_spline(wls_fine, fluxes_fine, lam=0)
+            self.log.debug(get_current_rss("Spectral component estimated"))
         # If failure, pass null global BG to photometry
         except ValueError:
             global_bkgd = np.full(spximg.data.shape, np.nan)
@@ -204,7 +205,12 @@ class EstimateDiffuseBackgroundTask(pipeBase.PipelineTask):
         # If success, continue estimating spectral and diffuse components
         else:
             # Compute 2D spectral model
-            spec_bkgd = spl_fit(lambda_mesh)
+            # NOTE: To save memory and avoid creating too many arrays, we
+            # initialize `global_bkgd` with just the spectral component. We
+            # also call spline object in chunks to save memory.
+            global_bkgd = np.empty(lambda_mesh.shape, lambda_mesh[0][0].dtype)
+            for i in range(lambda_mesh.shape[0]):
+                global_bkgd[i] = spl_fit(lambda_mesh[i])
 
             # =================================================================
             # Check number of "good" regions (regions where % of masked pixels
@@ -230,7 +236,7 @@ class EstimateDiffuseBackgroundTask(pipeBase.PipelineTask):
                                    sigma_upper=self.config.sc_sigma_upper, maxiters=self.config.sc_maxiters)
 
             # Attempt diffuse BG estimation on spectral-subtracted image
-            spec_removed = spximg.data - spec_bkgd
+            spec_removed = spximg.data - global_bkgd  # `global_bkgd` is spectral-only for now
             if frac_good_regions * 100. >= self.config.pct_good_regions:
                 try:
                     diff_bkgd = Background2D(data=spec_removed, mask=mask, box_size=self.config.box_size,
@@ -238,17 +244,14 @@ class EstimateDiffuseBackgroundTask(pipeBase.PipelineTask):
                                              exclude_percentile=self.config.exclude_percentile)
                 except ValueError:
                     # In the event Background2D estimate still fails
-                    diff_bkgd = NullGlobal(data=spec_removed, box_size=self.config.box_size,
-                                           sigma_clip=sigma_clip, filter_size=self.config.filter_size,
-                                           exclude_percentile=self.config.exclude_percentile)
+                    diff_bkgd = None
             else:
-                diff_bkgd = NullGlobal(data=spec_removed, box_size=self.config.box_size,
-                                       sigma_clip=sigma_clip, filter_size=self.config.filter_size,
-                                       exclude_percentile=self.config.exclude_percentile)
+                diff_bkgd = None
+            self.log.debug(get_current_rss("DGL component estimated"))
 
             # Determine if global or local BG estimate is suitable
-            if isinstance(diff_bkgd, NullGlobal):
-                global_bkgd = diff_bkgd.background
+            if diff_bkgd is None:
+                global_bkgd = np.full(spximg.data.shape, np.nan)
                 self.log.info("Background2D estimate failed; passing null global background to photometry.")
             else:
                 # Check summary statistics
@@ -259,7 +262,7 @@ class EstimateDiffuseBackgroundTask(pipeBase.PipelineTask):
 
                 if abs(median) < self.config.sc_median_thresh:
                     # Global BG removal reduces noise effectively
-                    global_bkgd = spec_bkgd + diff_bkgd.background
+                    global_bkgd += diff_bkgd.background  # add diffuse to spectral component
                     self.log.info("Global background estimation succeeded; passing sum of spectral and "
                                   "diffuse components to photometry.")
                 else:

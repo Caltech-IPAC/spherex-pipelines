@@ -6,9 +6,12 @@ from dataclasses import dataclass
 class DatasetTypes:
     abs_cal = "abs_cal"
     abs_gain_matrix = "abs_gain_matrix"  # absolute gain matrix
+    astr_diag = "astr_diag"  # astrometry diagnostics
+    bsh_diag_img = "bsh_diag_img"
     ck = "ck"  # C-kernel orientation data
     spk = "spk"  # SPK Ephemeris data
     nonfunc_map = "nonfunc"  # nonfunctional pixels
+    nonfunc_map_v2 = "nonfunc_v2"
     dichroic_cut_map = "dichroic"  # dichroic cut pixels
     ff_calib = "flat"  # flat field calibration
     ff_est = "flat"
@@ -53,6 +56,7 @@ class DatasetTypes:
     sgt = "sgt"  # table of reconstructed ground track data
     allsky_cat = "allsky_cat"  # primary all-sky catalog, per HEALPix
     allsky_cat_combined = "allsky_cat_combined"  # primary all-sky catalog, combined across HEALPix
+    refcat_allsky = "refcat_allsky"  # custom input reference catalog, not confined to a single HEALPix
 
 
 spherex_dataset_types: DatasetTypes = DatasetTypes()

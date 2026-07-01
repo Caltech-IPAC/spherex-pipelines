@@ -1,13 +1,37 @@
-from datetime import datetime
-import click
 from pathlib import Path
 import os
+from collections import Counter
+import sys
+import atexit
+import logging
+import signal
+import re
+import time
+import yaml
+
+from astropy.time import Time
+from datetime import datetime
+import click
 # Function for runid handling when not provided.
 
 
 def make_runid_default(tool_name):
     timestamp = datetime.now().isoformat(timespec="seconds").replace(":", "").replace("-", "")
     return f"{tool_name}-{timestamp}"
+
+
+def fake_option():
+    return click.option(
+        '--fake',
+        type=click.Choice(['normal', 'error-short', 'error-detail', 'error-signal']),
+        default=None,
+        help='Run a simulated job. Modes: '
+        '"normal" = simulate successful run, '
+        '"error-short" = create errorSummary.yaml, '
+        '"error-detail" = create errorSummary.yaml and symlink "error" to actual error file, '
+        '"error-signal" = exit with SIGINT.\n'
+        '[optional flag]'
+    )
 
 # Reusable runid option decorator with parameterized tool name
 
@@ -81,8 +105,8 @@ def err_dir_option():
         show_default=True,
         callback=validate_writable,
         help=(
-            "Directory in which an error document for the job, if any, will"
-            "be deposited by the tool. Defaults to “.”, the current working"
+            "Directory in which an error document for the job, if any, will "
+            "be deposited by the tool. Defaults to “.”, the current working "
             "directory."
         )
     )
@@ -98,10 +122,10 @@ def tmp_dir_option():
         show_default=True,
         callback=validate_writable,
         help=(
-            "Directory available for use as temporary scratch space for the"
-            "job. Defaults to “.”, the current working directory. When exe-"
-            "cuting in the UWS system, tmp-dir should never be the same"
-            "as result-dir, unless it's deliberately intended for temporary"
+            "Directory available for use as temporary scratch space for the "
+            "job. Defaults to “.”, the current working directory. When "
+            "executing in the UWS system, tmp-dir should never be the same "
+            "as result-dir, unless it's deliberately intended for temporary "
             "files to be returned to the user as results."
         )
     )
@@ -115,10 +139,266 @@ def log_dir_option():
         show_default=True,
         callback=validate_writable,
         help=(
-            "Directory into which any log files from the job will be deposited."
-            "Defaults to “.”, the current working directory. When execut-"
-            "ing in the UWS system, log-dir should never be the same as"
-            "result-dir, unless it's deliberately intended for any logs to be"
+            "Directory into which any log files from the job will be deposited. "
+            "Defaults to “.”, the current working directory. When "
+            "executing in the UWS system, log-dir should never be the same as "
+            "result-dir, unless it's deliberately intended for any logs to be "
             "returned to the user as results."
         )
     )
+
+
+def parse_time(value) -> tuple[Time, Time] | None:
+    """
+    Parse --time option into a tuple of astropy.time.Time objects using MJD.
+
+    Parameters
+    ----------
+    value : `str`
+        Time range as 'min,max' using MJD values.
+        Use '-Inf' or '+Inf' for open-ended bounds.
+
+    Returns
+    -------
+    `tuple` of `astropy.time.Time` or ``None``
+        Tuple of (min_time, max_time).
+
+    Raises
+    ------
+    click.BadParameter
+        If the input format is invalid.
+    """
+    try:
+        if value is None:
+            return value
+
+        parts = value.split(",")
+        if len(parts) != 2:
+            raise ValueError
+
+        parsed_parts = []
+        if parts[0] == "-Inf" or parts[0] == "":
+            # '2024-01-01T00:00:00'
+            parsed_parts.append(Time(60310.0, format="mjd", scale="utc"))
+        else:
+            parsed_parts.append(Time(float(parts[0]), format="mjd", scale="utc"))
+        if parts[1] == "+Inf" or parts[1] == "":
+            # '2050-01-01T00:00:00'
+            parsed_parts.append(Time(69807.0, format="mjd", scale="utc"))
+        else:
+            parsed_parts.append(Time(float(parts[1]), format="mjd", scale="utc"))
+        return tuple(parsed_parts)
+    except Exception:
+        raise click.BadParameter(f"{value}. Use 'min,max' with MJD values.",
+                                 param_hint="--time")
+
+
+def parse_detectors(value) -> list[int] | None:
+    """
+    Parse multiple --detector options into a list of detector IDs.
+
+    Parameters
+    ----------
+    value : `tuple` of `str`
+        Tuple of detector labels, e.g. (``D3``, ``D4``)
+
+    Returns
+    -------
+    `list` of `int` or `None`
+        List of integer detector ids from 1 to 6,
+        or `None` if no detectors were specified.
+
+    Raises
+    ------
+    click.BadParameter
+        If the input value contains duplicate or invalid detector label.
+    """
+    if not value:
+        return None
+    else:
+        counts = Counter(value)
+        duplicates = [item for item, count in counts.items() if count > 1]
+        if len(duplicates) > 0:
+            raise click.BadParameter(f"duplicate label: {duplicates}.",
+                                     param_hint="--detector")
+
+        pattern = re.compile(r"^D(\d+)$")
+        detectors = []
+        for det_str in value:
+            match = pattern.fullmatch(det_str)
+            if not match:
+                raise click.BadParameter(f"{det_str}; unexpected detector label format.",
+                                         param_hint="--detector")
+            det = int(match.group(1))
+            if det < 1 or det > 6:
+                raise click.BadParameter(f"D{det}; detector id must be an integer from 1 to 6.",
+                                         param_hint="--detector")
+            detectors.append(det)
+        return detectors
+
+
+def log_start_time():
+    """Log the script start time"""
+    global _start_time
+    _start_time = time.time()
+    start_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    logging.info(f"=== {_script} STARTED at {start_datetime} ===")
+    return _start_time
+
+
+def log_end_time(exit_code=None):
+    """Log the script end time and duration"""
+    end_time = time.time()
+    end_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    if _start_time:
+        duration = end_time - _start_time
+        duration_str = f"{duration:.2f} seconds"
+        if duration > 60:
+            minutes = int(duration // 60)
+            seconds = duration % 60
+            duration_str = f"{minutes}m {seconds:.2f}s"
+    else:
+        duration_str = "unknown (start time not recorded)"
+
+    exit_info = f" (exit code: {exit_code})" if exit_code is not None else ""
+    # Make it crystal clear this is the final log entry from the main process
+    logging.info("=" * 80)
+    logging.info(f"FINAL LOG ENTRY - {_script} MAIN PROCESS ENDED")
+    logging.info(f"End time: {end_datetime}")
+    logging.info(f"Duration: {duration_str}{exit_info}")
+    logging.info("NOTE: Subprocess logs may appear after this message due to buffering")
+    logging.info("=" * 80)
+
+
+def setup_exit_handlers(script_name):
+    """Setup handlers to ensure end time is logged regardless of how script exits"""
+    atexit.register(log_end_time)
+
+    global _script
+    _script = script_name
+
+    def signal_handler(signum, frame):
+        signal_name = signal.Signals(signum).name
+        logging.warning(f"Received signal {signal_name} ({signum}), shutting down...")
+        log_end_time(exit_code=128 + signum)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for sig in [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]:
+        try:
+            signal.signal(sig, signal_handler)
+        except (OSError, ValueError):
+            pass
+
+
+def safe_exit(code):
+    """Exit with logging"""
+    atexit.unregister(log_end_time)  # Prevent duplicate call
+    log_end_time(exit_code=code)
+    sys.exit(code)
+
+
+def extract_log_config_and_ids_from_argv(default_runid=None, default_jobid=None):
+    argv = sys.argv
+
+    # Defaults
+    log_dir = os.getcwd()
+    verbose = False
+    runid = default_runid
+    jobid = default_jobid
+
+    def extract_arg(key):
+        if key in argv:
+            try:
+                return argv[argv.index(key) + 1]
+            except IndexError:
+                return None
+        for arg in argv:
+            if arg.startswith(f'{key}='):
+                return arg.split('=', 1)[1]
+        return None
+
+    # Parse arguments
+    log_dir = extract_arg('--log-dir') or log_dir
+    runid = extract_arg('--runid') or runid
+    jobid = extract_arg('--jobid') or jobid
+
+    if '--verbose' in argv:
+        verbose = True
+    if '--no-verbose' in argv:
+        verbose = False  # Overrides --verbose if both are present
+
+    return log_dir, verbose, runid, jobid
+
+
+def force_override_runid(new_value):
+    # Remove all existing --runid or --runid=XYZ entries
+    new_argv = []
+    skip_next = False
+    for i, arg in enumerate(sys.argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--runid":
+            skip_next = True  # skip the next value
+            continue
+        elif arg.startswith("--runid="):
+            continue
+        else:
+            new_argv.append(arg)
+
+    # Append our forced --runid value
+    new_argv += ["--runid", new_value]
+    sys.argv = new_argv
+
+
+def extract_err_dir_from_argv(default=os.getcwd()):
+    argv = sys.argv
+    if '--err-dir' in argv:
+        try:
+            return argv[argv.index('--err-dir') + 1]
+        except IndexError:
+            return default
+    for arg in argv:
+        if arg.startswith('--err-dir='):
+            return arg.split('=', 1)[1]
+    return default
+
+
+def generate_error_summary(
+        message="", error_dir=None, write_to_file=False, error_type="fatal", user_error=False):
+    """
+    Generate a JSON-style error summary based on an exit code.
+
+    Args:
+        message (str, optional): A descriptive error message.
+        Defaults to an empty string.
+        error_dir (str, optional): Directory to write
+        the errorSummary.yaml file. Defaults to None.
+        write_to_file (bool, optional): Whether to write
+        the error summary to a file. Defaults to False.
+        error_type (str, optional): Type of error
+        (e.g., "fatal", "warning"). Defaults to "fatal".
+
+    Returns:
+        dict: The error summary structure.
+    """
+    if user_error:
+        final_message = str(message)
+    else:
+        final_message = f"Internal error; contact IRSA user support ({(message)})"
+    # Construct error summary structure
+    error_summary = {
+        "errorType": error_type,
+        "message": final_message
+    }
+
+    # Optionally write to file
+    if write_to_file and error_dir:
+        os.makedirs(error_dir, exist_ok=True)
+        error_path = os.path.join(error_dir, "errorSummary.yaml")
+        with open(error_path, 'w') as f:
+            yaml.dump(error_summary, f)
+
+    return error_summary

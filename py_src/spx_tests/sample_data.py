@@ -7,7 +7,7 @@ __all__ = ["sample_psf", "get_sample_psf", "get_sample_ssocat",
            "get_sample_nonlinearity_parameters",
            "get_sample_planned_obs_data",
            "get_sample_image_metadata", "get_sample_image_metadata_stats", "add_gradient",
-           "get_sample_global_bkgd", "get_sample_pix_map"]
+           "get_sample_global_bkgd", "get_sample_pix_map", "get_fake_nonfunc_v2_map"]
 
 from typing import Optional
 from datetime import datetime, timedelta
@@ -29,7 +29,7 @@ from lsst.daf.butler import Timespan
 from spx_data import (SPHERExImage, SPSFlag, ImageMetadata, ImageMetadataStats,
                       PSFZoneData, SUR, Zodi, Flag, BackgroundMesh, spx_param,
                       GainFactors, ReadoutParameters, NonLinearityParameters, ReadNoiseParameters,
-                      PersistenceState, PersistenceStateModelPars,
+                      PersistenceState, PersistenceStateModelPars, NonfuncData,
                       set_metadata_provenance)
 from spx_tasks import CreateVarianceMapTask
 from spx_utils import l1_utils, spectral_wcs_tab_header
@@ -210,21 +210,93 @@ def get_sample_catalog() -> Table:
 
 
 def get_sample_sip(img) -> Sip:
-    a = np.array([[0.00, 0.00, 0.00, 0.00, 0.00],
-                  [0.00, 0.00, 0.00, 0.00, 0.00],
-                  [0.00, 0.00, 0.00, 0.00, 0.00],
-                  [0.00, 0.00, 0.00, 0.00, 0.00],
-                  [0.00, 0.00, 0.00, 0.00, 0.00]], dtype=np.float64)
-
-    b = np.array([[0.00, 0.00, 0.00, 0.00, 0.00],
-                  [0.00, 0.00, 0.00, 0.00, 0.00],
-                  [0.00, 0.00, 0.00, 0.00, 0.00],
-                  [0.00, 0.00, 0.00, 0.00, 0.00],
-                  [0.00, 0.00, 0.00, 0.00, 0.00]], dtype=np.float64)
-
+    # A 4th order polynomial requires a 5x5 array for coefficients.
+    shape = (5, 5)
+    # Forward corefficients
+    a = np.zeros(shape, dtype=np.float64)
+    b = np.zeros(shape, dtype=np.float64)
+    # Inverse coefficients.
+    ap = np.zeros(shape, dtype=np.float64)
+    bp = np.zeros(shape, dtype=np.float64)
+    # CRPIX from image header
     imghdr = img.wcs.to_header(relax=True)
     crpix = np.array([imghdr["CRPIX1"], imghdr["CRPIX2"]])
-    return Sip(a, b, None, None, crpix)
+    return Sip(a, b, ap, bp, crpix)
+
+
+def get_fake_nonfunc_v2_map(detector: int = 1, seed: int | None = 42) -> NonfuncData:
+    """Fake Nonfunctional v2 product, returned as a NonfuncData instance.
+
+    Builds a multi-extension FITS with:
+      - COMBINED (1=bad, 0=good)
+      - DARKCURR, HIGHDRIFT, SPECCAL, TRANSIENT, OVERFLOW (each 1=bad, 0=good)
+
+    Parameters
+    ----------
+    detector : `int`
+        Detector ID written into the PrimaryHDU header.
+
+    Returns
+    -------
+    NonfuncData
+        Parsed wrapper around the generated HDUList.
+    """
+    rng = np.random.default_rng(seed)
+
+    # Match how fake_nonlin_inputs gets its shape
+    ny, nx = spx_param.get_npix_x(), spx_param.get_npix_y()
+
+    def sparse_mask(count: int) -> np.ndarray:
+        """Create a sparse binary mask (1=bad) with ~count bad pixels."""
+        m = np.zeros((ny, nx), dtype=np.uint8)
+        if count <= 0:
+            return m
+        count = min(count, ny * nx)
+        idx = rng.choice(ny * nx, size=count, replace=False)
+        m.flat[idx] = 1
+        return m
+
+    darkcurr = sparse_mask(300)
+    highdrift = sparse_mask(250)
+    speccal = sparse_mask(120)
+    transient = sparse_mask(7000)
+    overflow = sparse_mask(60)
+
+    # Add a couple structured features for easy QA
+    np.fill_diagonal(speccal, 1)      # thin diagonal line
+    box = 24
+    darkcurr[:box, :box] |= 1         # small UL box
+
+    combined = (darkcurr | highdrift | speccal | transient | overflow).astype(np.uint8)
+
+    primary_hdu = fits.PrimaryHDU()
+    primary_hdu.header["DETECTOR"] = detector
+    primary_hdu.header["BPCONV"] = (1, "Bad-pixel convention: 1=bad, 0=good")
+
+    combined_hdu = fits.ImageHDU(data=combined, header=fits.Header({"EXTNAME": "COMBINED"}))
+    darkcurr_hdu = fits.ImageHDU(data=darkcurr, header=fits.Header({"EXTNAME": "DARKCURR"}))
+    highdrift_hdu = fits.ImageHDU(data=highdrift, header=fits.Header({"EXTNAME": "HIGHDRIFT"}))
+    speccal_hdu = fits.ImageHDU(data=speccal, header=fits.Header({"EXTNAME": "SPECCAL"}))
+    transient_hdu = fits.ImageHDU(data=transient, header=fits.Header({"EXTNAME": "TRANSIENT"}))
+    overflow_hdu = fits.ImageHDU(data=overflow, header=fits.Header({"EXTNAME": "OVERFLOW"}))
+
+    hdul = fits.HDUList([
+        primary_hdu,
+        combined_hdu,
+        darkcurr_hdu,
+        highdrift_hdu,
+        speccal_hdu,
+        transient_hdu,
+        overflow_hdu,
+    ])
+
+    # Optional integrity check
+    union = (darkcurr | highdrift | speccal | transient | overflow).astype(bool)
+    cmb = (combined == 1)
+    if np.any(union & ~cmb) or np.any(cmb & ~union):
+        raise ValueError("COMBINED is not the union of category planes.")
+
+    return NonfuncData(hdul, detector=detector)
 
 
 def get_sample_nonlinearity_parameters() -> NonLinearityParameters:

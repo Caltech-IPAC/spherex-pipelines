@@ -7,13 +7,20 @@ from datetime import datetime
 from importlib import resources
 from .exceptions import PipetaskError
 
-L3_PIPELINE_PATH = resources.files("spx_apps") / "photometry_tool" / "data" / "L3ToolPipeline.yaml"
+
+def get_l3_pipeline_path(use_simulator_bandpass=False):
+    if use_simulator_bandpass:
+        l3_pipeline_yaml_basename = "L3ToolPipelineSimWL.yaml"
+    else:
+        l3_pipeline_yaml_basename = "L3ToolPipeline.yaml"
+    l3_pipeline_yaml = resources.files("spx_apps") / "photometry_tool" / "data" / l3_pipeline_yaml_basename
+    return str(l3_pipeline_yaml)
 
 
 def run_photometry(temp_butler_root, query_constraint: str, bkg_region: int,
-                   log_file=None, verbose=False) -> None:
+                   log_file=None, verbose=False, use_simulator_bandpass=False) -> None:
     # Pipeline definitions
-    l3_pipeline_yaml = str(L3_PIPELINE_PATH)
+    l3_pipeline_yaml = get_l3_pipeline_path(use_simulator_bandpass)
 
     # Run collections
     timestamp = datetime.utcnow().strftime("%Y%jT%H%M%S")
@@ -29,8 +36,8 @@ def run_photometry(temp_butler_root, query_constraint: str, bkg_region: int,
     l3_timeout_sec = int(os.getenv("SPXPHOTO_L3_TIMEOUT", 12 * 60 * 60))
     logging.info("Building QGraph.")
     qgraph_path = os.path.join(temp_butler_root, f"{l3_output_run}.qgraph")
+    subprocess_args = ["pipetask"]
     try:
-        subprocess_args = ["pipetask"]
         if log_file is not None:
             subprocess_args.extend(["--log-file", log_file])
         subprocess_args.extend([
@@ -49,6 +56,8 @@ def run_photometry(temp_butler_root, query_constraint: str, bkg_region: int,
         if verbose:
             dot_path = os.path.join(temp_butler_root, f"{l3_output_run}.dot")
             subprocess_args.extend(["--qgraph-dot", dot_path])
+        logging.info("CREATING QGRAPH")
+        logging.info(str(subprocess_args))
         result = subprocess.run(
             subprocess_args,
             check=True,
@@ -66,8 +75,8 @@ def run_photometry(temp_butler_root, query_constraint: str, bkg_region: int,
 
     logging.info(f"Running Photometry with {n_cores} cores.")
     photometry_err = None
+    subprocess_args = ["pipetask"]
     try:
-        subprocess_args = ["pipetask"]
         if verbose:
             log_level = logging.getLevelName(logging.getLogger().getEffectiveLevel())
             subprocess_args.extend(["--log-level",
@@ -80,7 +89,7 @@ def run_photometry(temp_butler_root, query_constraint: str, bkg_region: int,
             "-j", str(n_cores),
         ])
         logging.info("RUNNING L3")
-        logging.info(subprocess_args)
+        logging.info(str(subprocess_args))
         l3_result = subprocess.run(
             subprocess_args,
             check=True,

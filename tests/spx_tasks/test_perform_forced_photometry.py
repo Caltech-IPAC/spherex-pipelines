@@ -1,71 +1,54 @@
 # Standard library imports
 from pathlib import Path
 import logging
-import unittest
 import tempfile
-from unittest.mock import patch
 
 # Related third party imports
 import numpy as np
 import astropy.units as u
+import lsst.pipe.base as pipeBase
+import pytest
 from astropy.io import fits
 from astropy.table import Table
 
 # Local application/library specific imports
 from spx_data import SPHERExImage, spherex_image_reader
 from spx_tasks import PerformForcedPhotometryConfig, PerformForcedPhotometryTask
+from spx_tasks.perform_forced_photometry import get_deep_flag
 from spx_tests import get_sample_global_bkgd, get_sample_pix_map
 from spx_utils import SourcePipelineClass
 
 test_root = Path(__file__).parent.parent
 
 
-def check_order(output_tab, input_tab):
-    """Check that relative order of output flux table rows is the same as the
-    relative order of input source catalog rows."""
-    shared_cols = {
-        "coord_src": {
-            "final_name": "external_survey",
-        },
-        "external_source_id": {
-            "final_name": "external_source_id",
-        },
-        "parallax": {
-            "final_name": "parallax",
-        },
-        "pmdec": {
-            "final_name": "pm_dec",
-        },
-        "pmra": {
-            "final_name": "pm_ra",
-        },
-        "spherex_class": {
-            "final_name": "spherex_class",
-        },
-        "ref_dec": {
-            "final_name": "dec"
-        },
-        "ref_ra": {
-            "final_name": "ra",
-        }
-    }
+# Helper functions ============================================================
+def check_pass_thru_order(output_tab: Table, input_tab: Table, pass_thru_cols: list[str]):
+    """Check that pass-through columns shared between the input source catalog
+    and the output flux table have the same relative row ordering.
 
-    input_cols = list(shared_cols.keys())
-    output_cols = [shared_cols[col]["final_name"] for col in input_cols]
-
-    for in_col, out_col in zip(input_cols, output_cols):
-        for idx, unique_id in enumerate(output_tab["source_id"]):
-            output_val = output_tab[out_col][idx]
-            input_val = input_tab[in_col][input_tab["SPHERExRefID"] == unique_id]
-            msg = f"Shared column {out_col} does not match original for source_id {unique_id}."
-
-            if in_col in ["parallax", "pmdec", "pmra"]:
-                # For proper motions and parallaxes, native format is float64
-                # and output format is float32
-                np.testing.assert_allclose(input_val, output_val, atol=1e-15)
-            else:
-                # Use strict comparison for other columns
-                assert input_val == output_val, msg
+    Parameters
+    ----------
+    output_tab : `astropy.table.Table`
+        Table of photometry measurements.
+    input_tab : `astropy.table.Table`
+        Input source catalog.
+    pass_thru_cols : `list` of `str`
+        List of input catalog columns passed through to the photometry table.
+    """
+    supported_pass_through = ["spherex_class", "name"]
+    # Check that values match for each source ID
+    for col in pass_thru_cols:
+        if col in supported_pass_through:
+            for idx, unique_id in enumerate(output_tab["source_id"]):
+                try:
+                    output_val = output_tab[col][idx]
+                    input_val = input_tab[col][input_tab["SPHERExRefID"] == unique_id]
+                    msg = f"Shared column '{col}' does not match original for source_id {unique_id}."
+                    assert input_val == output_val, msg
+                except KeyError:
+                    raise ValueError(f"Pass-through column '{col}' not present in both input source catalog"
+                                     f" and output photometry measurement table. Input columns:"
+                                     f" {input_tab.colnames}, output columns: {output_tab.colnames}.")
     return
 
 
@@ -100,7 +83,7 @@ def get_num_meas(cat_dict) -> int:
     return nmeas
 
 
-def check_cols(flux_tab: Table, global_bkgd: bool, pipe_pass_thru: bool, tool_pass_thru: bool):
+def check_cols(flux_tab: Table, global_bkgd: bool, pass_thru_cols: list[str]):
     """Check photometry measurement table column formatting.
 
     Parameters
@@ -110,16 +93,11 @@ def check_cols(flux_tab: Table, global_bkgd: bool, pipe_pass_thru: bool, tool_pa
     global_bkgd : `bool`
         True if global background estimate was subtracted, False if local
         background estimates were subtracted.
-    pipe_pass_thru : `bool`
-        True if "pipeline"/"production"-mode pass-through columns
-        ("spherex_class", "pm_ra", "pm_dec", "parallax", "external_survey",
-        "external_source_id") were added to the table.
-    tool_pass_thru : `bool`
-        True if "spectrophotometry tool"-mode pass-through columns ("name")
-        were added to the table.
+    pass_thru_cols : `list` of `str`
+        List of input catalog columns passed through to the photometry table.
     """
-    # Check that expected columns exist and have proper units
-    expected = np.array([
+    # Start with minimal set of columns
+    expected = [
         ("source_id", None),
         ("ra", u.deg),
         ("dec", u.deg),
@@ -138,146 +116,286 @@ def check_cols(flux_tab: Table, global_bkgd: bool, pipe_pass_thru: bool, tool_pa
         ("deep_flg", None),
         ("lvf_id", None),
         ("det_id", None)
-    ])
-    if pipe_pass_thru:
-        np.append(expected, [("spherex_class", None), ("pm_ra", u.mas/u.year), ("pm_dec", u.mas/u.year),
-                             ("parallax", u.mas), ("external_survey", None), ("external_source_id", None)])
-    if tool_pass_thru:
-        np.append(expected, [("name", None)])
-    for exp_name, exp_unit in zip(expected[:, 0], expected[:, 1]):
-        assert exp_name in flux_tab.colnames, f"Column {exp_name} not found in output photometry table."
-        assert flux_tab[exp_name].unit == exp_unit, f"Column {exp_name} does not have units {exp_unit}."
-        # Verify string column is not blank
-        if exp_name == "external_source_id":
-            assert np.all(flux_tab[exp_name] != ""), "Column external_source_id is blank for some sources."
+    ]
+
+    # Add pass-through columns if specified
+    if len(pass_thru_cols) > 0:
+        for col in pass_thru_cols:
+            if col == "name":
+                expected.insert(1, ("name", None))
+            elif col == "spherex_class":
+                expected.insert(1, ("spherex_class", None))
+
+    # Check order, name, and units of columns
+    for i, exp_col in enumerate(expected):
+        assert exp_col[0] == flux_tab.colnames[i], \
+            f"Column '{exp_col[0]}' not found or not at expected column index {i} in output photometry table."
+        assert flux_tab[exp_col[0]].unit == exp_col[1], \
+            f"Column '{exp_col[0]}' does not have units {exp_col[1]}."
 
     # Verify flux_bkg and local_bkg_flg are properly populated
     if global_bkgd:
-        zero_bkg_msg = "Column flux_bkg is zero for all sources in the global background case."
+        zero_bkg_msg = "Column 'flux_bkg' is zero for all sources in the global background case."
         assert np.sum(flux_tab["flux_bkg"]) != 0, zero_bkg_msg
-        global_msg = "Column local_bkg_flg is True for 1+ sources in the global background case."
+        global_msg = "Column 'local_bkg_flg' is True for 1+ sources in the global background case."
         assert np.count_nonzero(flux_tab["local_bkg_flg"]) == 0, global_msg
     else:
-        local_msg = "Column local_bkg_flg is False for 1+ sources in the local background case."
+        local_msg = "Column 'local_bkg_flg' is False for 1+ sources in the local background case."
         assert np.all(flux_tab["local_bkg_flg"]), local_msg
 
 
-class TestPerformForcedPhotometry(unittest.TestCase):
+def _extract_refcat_from_srccat(srccat: Table) -> tuple[str | None, str | None]:
+    """Return (run, version) from srccat.meta if present; otherwise return
+    (None, None)."""
+    um = dict(srccat.meta.get("user_metadata") or {})
+    ver = um.get("refcat_version") or srccat.meta.get("refcat_version")
+    run = um.get("refcat_run") or srccat.meta.get("refcat_run")
+    return run, ver
+
+
+def _assert_refcat_version_on_table_if_expected(out_tab: Table, expected_ver: str | None):
+    """If expected_ver is provided, assert it is present in out_tab.meta."""
+    if expected_ver:
+        assert "refcat_version" in out_tab.meta, "Missing refcat_version in output table metadata."
+        assert out_tab.meta["refcat_version"] == expected_ver, (
+            f"refcat_version mismatch: got {out_tab.meta['refcat_version']!r}, expected {expected_ver!r}"
+        )
+
+
+def validate_output(input_catalog: Table, output: pipeBase.Struct, global_bkgd: bool,
+                    pass_thru_cols: list[str]):
+    """Validate photometry output against input catalog.
+
+    Parameters
+    ----------
+    input_catalog : `astropy.table.Table`
+        Input source catalog.
+    output : `lsst.pipe.base.Struct`
+        Output object containing photometry measurement table(s).
+    global_bkgd : `bool`
+        True if global background estimate was subtracted, False if local
+        background estimates were subtracted.
+    pass_thru_cols : `list` of `str`
+        List of input catalog columns passed through to the photometry table.
+    """
+    # Determine output type and number of sources
+    fields = output.getDict().keys()
+    # Dictionary output
+    if "phot_meas" in fields:
+        msg = "Number of sources in output phot_meas tables does not match input catalog."
+        n_src_output = get_num_meas(output.phot_meas)
+        sample_tab = list(output.phot_meas.values())[0]
+    # Combined output
+    elif "phot_meas_combined" in fields:
+        msg = "Number of sources in output phot_meas_combined table does not match input catalog."
+        n_src_output = len(output.phot_meas_combined)
+        sample_tab = output.phot_meas_combined
+
+    # Determine expected number of sources
+    if "for_l3phot" in input_catalog.colnames:
+        expected_srcs = len(np.nonzero(input_catalog["for_l3phot"] == 1)[0])
+    else:
+        expected_srcs = len(input_catalog)
+
+    # Verify number of sources matches input catalog
+    assert n_src_output == expected_srcs, msg
+
+    # Check column format and row ordering
+    check_cols(sample_tab, global_bkgd, pass_thru_cols)
+    if len(pass_thru_cols) > 0:
+        check_pass_thru_order(output_tab=sample_tab, input_tab=input_catalog, pass_thru_cols=pass_thru_cols)
+
+    # Check version metadata
+    _, exp_ver = _extract_refcat_from_srccat(input_catalog)
+    _assert_refcat_version_on_table_if_expected(sample_tab, exp_ver)
+    assert "version_level2" in sample_tab.meta.keys()
+    assert "version_phot_meas" in sample_tab.meta.keys()
+
+
+# Fixtures ===================================================================
+@pytest.fixture()
+def point_source():
+    ps_img = spherex_image_reader(get_sample_file("point source"), hdu_layers=["PSF", "CATALOG"])
+    return dict(
+        img=ps_img,
+        global_bkgd=get_sample_global_bkgd(ps_img.data),
+        local_bkgd=get_sample_global_bkgd(ps_img.data, null=True),
+        pix_map=get_sample_pix_map(ps_img.data),
+        spectral_wcs=get_sample_spectral_wcs(ps_img.data)
+    )
+
+
+@pytest.fixture()
+def galaxy():
+    gal_img = spherex_image_reader(get_sample_file("galaxy"), hdu_layers=["PSF", "CATALOG"])
+    return dict(
+        img=gal_img,
+        global_bkgd=get_sample_global_bkgd(gal_img.data),
+        local_bkgd=get_sample_global_bkgd(gal_img.data, null=True),
+        pix_map=get_sample_pix_map(gal_img.data),
+        spectral_wcs=get_sample_spectral_wcs(gal_img.data)
+    )
+
+
+# Test cases ==================================================================
+class TestPerformForcedPhotometry():
     """Test Perform Forced Photometry Task."""
-    def setUp(self):
-        # Point sources
-        ps_img = spherex_image_reader(get_sample_file("point source"), hdu_layers=["PSF", "CATALOG"])
-        self.ps_img = ps_img
-        self.ps_bkgd = get_sample_global_bkgd(ps_img.data)
-        self.ps_null_bkgd = get_sample_global_bkgd(ps_img.data, null=True)
-        self.ps_pix_map = get_sample_pix_map(ps_img.data)
-        self.ps_spectral_wcs = get_sample_spectral_wcs(ps_img.data)
+    def test_pixel_filtering_and_debug_options(self, point_source, caplog):
+        """Test that non-finite and zero-valued pixels are properly filtered
+        out before photometry. Test that config options used for debugging
+        work."""
+        config = PerformForcedPhotometryConfig(combinedOutput=True, gc_interval=2, return_fit=True)
+        task = PerformForcedPhotometryTask(config=config)
 
-        # Galaxy
-        gal_img = spherex_image_reader(get_sample_file("galaxy"), hdu_layers=["PSF", "CATALOG"])
-        self.gal_img = gal_img
-        self.gal_bkgd = get_sample_global_bkgd(gal_img.data)
-        self.gal_null_bkgd = get_sample_global_bkgd(gal_img.data, null=True)
-        self.gal_pix_map = get_sample_pix_map(gal_img.data)
-        self.gal_spectral_wcs = get_sample_spectral_wcs(gal_img.data)
+        # Image layer
+        point_source["img"].data[0, 0] = np.inf
+        point_source["img"].data[9, 14] = np.nan
+        point_source["img"].data[14, 14] = np.nan
 
-    def test_dictionary_output(self):
-        tmpdir, _ = prepare_mock_lvf_fits()
-        with patch.dict("os.environ", {"SSDC_CENTER_WAVELENGTH_DIR": tmpdir.name}):
-            """Test photometry dictionary output (key per HEALPix index)."""
-            # NOTE: Only test with the point source sample image since it
-            # includes multiple sources.
-            # HIPS order 6 + good global background solution
-            config1 = PerformForcedPhotometryConfig(hips_order=6, pass_thru_cols=["name"])
-            task1 = PerformForcedPhotometryTask(config=config1)
+        # Variance layer
+        point_source["img"].uncertainty.array[5, 5] = np.inf
+        point_source["img"].uncertainty.array[6, 6] = np.nan
+        point_source["img"].uncertainty.array[7, 7] = 0.0
 
-            # Add a few non-finite pixels to check pixel filtering
-            self.ps_img.data[0, 0] = np.inf
-            self.ps_img.data[9, 14] = np.nan
-            self.ps_img.data[14, 14] = np.nan
+        with caplog.at_level(logging.INFO, logger=task.log.name):
+            output = task.run(point_source["img"], point_source["img"].catalog, point_source["global_bkgd"],
+                              point_source["pix_map"], point_source["spectral_wcs"])
 
-            # Check for filtered pixel logs and metadata
-            with self.assertLogs(task1.log.name, level=logging.INFO) as captured:
-                ps_output1 = task1.run(self.ps_img, self.ps_img.catalog,
-                                       self.ps_bkgd, self.ps_pix_map, self.ps_spectral_wcs)
-            logs = [rec.getMessage() for rec in captured.records]
-            assert "Assigned 3 non-finite-valued image pixels to 0." in logs
-            assert "version_level2" in (list(ps_output1.phot_meas.values())[0]).meta.keys()
-            assert "version_phot_meas" in (list(ps_output1.phot_meas.values())[0]).meta.keys()
+        # Check logs
+        logs = caplog.messages
+        # Pixel filtering
+        assert "Assigned 3 non-finite-valued image pixels to 0." in logs
+        assert "Assigned 2 non-finite-valued variance pixels to initial max variance value." in logs
+        assert "Assigned 1 zero-valued variance pixels to initial mean variance value." in logs
+        # Garbage collection
+        gc_logs = [log for log in logs if "objects garbage collected" in log]
+        assert len(gc_logs) == 5, f"Expected 5 garbage collection log entries, got {len(gc_logs)}."
 
-            # Check expected output and formatting
-            assert len(ps_output1.phot_meas.keys()) == 1  # test grouping
-            assert get_num_meas(ps_output1.phot_meas) == len(self.ps_img.catalog)  # check for all sources
-            check_cols(list(ps_output1.phot_meas.values())[0], global_bkgd=True, pipe_pass_thru=False,
-                       tool_pass_thru=True)
+        # Check for fit results
+        assert len(list(output.tractor_fits.keys())) == 3, \
+            f"Expected fit results for 3 windows with 1+ sources to photometer, got" \
+            f" {len(list(output.tractor_fits.keys()))}."
 
-            # HIPS order 12 + no good global background solution
-            config2 = PerformForcedPhotometryConfig(hips_order=12)
-            task2 = PerformForcedPhotometryTask(config=config2)
-            ps_output2 = task2.run(self.ps_img, self.ps_img.catalog, self.ps_null_bkgd, self.ps_pix_map)
-            assert len(ps_output2.phot_meas.keys()) == 3  # test grouping
-            assert get_num_meas(ps_output2.phot_meas) == len(self.ps_img.catalog)  # check for all sources
-            check_cols(list(ps_output2.phot_meas.values())[0], global_bkgd=False, pipe_pass_thru=True,
-                       tool_pass_thru=False)
-            check_order(output_tab=list(ps_output2.phot_meas.values())[0], input_tab=self.ps_img.catalog)
+    @pytest.mark.parametrize("hips_order, n_healpix_tabs", [(6, 1), (12, 3)])
+    def test_healpix_ordering(self, point_source, hips_order, n_healpix_tabs):
+        """Test that HEALPix indexing and ordering is correct."""
+        # NOTE: Only the point source sample includes 1+ sources that could be
+        #       in different HEALPix.
+        config = PerformForcedPhotometryConfig(hips_order=hips_order)
+        task = PerformForcedPhotometryTask(config=config)
+        ps_output = task.run(point_source["img"], point_source["img"].catalog, point_source["global_bkgd"],
+                             point_source["pix_map"], point_source["spectral_wcs"])
+        assert len(ps_output.phot_meas.keys()) == n_healpix_tabs  # test grouping
+        validate_output(point_source["img"].catalog, ps_output, global_bkgd=True,
+                        pass_thru_cols=config.pass_thru_cols)
 
-    def test_combined_output(self):
-        """Test photometry single-table output (for a full image)."""
-        config_ps = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=True)
-        task_ps = PerformForcedPhotometryTask(config=config_ps)
-        # Point sources + good global background solution
-        ps_output1 = task_ps.run(self.ps_img, self.ps_img.catalog, self.ps_bkgd, self.ps_pix_map)
-        assert len(ps_output1.phot_meas_combined) == len(self.ps_img.catalog)  # check for all sources
-        check_cols(ps_output1.phot_meas_combined, global_bkgd=True, pipe_pass_thru=True, tool_pass_thru=False)
-        check_order(output_tab=ps_output1.phot_meas_combined, input_tab=self.ps_img.catalog)
-        # Point sources + no good global background solution
-        ps_output2 = task_ps.run(self.ps_img, self.ps_img.catalog, self.ps_null_bkgd, self.ps_pix_map)
-        assert len(ps_output2.phot_meas_combined) == len(self.ps_img.catalog)  # check for all sources
-        check_cols(ps_output2.phot_meas_combined, global_bkgd=False, pipe_pass_thru=True,
-                   tool_pass_thru=False)
-        check_order(output_tab=ps_output2.phot_meas_combined, input_tab=self.ps_img.catalog)
-        assert "version_level2" in ps_output2.phot_meas_combined.meta.keys()
-        assert "version_phot_meas" in ps_output2.phot_meas_combined.meta.keys()
+    @pytest.mark.parametrize("bkgd_type", ["global_bkgd", "local_bkgd"])
+    def test_background_subtraction(self, point_source, bkgd_type):
+        """Test that global and local background subtraction work."""
+        config = PerformForcedPhotometryConfig(hips_order=6)
+        task = PerformForcedPhotometryTask(config=config)
+        ps_output = task.run(point_source["img"], point_source["img"].catalog, point_source[bkgd_type],
+                             point_source["pix_map"], point_source["spectral_wcs"])
+        validate_output(point_source["img"].catalog, ps_output, global_bkgd=(bkgd_type == "global_bkgd"),
+                        pass_thru_cols=config.pass_thru_cols)
 
-        config_gal = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=True, cut_side_length=2,
-                                                   frame_width=1, bkg_side_length=4, bkg_box_size=1,
-                                                   pass_thru_cols=["name"])
-        task_gal = PerformForcedPhotometryTask(config=config_gal)
-        # Extended source + good global background solution
-        gal_output1 = task_gal.run(self.gal_img, self.gal_img.catalog,
-                                   self.gal_bkgd, self.gal_pix_map, self.gal_spectral_wcs)
-        assert len(gal_output1.phot_meas_combined) == len(self.gal_img.catalog)  # check for all sources
-        check_cols(gal_output1.phot_meas_combined, global_bkgd=True, pipe_pass_thru=False,
-                   tool_pass_thru=True)
-        # Extended source + no good global background solution
-        gal_output2 =\
-            task_gal.run(self.gal_img, self.gal_img.catalog, self.gal_null_bkgd, self.gal_pix_map)
-        assert len(gal_output2.phot_meas_combined) == len(self.gal_img.catalog)  # check for all sources
-        check_cols(gal_output2.phot_meas_combined, global_bkgd=False, pipe_pass_thru=False,
-                   tool_pass_thru=True)
+    @pytest.mark.parametrize("source_type, cut_side_length, frame_width, bkg_side_length, bkg_box_size",
+                             [("point source", 5, 3, 9, 3), ("galaxy", 2, 1, 4, 1)])
+    def test_source_fitting(self, source_type, cut_side_length, frame_width, bkg_side_length,
+                            bkg_box_size, point_source, galaxy):
+        """Test that point source and galaxy fitting work."""
+        config = PerformForcedPhotometryConfig(
+            hips_order=6, cut_side_length=cut_side_length, frame_width=frame_width,
+            bkg_side_length=bkg_side_length, bkg_box_size=bkg_box_size)
+        task = PerformForcedPhotometryTask(config=config)
+
+        if source_type == "point source":
+            inputs = point_source
+        elif source_type == "galaxy":
+            inputs = galaxy
+        output = task.run(inputs["img"], inputs["img"].catalog, inputs["global_bkgd"],
+                          inputs["pix_map"], inputs["spectral_wcs"])
+        validate_output(inputs["img"].catalog, output, global_bkgd=True, pass_thru_cols=config.pass_thru_cols)
+
+    # NOTE: 'spherex_class' and 'name' are the only supported pass-through
+    #       columns with lookup parameters. We add 'pmra' to test that adding
+    #       a non-lookup column still results in a standard output.
+    @pytest.mark.parametrize(
+        "pass_thru_cols",
+        [["spherex_class"], ["name"], ["pmra"]])
+    def test_pass_thru_columns_and_srccat_read(self, point_source, pass_thru_cols):
+        """Test that pass-through columns are properly added to output."""
+        config = PerformForcedPhotometryConfig(hips_order=6, merge_srccat=True,
+                                               pass_thru_cols=pass_thru_cols)
+        task = PerformForcedPhotometryTask(config=config)
+
+        output = task.run(point_source["img"], point_source["img"].catalog, point_source["global_bkgd"],
+                          point_source["pix_map"], point_source["spectral_wcs"])
+        validate_output(point_source["img"].catalog, output, global_bkgd=True,
+                        pass_thru_cols=pass_thru_cols)
 
     def test_config_checks(self):
         """Tests that config checks work for faulty setups."""
+        # Cut side length is a factor of # of active pixels
+        with pytest.raises(ValueError):
+            PerformForcedPhotometryConfig(cut_side_length=7)
+
         # Frame width > cut side length
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             PerformForcedPhotometryConfig(cut_side_length=5, frame_width=10)
 
         # Background cut side length < image cut side length
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             PerformForcedPhotometryConfig(bkg_side_length=4, cut_side_length=5)
 
         # Difference in BG cut side length and image cut side length is odd
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             PerformForcedPhotometryConfig(bkg_side_length=12, cut_side_length=5)
 
         # Background box size is not a factor of background side length
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             PerformForcedPhotometryConfig(bkg_side_length=15, bkg_box_size=4)
 
         # Non-"ALL" class filter without "spherex_class" column
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             PerformForcedPhotometryConfig(pass_thru_cols=[], class_filter=SourcePipelineClass.COSMOLOGY)
 
+        # Add pass-through columns without specifying any
+        with pytest.raises(ValueError):
+            PerformForcedPhotometryConfig(pass_thru_cols=[], merge_srccat=True)
 
-if __name__ == "__main__":
-    unittest.main()
+    @pytest.mark.parametrize("keyword, flag_str, is_deep", [
+        ("SFLAG", "deep_north", True),
+        ("SPS_FLAGS", "deep_south", True),
+        (None, None, False)
+    ])
+    def test_deep_flag(self, point_source, keyword, flag_str, is_deep):
+        """Test that deep field flag is correctly read from header."""
+        if keyword is not None:
+            point_source["img"].header[keyword] = flag_str
+        else:
+            if "SFLAG" in point_source["img"].header:
+                point_source["img"].header.remove("SFLAG")
+            elif "SPS_FLAGS" in point_source["img"].header:
+                point_source["img"].header.remove("SPS_FLAGS")
+
+        deep_flag = get_deep_flag(point_source["img"].header)
+        assert deep_flag == is_deep
+
+    @pytest.mark.parametrize("class_bit, n_phot_sources", [
+        (SourcePipelineClass.ALL, 4),
+        (SourcePipelineClass.COSMOLOGY, 3),
+        (SourcePipelineClass.CLUSTER, 0)])
+    def test_class_filtering(self, point_source, class_bit, n_phot_sources):
+        """Test that source class filtering works."""
+        config = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=True, class_filter=class_bit,
+                                               pass_thru_cols=["spherex_class"], merge_srccat=True)
+        task = PerformForcedPhotometryTask(config=config)
+        output = task.run(point_source["img"], point_source["img"].catalog, point_source["global_bkgd"],
+                          point_source["pix_map"], point_source["spectral_wcs"])
+
+        # Check only sources of requested class with for_l3phot=1 and their
+        # window mates have flux measurements
+        assert len(output.phot_meas_combined) == n_phot_sources, \
+            f"Number of photometered sources {len(output.phot_meas_combined)} does not match expected" \
+            f" ({n_phot_sources}."

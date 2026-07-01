@@ -12,6 +12,7 @@ import numpy as np
 from astropy.nddata import VarianceUncertainty
 from astropy.table import Table
 from astropy.units import Unit
+from astropy.wcs import WCS
 
 # Local application/library specific imports
 from spx_data import SPHERExImage, Level2DQA, Flag
@@ -26,6 +27,7 @@ from spx_tasks.create_source_mask import (dqa_check_ghost_flux,
                                           dqa_check_crosstalk_flux)
 from spx_tasks.detect_outlier_pixels import dqa_check_outlier_pixel_count
 from spx_utils.dqa_utils import log_dqa_result, nan_variance_flagged, nan_pixels_flagged
+from spx_utils.utils import get_refcat_provenance
 
 # ==============================================================================
 logger = logging.getLogger(__name__)
@@ -266,6 +268,129 @@ def dqa_check_psf_solid_angle(spximg, expected_fwhm: float = 7.00, tolerance_fra
     return result
 
 
+def dqa_check_srccat_coverage(spximg: SPHERExImage,
+                              srccat: Table,
+                              required_pad: int = 250) -> dict:
+    """Check that the srccat covers the image with at least `required_pad`
+    pixels of margin on all four sides, in the image's pixel frame.
+
+    Parameters
+    ----------
+    spximg : `SPHERExImage`
+        The Level-2 image (must have .wcs and .data).
+    srccat : `astropy.table.Table`
+        Source catalog with RA/Dec columns ('ra'/'dec').
+    required_pad : `int`, optional
+        Required padding in pixels beyond the image edge on each side.
+
+    Returns
+    -------
+    result : `dict`
+        DQA result dictionary with "result" and "description".
+    """
+    # get ra, dec columns
+    colnames = {c.lower(): c for c in srccat.colnames}
+    if "ra" not in colnames or "dec" not in colnames:
+        result = {
+            "result": "FAIL",
+            "description": "srccat coverage check: no RA/Dec columns found in catalog."
+        }
+        log_dqa_result("srccat coverage check", result)
+        return result
+
+    ra_col = colnames["ra"]
+    dec_col = colnames["dec"]
+
+    ra = np.array(srccat[ra_col])
+    dec = np.array(srccat[dec_col])
+
+    if ra.size == 0:
+        result = {
+            "result": "FAIL",
+            "description": "srccat coverage check: empty catalog."
+        }
+        log_dqa_result("srccat coverage check", result)
+        return result
+
+    w: WCS = spximg.wcs
+    nx, ny = spximg.data.shape
+
+    # Project srccat ra/dec to pixel coordinates
+    # origin=0 -> 0-based pixel coords
+    x, y = w.all_world2pix(ra, dec, 0)
+
+    # Drop any NaNs just in case
+    good = np.isfinite(x) & np.isfinite(y)
+    if not np.any(good):
+        result = {
+            "result": "FAIL",
+            "description": "srccat coverage check: all projected positions are NaN/Inf."
+        }
+        log_dqa_result("srccat coverage check", result)
+        return result
+
+    x = x[good]
+    y = y[good]
+
+    # Compute minimum and maximum projected x and y
+    xmin = float(np.min(x))
+    xmax = float(np.max(x))
+    ymin = float(np.min(y))
+    ymax = float(np.max(y))
+
+    # Compute required border padding
+    # Catalog must include sources >= 250 pix left of the image
+    pad_left = 0.0 - xmin
+    # Catalog must include sources >= 250 pix right of the image
+    pad_right = xmax - (nx - 1)
+    pad_bottom = 0.0 - ymin
+    pad_top = ymax - (ny - 1)
+    # Means requirement to pass is: (in pixel space)
+    # xmin_srccat <= −250
+    # xmax_srccat >= nx−1 + 250 (nx = 2040)
+    # ymin_srccat <= −250
+    # ymax_srccat >= ny−1 + 250 (ny= = 2040)
+
+    pads = {
+        "pad_left": pad_left,
+        "pad_right": pad_right,
+        "pad_bottom": pad_bottom,
+        "pad_top": pad_top,
+    }
+
+    # require coverage on all sides
+    all_good = all(p >= required_pad for p in pads.values())
+
+    if all_good:
+        result = {
+            "result": "PASS",
+            "description": (
+                "srccat covers image with sufficient margin: "
+                f"left={pad_left:.1f}px, right={pad_right:.1f}px, "
+                f"bottom={pad_bottom:.1f}px, top={pad_top:.1f}px "
+                f"(required ≥ {required_pad}px)."
+            ),
+        }
+    else:
+        bad_sides = [name for name, p in pads.items() if p < required_pad]
+        result = {
+            "result": "FAIL",
+            "description": (
+                "srccat does not provide sufficient border padding. "
+                f"left={pad_left:.1f}px, right={pad_right:.1f}px, "
+                f"bottom={pad_bottom:.1f}px, top={pad_top:.1f}px; "
+                f"required ≥ {required_pad}px on all sides. "
+                f"Sides below requirement: {', '.join(bad_sides)}."
+            ),
+        }
+
+    # Include the pad values into result for YAML/debug
+    result.update(pads)
+
+    log_dqa_result("srccat coverage check", result)
+    return result
+
+
 class DQAL2Connections(pipeBase.PipelineTaskConnections,
                        dimensions=("instrument", "exposure"),
                        defaultTemplates={}):
@@ -472,6 +597,34 @@ class DQAL2Task(pipeBase.PipelineTask):
         # flat_field_check =
         # dqa_check_flat_field(spximg, abs_gain_matrix, threshold=0.30)
 
+        # srccat coverage vs image check
+        # Only perform this check if FINAST == 0 (good fine astrometry).
+
+        # srccat coverage vs image check
+        # Only perform this check if FINAST == 0 (good fine astrometry).
+        finast_value = spximg.header.get("FINAST", -1)
+        if finast_value == 0:
+            try:
+                srccat_coverage_check = dqa_check_srccat_coverage(spximg,
+                                                                  srccat,
+                                                                  required_pad=250)
+            except Exception as e:
+                # Never crash
+                # Log and return a structured DQA failure
+                self.log.warning("srccat coverage check failed; treating as DQA failure: %s",
+                                 str(e),
+                                 exc_info=True)
+
+                srccat_coverage_check = {"result": "FAIL",
+                                         "description": ("srccat coverage check failed due to exception "
+                                                         f"({type(e).__name__}: {e})"), }
+        else:
+            srccat_coverage_check = {"result": "PASS",
+                                     "description": ("srccat coverage check skipped because FINAST != 0 "
+                                                     "(fine astrometry not successful)."), }
+
+        log_dqa_result("srccat coverage check", srccat_coverage_check)
+
         # Source count check
         source_count_check = dqa_check_source_count(srccat)
 
@@ -572,7 +725,8 @@ class DQAL2Task(pipeBase.PipelineTask):
             unflagged_nan_variance_check=nan_variance_check,
             update_field_distortion=distortion_dict,
             # psf_solid_angle_check=psf_solid_angle_check,
-            finast_check=finast_check
+            finast_check=finast_check,
+            srccat_coverage_check=srccat_coverage_check
         )
 
         spximg_out = copy.copy(spximg)
@@ -668,5 +822,10 @@ class DQAL2Task(pipeBase.PipelineTask):
         for key in ["NL_DQA_RES", "NL_DQA_DESC"]:
             if key in spximg.meta:
                 del spximg.meta[key]
+
+        # Extract refcat provenance and write into image header
+        _, ref_ver = get_refcat_provenance(srccat)
+        if ref_ver:
+            spximg_out.header["HIERARCH REFCAT.VERSION"] = (ref_ver, "Reference catalog version")
 
         return pipeBase.Struct(spximg_out=spximg_out, dqa_l2=dqa_record, idqr_obs=idqr)

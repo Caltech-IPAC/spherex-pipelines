@@ -13,11 +13,17 @@ class EmptyLVFQueryResultError(Exception):
     dataset_type : `str`
         The dataset type name.
     """
-
     def __init__(self, n_src: int, instrument: str, dataset_type: str) -> None:
         self.n_src = n_src
         self.instrument = instrument
         self.dataset_type = dataset_type
+
+    def __reduce__(self):
+        # This method tells pickle how to serialize/deserialize the exception
+        return (
+            self.__class__,
+            (self.n_src, self.instrument, self.dataset_type)
+        )
 
     def __str__(self) -> str:
         return (f"No LVF images contain the required {self.n_src} input sources.\n"
@@ -53,6 +59,7 @@ class VOTableSearchError(Exception):
     start_idx : `int`
         The index of the character where the search began.
     """
+
     def __init__(self, substring: str, start_idx: int) -> None:
         self.substring = substring
         self.start_idx = start_idx

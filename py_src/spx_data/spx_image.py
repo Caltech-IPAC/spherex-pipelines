@@ -707,10 +707,16 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         """
         if self.flags is None:
             raise RuntimeError("flags are not set")
+
+        # Force everything to int32 so we never try to interpret large flag values
+        # (e.g. 1<<26) as int16. This is consistent with dtype_flags = np.int32.
+        flags32 = self.flags.astype(np.int32, copy=False)
+        flag32 = np.int32(flag_val)
+
         if check_all:
-            ret = np.bitwise_and(self.flags, flag_val) == flag_val
+            ret = np.bitwise_and(flags32, flag32) == flag32
         else:
-            ret = np.bitwise_and(self.flags, flag_val) > 0
+            ret = np.bitwise_and(flags32, flag32) > 0
         return ret
 
     def setFreeFormatHeaderCard(self, name: str, value: float, digits: int, comment: str) -> None:
@@ -1036,7 +1042,6 @@ def spherex_image_reader(filename, hdu=0, unit=None,
                     # present in the extension header.
                     comb_hdr.extend(hdr, unique=True)
                     hdr = comb_hdr
-                    logger.info(f"first HDU with data is extension {hdu}.")
                     break
 
         #############################
@@ -1065,8 +1070,10 @@ def spherex_image_reader(filename, hdu=0, unit=None,
         # Handle SPHEREx layers
         layers = {}
         if hdu_layers is not None:
-            for name in hdu_layers:
-                if name in hdus:
+            # preserve the original order of extensions
+            for an_hdu in hdus:
+                name = an_hdu.name
+                if name in hdu_layers:
                     layer = hdus[name]
                     # Make sure hdu is accessible after file is closed
                     layers[name] = type(layer)(layer.data, layer.header)
