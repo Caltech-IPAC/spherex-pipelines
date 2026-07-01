@@ -1,0 +1,9 @@
+# pipetask run -b <butler_repo>/butler.yaml -p ../spherex-pipelines/pipelines/ComputeSolarSystemObjects.yaml
+# -d "instrument='simu' AND detector=2" -i level2a -o ssocat --register-dataset-types
+description: ComputeSolarSystemObjects
+tasks:
+  compute_solar_system_objects:
+    class: spx_tasks.SolarSystemObjectsTask
+    config:
+      connections.images: "level2a"
+      connections.catalog: "ssocat"

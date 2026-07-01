@@ -1,0 +1,11 @@
+[project]
+title = "SPHEREx Pipelines"
+copyright = "2023 California Institute of Technology"
+base_url = "https://spherex-docs.ipac.caltech.edu/pipelines/"
+github_url = "https://github.com/IPAC-SW/spherex-pipelines"
+
+[sphinx.intersphinx.projects]
+python = "https://docs.python.org/3"
+astropy = "https://docs.astropy.org/en/stable/"
+numpy = "https://numpy.org/doc/stable/"
+lsst = "https://pipelines.lsst.io"

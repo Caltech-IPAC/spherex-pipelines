@@ -1,0 +1,64 @@
+storageClasses:
+  NonLinearityParameters:
+    pytype: spx_data.NonLinearityParameters
+  ReadNoiseParameters:
+    pytype: spx_data.ReadNoiseParameters
+  PersistenceState:
+    pytype: spx_data.PersistenceState
+  AstropyImage:
+    pytype: astropy.io.fits.HDUList
+  SPHERExImage:
+    pytype: spx_data.SPHERExImage
+    parameters:
+      - unit
+      - hdu_uncertainty
+      - hdu_mask
+      - hdu_flags
+      - hdu_layers
+      - key_uncertainty_type
+      - dtype_flags
+      - dtype_data
+      - extname
+      - hdu
+  SPHERExL1Image:
+    inheritsFrom: SPHERExImage
+  PSF:
+    pytype: spx_data.PSFZoneData
+  AstropyParquet:
+    pytype: astropy.table.Table
+  AstropySIP:
+    pytype: astropy.wcs.Sip
+  BackgroundMesh:
+    pytype: spx_data.BackgroundMesh
+  PyarrowTable:
+    pytype: pyarrow.Table
+    parameters:
+      - columns
+  GainFactors:
+    pytype: spx_data.GainFactors
+  ImageMetadata:
+    pytype: spx_data.ImageMetadata
+  ImageMetadataStats:
+    pytype: spx_data.ImageMetadataStats
+  PredictedObservation:
+    pytype: spx_data.PlannedObservation
+  GdsData:
+    pytype: astropy.table.Table
+  Level2DQA:
+    pytype: spx_data.Level2DQA
+  Level1DQA:
+    pytype: spx_data.Level1DQA
+  InitDistTable:
+    pytype: astropy.table.Table
+  IdqrObs:
+    pytype: spx_data.IDQR
+  IdqrAgg:
+    pytype: spx_data.IDQR
+  OdirObs:
+    pytype: spx_data.ODIR
+  OdirAgg:
+    pytype: spx_data.ODIR
+  SpxPhotoCalib:
+    pytype: astropy.table.Table
+  SbandMnemonics:
+    pytype: astropy.table.Table

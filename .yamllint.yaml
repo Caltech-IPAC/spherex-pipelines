@@ -1,0 +1,18 @@
+extends: default
+
+rules:
+  document-start:
+    # Disables the requirement for a document start marker (---).
+    present: false
+  line-length:
+    max: 132
+    # Allows non-breakable words and non-breakable inline mappings to exceed the line length limit.
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+  truthy:
+    # "on" as a key in workflows confuses things.
+    ignore: |
+      /.github/workflows/
+  indentation:
+    # Enforces consistent indentation for sequences (i.e., lists).
+    indent-sequences: consistent

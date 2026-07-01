@@ -1,0 +1,66 @@
+{
+  "zlhpft_basedata": {
+    "info": "Base data file for `ModifiedKelsallModelWithHPFT` class",
+    "url": "https://www.dropbox.com/scl/fi/mqb83i6g4334spd7q0nc2/zlhpft-basedata.fits?rlkey=g8xcfzopj0tzudi5zx2i38nhh&dl=1",
+    "sha": "8c9b178ff6329a245716f11b348827ffbd6b4477",
+    "package": "SPHEREx_SkySimulator",
+    "package_subdir": "data",
+    "version": "2023-11-06"
+  },
+    "tvac4_bandpass_template_1": {
+    "info":"Bandpass measurement for Detector 1 from TVAC4 data",
+    "url":"https://www.dropbox.com/scl/fi/6dzqcmmk0k4gwxvrjslac/tvac4_bandpass_template_1.parq?rlkey=drapy6va8e5485mqloxbsiyd2&dl=1",
+    "sha":"7f17d413805285fce2bbe9f859ce3ae4cae73164",
+    "package": "SPHEREx_InstrumentSimulator",
+    "package_subdir": "data",
+    "version": "v1"
+  },
+  "tvac4_bandpass_template_2": {
+    "info":"Bandpass measurement for Detector 2 from TVAC4 data",
+    "url":"https://www.dropbox.com/scl/fi/jtarfuorr9idqwafx0m0z/tvac4_bandpass_template_2.parq?rlkey=bpr0pesdsyou0w91aearzdmhl&dl=1",
+    "sha":"055ffd959267e2cb32909e30750252188f04d335",
+    "package": "SPHEREx_InstrumentSimulator",
+    "package_subdir": "data",
+    "version": "v1"
+  },
+  "tvac4_bandpass_template_3": {
+    "info":"Bandpass measurement for Detector 3 from TVAC4 data",
+    "url":"https://www.dropbox.com/scl/fi/ek2cvlq9i71tktu937b1a/tvac4_bandpass_template_3.parq?rlkey=m3yi5y9oz0eroji7abznna4mf&dl=1",
+    "sha":"a5232311bbeb12e41d64828c0f4474c6c599de3a",
+    "package": "SPHEREx_InstrumentSimulator",
+    "package_subdir": "data",
+    "version": "v1"
+  },
+  "tvac4_bandpass_template_4": {
+    "info":"Bandpass measurement for Detector 4 from TVAC4 data",
+    "url":"https://www.dropbox.com/scl/fi/h4cdpksomhr9bb4g5oc42/tvac4_bandpass_template_4.parq?rlkey=2e5p02cn6mmb4z5z8o5gafldj&dl=1",
+    "sha":"124a1971a59a3a09b93638452d4b33a7b04ea793",
+    "package": "SPHEREx_InstrumentSimulator",
+    "package_subdir": "data",
+    "version": "v1"
+  },
+  "tvac4_bandpass_template_5": {
+    "info":"Bandpass measurement for Detector 5 from TVAC4 data",
+    "url":"https://www.dropbox.com/scl/fi/fxwtlzowqdayjip1c6zb5/tvac4_bandpass_template_5.parq?rlkey=00hxk359w2r4kmcmz3gibkvvm&dl=1",
+    "sha":"0facfdfddb3ec1ccbb624126c78b13417f327e0c",
+    "package": "SPHEREx_InstrumentSimulator",
+    "package_subdir": "data",
+    "version": "v1"
+  },
+  "tvac4_bandpass_template_6": {
+    "info":"Bandpass measurement for Detector 6 from TVAC4 data",
+    "url":"https://www.dropbox.com/scl/fi/l6lxmpgnl7tlwab0fv6ej/tvac4_bandpass_template_6.parq?rlkey=gb753fj8y574xl351favagxqq&dl=1",
+    "sha":"a186483320c2d6a85ec625d4ea273e5af5804c27",
+    "package": "SPHEREx_InstrumentSimulator",
+    "package_subdir": "data",
+    "version": "v1"
+  },
+  "tvac4_bandpass_template_ids": {
+    "info":"Bandpass indicies from TVAC4 data",
+    "url":"https://www.dropbox.com/scl/fi/cttslql82iqu4koksqzj0/tvac4_bandpass_template_ids.fits.gz?rlkey=8hftqgkiiknrxymuqg8s471a9&dl=1",
+    "sha":"2fbf382653bde722edb2474d86a0d48bfd814b79",
+    "package": "SPHEREx_InstrumentSimulator",
+    "package_subdir": "data",
+    "version": "v1"
+  }
+}

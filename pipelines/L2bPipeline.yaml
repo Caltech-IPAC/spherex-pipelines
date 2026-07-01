@@ -1,0 +1,18 @@
+# pipetask run -b DATA/butler.yaml -p pipelines/L2bPipeline.yaml -i $runid --output-run $runid --extend-run --register-dataset-types
+description: Level 2b Data Processing Pipeline
+tasks:
+  level2b:
+    class: spx_tasks.L2bTask
+    config:
+      connections.spximg: "level2a"
+      connections.abs_gain_matrix: "abs_gain_matrix"
+      connections.dark: "dark"
+      # connections.sip: "sip"
+      connections.srccat: "srccat"
+      connections.spectral_wcs: "spectral_wcs"
+      # connections.xtalk_coupling_matrix: "xtalk_coupling_matrix"
+      # connections.ssocat: "ssocat"
+      connections.psf_avg: "average_psf"
+      connections.spximg_out: "level2"
+      connections.dqa_l2: "dqa_l2"
+      connections.idqr_obs: "idqr_obs"

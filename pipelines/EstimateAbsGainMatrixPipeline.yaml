@@ -1,0 +1,11 @@
+description: EstimateAbsGainMatrixPipeline
+tasks:
+  estimate_abs_gain_matrix:
+    class: spx_tasks.EstimateAbsGainMatrixTask
+    config:
+      connections.dataset: "level2"
+      connections.abs_cal: "abs_cal"
+      connections.photo_calib: "photo_calib"
+      connections.ff_est: "ff_est"
+      connections.ff_delta: "ff_delta"
+      connections.abs_gain_matrix: "abs_gain_matrix"

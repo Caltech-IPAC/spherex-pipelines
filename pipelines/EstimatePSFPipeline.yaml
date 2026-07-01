@@ -1,0 +1,9 @@
+description: EstimatePSFPipeline
+tasks:
+  estimate_psf:
+    class: spx_tasks.EstimatePSFTask
+    config:
+      connections.imageHandles: "level2"
+      connections.catalogHandles: "srccat"
+      # connections.sip: "sip"
+      connections.psf: "average_psf"

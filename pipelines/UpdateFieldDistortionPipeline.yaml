@@ -1,0 +1,9 @@
+description: UpdateFieldDistortionPipeline
+tasks:
+  update_field_distortion:
+    class: spx_tasks.UpdateFieldDistortionTask
+    config:
+      connections.imageHandles: "level2"
+      connections.catalogHandles: "srccat"
+      connections.sip: "sip"
+      connections.solid_angle_pixel_map: "solid_angle_pixel_map"

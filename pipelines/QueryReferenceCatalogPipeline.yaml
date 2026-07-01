@@ -1,0 +1,9 @@
+# pipetask run -b <butler_repo>/butler.yaml -p ../spherex-pipelines/pipelines/QueryReferenceCatalogPipeline.yaml
+# -d "instrument='simu' AND detector=2" -i <input_collection> -o <output_chained_collection> --register-dataset-types
+description: QueryReferenceCatalogPipeline
+tasks:
+  query_reference_catalog:
+    class: spx_tasks.QueryReferenceCatalogTask
+    config:
+      connections.images: "level1"
+      connections.catalog: "srccat"

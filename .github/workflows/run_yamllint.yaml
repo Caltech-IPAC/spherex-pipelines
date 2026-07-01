@@ -1,0 +1,30 @@
+name: yamllint
+
+# This configuration only runs when YAML files are changed in the repository,
+# reducing unnecessary runs for changes that do not affect YAML files.
+on:
+  push:
+    paths:
+      - "**.yml"
+      - "**.yaml"
+
+jobs:
+  yamllint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.10"
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: List YAML files to validate
+        run: yamllint --list-files .
+
+      - name: Run yamllint in strict mode
+        run: yamllint -s .

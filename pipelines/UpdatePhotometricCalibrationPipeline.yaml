@@ -1,0 +1,12 @@
+description: UpdatePhotometricCalibrationPipeline
+tasks:
+  update_photometric_calibration:
+    class: spx_tasks.UpdatePhotometricCalibrationTask
+    config:
+      # TODO include output of Primary Catalog
+      # connections.calspec_sources: "calspec_sources"
+      # connections.calspec_spx: "calspec_spx"
+      connections.ff_prev: "flat"
+      connections.initial_distortion_table: "initial_distortion_table"
+      connections.sip: "sip"
+      connections.photo_calib: "photo_calib"

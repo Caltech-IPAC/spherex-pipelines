@@ -1,0 +1,9 @@
+description: CreatePrimaryCalibratorCatalogPipeline
+
+tasks:
+  create_primary_calibrator_catalog:
+    class: spx_tasks.CreateAllSkyCatalogTask
+    config:
+      connections.meas_table_list: "phot_meas"
+      connections.allsky_cat: "primary_calibrator_cat"  # Special dataset type for primary calibrators
+      filter_spherex_class: 4  # Select only primary photometric calibrators

@@ -1,0 +1,264 @@
+version: 1
+namespace: spherex
+skypix:
+  # 'common' is the skypix system and level used to relate all other spatial
+  # dimensions.  Its value is a string formed by concatenating one of the
+  # other keys under the 'skypix' header (i.e. the name of a skypix system)
+  # with an integer level (with no zero-padding).
+  common: hips6
+  hips:
+    class: lsst.sphgeom.HealpixPixelization
+    max_level: 17
+
+elements:
+  instrument:
+    doc: >
+      An entity that produces observations.  An instrument defines a set of
+      detectors and a numbering system for the observations.
+    keys:
+      -
+        name: name
+        type: string
+        length: 16
+    metadata:
+      -
+        name: obs_max
+        type: int
+        doc: >
+          Maximum value for 'observation' field for observations associated with
+          this instrument (exclusive).
+      -
+        name: detector_max
+        type: int
+        doc: >
+          Maximum value for the 'detector' field for detectors associated with
+          this instrument (exclusive).
+      -
+        name: class_name
+        type: string
+        length: 64
+        doc: >
+          Full class name of the Instrument class associated with this
+          instrument.
+
+    governor: true
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.governor.BasicGovernorDimensionRecordStorage
+
+  dichroicpair:
+    doc: >
+      A pair of detectors that see the same sky scene.
+    keys:
+      -
+        name: id
+        type: int
+      -
+        name: full_name
+        type: string
+        length: 32
+    requires: [instrument]
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.caching.CachingDimensionRecordStorage
+      nested:
+        cls: lsst.daf.butler.registry.dimensions.table.TableDimensionRecordStorage
+
+  detector:
+    doc: >
+      A detector associated with a particular instrument (not an observation
+      of that detector; that requires specifying an observation as well).
+    keys:
+      -
+        name: id
+        type: int
+      -
+        name: full_name
+        type: string
+        length: 32
+    requires: [instrument]
+    implies: [dichroicpair]
+    metadata:
+      -
+        name: lmin
+        type: float
+        doc: >
+          Lowest active area wavelength in microns.
+      -
+        name: lmax
+        type: float
+        doc: >
+          Highest active area wavelength in microns.
+      -
+        name: r
+        type: float
+        doc: >
+          Spectral resolution.
+      -
+        name: desc
+        type: string
+        length: 32
+        doc: >
+          Description of the detector.
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.caching.CachingDimensionRecordStorage
+      nested:
+        cls: lsst.daf.butler.registry.dimensions.table.TableDimensionRecordStorage
+
+  spsplan:
+    doc: >
+      Survey plan from Survey planning.
+    keys:
+      -
+        name: id
+        type: int
+    requires: [instrument]
+    metadata:
+      -
+        name: name
+        type: string
+        length: 10
+        doc: Plan name from Survey Planning
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.table.TableDimensionRecordStorage
+
+  slewgroup:
+    doc: >
+      Large slew group from survey planning.
+    keys:
+      -
+        name: id
+        type: int
+    requires: [instrument]
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.table.TableDimensionRecordStorage
+
+  slewgroup_counter:
+    doc: >
+      Observation counter within large slew group. First observation in the
+      group has id 1.
+    keys:
+      -
+        name: id
+        type: int
+    requires: [instrument]
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.table.TableDimensionRecordStorage
+
+  observation:
+    doc: >
+      Science observations are identified by large slew group and small slew
+      group.
+    keys:
+      -
+        name: id
+        type: int
+    requires: [instrument]
+    implies: [spsplan, slewgroup, slewgroup_counter]
+    metadata:
+      -
+        name: canceled
+        type: bool
+        doc: True if observation was canceled
+      -
+        name: sps_name
+        type: string
+        length: 17
+        doc: Observation id from Survey Planning
+      -
+        name: sps_flag
+        type: int
+        doc: Flags from Survey Planning
+      -
+        name: sps_target
+        type: int
+        doc: Target ID from Survey Planning
+      -
+        name: in_sband
+        type: bool
+        doc: True if observation is taken during S-Band transmission
+      -
+        name: non_survey
+        type: bool
+        doc: True if observation is taken in test mode
+      -
+        name: diagnostic
+        type: bool
+        doc: True if observation is taken in diagnostic mode
+      -
+        name: ra_boresight
+        type: float
+        doc: >
+          ICRS Right Ascension of boresight in degrees.
+      -
+        name: dec_boresight
+        type: float
+        doc: >
+          ICRS Declination of boresight in degrees.
+      -
+        name: pa_eq
+        type: float
+        doc: >
+          Position angle in degrees, relative to equatorial north, eastward.
+      -
+        name: lon_ecl_boresight
+        type: float
+        doc: >
+          Ecliptic longitude of boresight in degrees.
+      -
+        name: lat_ecl_boresight
+        type: float
+        doc: >
+          Ecliptic latitude of boresight in degrees.
+      -
+        name: pa_ecl
+        type: float
+        doc: >
+          Position angle in degrees, relative to ecliptic north eastward.
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.table.TableDimensionRecordStorage
+
+  exposure:
+    doc: >
+      Table that provides exposure-level information
+      for a given observation and detector.
+    keys:
+      -
+        name: id
+        type: int
+    requires: [instrument]
+    implies: [observation, detector]
+    metadata:
+      -
+        name: dgl_qntl
+        type: float
+        doc: DGL quantile, measure of diffuse galactic light background.
+      -
+        name: galactic_lat
+        type: float
+        doc: Galactic latitude for the center of the image.
+      -
+        name: galactic_lon
+        type: float
+        doc: Galactic longitude for the center of the image.
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.table.TableDimensionRecordStorage
+
+  sequenceflg:
+    doc: >
+      Sequence flags for a fragment of timed data associated with an observation.
+      (0) 0b00 - data fragment that includes the middle of the observation without start and end.
+      (1) 0b01 - data fragment that includes the beginning of the observation.
+      (2) 0b10 - data fragment that includes the end of the observation.
+      (3) 0b11 - data fragment that includes complete observation.
+    keys:
+      -
+        name: id
+        type: int
+    storage:
+      cls: lsst.daf.butler.registry.dimensions.table.TableDimensionRecordStorage
+
+topology:
+  spatial:
+    observation_regions: [exposure]
+    skymap_regions: []
+  temporal:
+    observation_timespans: [observation]

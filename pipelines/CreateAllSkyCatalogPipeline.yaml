@@ -1,0 +1,7 @@
+description: CreateAllSkyCatalogPipeline
+tasks:
+  create_all_sky_catalog:
+    class: spx_tasks.CreateAllSkyCatalogTask
+    config:
+      connections.meas_table_list: "phot_meas"
+      connections.allsky_cat: "allsky_cat"

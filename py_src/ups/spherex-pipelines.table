@@ -1,0 +1,7 @@
+setupRequired(daf_butler)
+setupRequired(task_base)
+
+envPrepend(PYTHONPATH, ${PRODUCT_DIR}/py_src)
+envPrepend(PATH, ${PRODUCT_DIR}/bin)
+envPrepend(DAF_BUTLER_PLUGINS, ${PRODUCT_DIR}/py_src/spx_butler/cli/resources.yaml)
+envPrepend(DAF_BUTLER_CONFIG_PATHS, ${PRODUCT_DIR}/py_src/spx_butler/configs)

@@ -1,0 +1,26 @@
+# pipetask run -b DATA/butler.yaml -p pipelines/L2aNoPriorPipeline.yaml -d "<one-obs-condition>"
+#   -i $runid,calib --output-run $runid --register-dataset-types
+description: Level 2a No Prior Data Processing Pipeline
+tasks:
+  level2a:
+    class: spx_tasks.L2aTask
+    config:
+      connections.spximg: "level1"
+      connections.nonlinear_pars: "nonlinear_pars"
+      connections.gain_factors: "gain_factors"
+      connections.readnoise_pars: "readnoise_pars"
+      connections.spximg_out: "level2a"
+      connections.persistence_image: "persistence_image"
+      connections.persistence_state_out: "persistence_state"
+      persistence_prior: false
+      connections.spk: "spk"
+      connections.sgt: "sgt"
+      connections.sband: "sband"
+      connections.sband_mnemonics: "sband_mnemonics"
+      # Toggle optional GDS inputs
+      gds_image_association.useSgt: true
+      gds_image_association.useSpk: true
+      # Sband is false
+      gds_image_association.useSband: false
+      # L2 PEF is false as PEF has already been ingested.
+      gds_image_association.usePlannedObs: false

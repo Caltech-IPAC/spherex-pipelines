@@ -1,0 +1,51 @@
+{
+  "observations": {
+    "2025W37_2A_0486_2": {
+      "survey_plan_indicator": true,
+      "target_id": 8135,
+      "sps_flag": "survey",
+      "timestamp": {
+        "start": "2023-06-23T20:50:03.611",
+        "end": "2023-06-23T20:50:03.611"
+      },
+      "images": {
+        "1": {
+          "status": "good",
+          "pointing_solution": {
+            "right_ascension": 23.123456,
+            "declination": 45.678912,
+            "position_angle": 90.123456
+          },
+          "data_quality_indicators": {
+            "median_psf_size": 0.567891
+          }
+        }
+      }
+    },
+    "2025W37_2A_0486_3": {
+      "survey_plan_indicator": true,
+      "target_id": 8136,
+      "sps_flag": "survey",
+      "timestamp": {
+        "start": "2023-06-23T20:50:03.611",
+        "end": "2023-06-23T20:50:03.611"
+      },
+      "images": {
+        "1": {
+          "status": "good",
+          "pointing_solution": {
+            "right_ascension": 23.123456,
+            "declination": 45.678912,
+            "position_angle": 90.123456
+          },
+          "data_quality_indicators": {
+            "median_psf_size": 0.567891
+          }
+        },
+        "2": {
+          "status": "bad"
+        }
+      }
+    }
+  }
+}

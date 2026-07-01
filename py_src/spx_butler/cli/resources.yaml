@@ -1,0 +1,15 @@
+# The butler command finds plugin commands by way of a resource manifest
+# https://pipelines.lsst.io/v/weekly/modules/lsst.daf.butler/writing-subcommands.html#adding-butler-subcommands
+# The location of this file must be referenced by DAF_BUTLER_PLUGINS environment
+# variable
+cmd:
+  import: spx_butler.cli.cmd
+  commands:
+  - ingest-simulated
+  - ingest-calibrations
+  - estimate-flat-field
+  - run-l2a
+  - run-l3-photometry
+  - update-exposure-region
+  - create-tagged-primary-calibrators
+  - report-contiguous-obs

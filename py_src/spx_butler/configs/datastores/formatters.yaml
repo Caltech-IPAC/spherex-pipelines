@@ -1,0 +1,17 @@
+# This file overrides the formatters.yaml in daf_butler repo
+#
+# This file gives the mapping between DatasetType and the
+# `lsst.daf.butler.Formatter` that handles it.
+AstropyTable: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
+AstropyQTable: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
+ButlerLogRecords: lsst.daf.butler.formatters.logs.ButlerLogRecordsFormatter
+Config: lsst.pipe.base.formatters.pexConfig.PexConfigFormatter
+DataFrame: lsst.daf.butler.formatters.parquet.ParquetFormatter
+NumpyArray: lsst.daf.butler.formatters.pickle.PickleFormatter
+Packages:
+  formatter: lsst.daf.butler.formatters.packages.PackagesFormatter
+  parameters:
+    format: yaml
+Plot: lsst.daf.butler.formatters.matplotlib.MatplotlibFormatter
+StructuredDataDict: lsst.daf.butler.formatters.yaml.YamlFormatter
+TaskMetadata: lsst.daf.butler.formatters.json.JsonFormatter

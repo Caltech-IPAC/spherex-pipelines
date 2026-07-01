@@ -1,0 +1,48 @@
+datastore:
+  cls: lsst.daf.butler.datastores.fileDatastore.FileDatastore
+  formatters:
+    AstropyImage: spx_butler.formatters.AstropyImageFormatter
+    PSF: spx_butler.formatters.SPHERExPSFFormatter
+    NonLinearityParameters: spx_butler.formatters.NonlinearityParametersFormatter
+    ReadNoiseParameters: spx_butler.formatters.ReadNoiseParametersFormatter
+    PersistenceState: spx_butler.formatters.PersistenceStateFormatter
+    SPHERExImage:
+      formatter: spx_butler.formatters.SPHERExImageFormatter
+    AstropyParquet: spx_butler.formatters.AstropyParquetFormatter
+    AstropySIP: spx_butler.formatters.AstropySIPFormatter
+    BackgroundMesh: spx_butler.formatters.BackgroundMeshFormatter
+    PyarrowTable: spx_butler.formatters.PyarrowTableFormatter
+    GainFactors: lsst.daf.butler.formatters.yaml.YamlFormatter
+    ImageMetadata: lsst.daf.butler.formatters.yaml.YamlFormatter
+    ImageMetadataStats: lsst.daf.butler.formatters.yaml.YamlFormatter
+    SPHERExL1Image:
+      formatter: spx_butler.formatters.SPHERExImageFormatter
+      parameters:
+        dtype_flags: int16
+        dtype_data: float32
+    NumpyArray: lsst.daf.butler.formatters.pickle.PickleFormatter
+    PredictedObservation: lsst.daf.butler.formatters.json.JsonFormatter
+    GdsData: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
+    Level2DQA: lsst.daf.butler.formatters.yaml.YamlFormatter
+    Level1DQA: lsst.daf.butler.formatters.yaml.YamlFormatter
+    InitDistTable: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
+    IdqrObs: lsst.daf.butler.formatters.json.JsonFormatter
+    IdqrAgg: lsst.daf.butler.formatters.json.JsonFormatter
+    OdirObs: lsst.daf.butler.formatters.json.JsonFormatter
+    OdirAgg: lsst.daf.butler.formatters.json.JsonFormatter
+    SpxPhotoCalib: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
+    SbandMnemonics: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
+
+  templates:
+    default: '{datasetType}/{spsplan.name:?}/{run}/{detector:?}/{skypix!s:0>2.2s?}/{datasetType}_{sequenceflg:?}_{spsplan.name:?}_{observation.slewgroup:04d?}_{observation.slewgroup_counter:?}_D{exposure.detector|detector:?}_{instrument:?}_{skypix:?}_{run}'
+    # For per-exposure (per-image) datasets
+    exposure+observation+detector: '{datasetType}/{spsplan.name}/{run}/{detector:?}/{datasetType}_{spsplan.name}_{observation.slewgroup:04d}_{observation.slewgroup_counter}D{exposure.detector}_{instrument:?}_{run}'
+    # For ref catalog produced by query reference catalog task
+    spsplan+slewgroup+dichroicpair: "{datasetType}/{spsplan.name}/{run}/{dichroicpair}/{datasetType}_{spsplan.name}_{slewgroup:04d}DP{dichroicpair}_{instrument:?}_{run}"
+    # For photometry measurements from an exposure: one output table per healpix
+    # Desired template includes a subdirectory that contains a fraction of healpix indexes
+    phot_meas: "{datasetType}/{spsplan.name}/{run}/{detector}/{skypix!s:0>2.2s}/{datasetType}_{spsplan.name}_{observation.slewgroup:04d}_{observation.slewgroup_counter}D{exposure.detector}_{instrument:?}_{skypix}_{run}"
+
+includeConfigs:
+  - storageClasses.yaml
+  - registry.yaml

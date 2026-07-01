@@ -1,0 +1,8 @@
+registry:
+  # File-based:
+  #   db: 'sqlite:///<butlerRoot>/mytest.sqlite3'
+  # Postgres DB:
+  #   db: "postgresql://spxpo@spherexdb2:5432/spxtst1"
+  #   namespace: "y2025w34"
+  # In-memory:
+  db: "sqlite:///<butlerRoot>/spherex.sqlite3"

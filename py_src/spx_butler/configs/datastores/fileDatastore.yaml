@@ -1,0 +1,10 @@
+# This file overrides the fileDatastore.yaml in daf_butler repo
+datastore:
+  cls: lsst.daf.butler.datastores.fileDatastore.FileDatastore
+  root: <butlerRoot>/datastore
+  records:
+    table: file_datastore_records
+  create: true
+  templates:
+    default: "{run:/}/{datasetType}.{component:?}/{detector:?}/{datasetType}_{component:?}_{observation:?}_{detector:?}_{instrument:?}_{skypix:?}_{run}"
+  formatters: !include formatters.yaml

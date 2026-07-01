@@ -1,0 +1,7 @@
+description: AggregateIdqrPipeline
+tasks:
+  aggregate_idqr:
+    class: spx_tasks.AggregateIdqrTask
+    config:
+      connections.idqr_obs: "idqr_obs"
+      connections.idqr_agg: "idqr_agg"

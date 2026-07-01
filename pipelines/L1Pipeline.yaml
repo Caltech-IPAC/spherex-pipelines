@@ -1,0 +1,33 @@
+description: L1Pipeline
+tasks:
+  l1:
+    class: spx_tasks.L1Task
+    config:
+      connections.spximg: "raw"
+      connections.gain_factors: "gain_factors"
+      connections.nonfunc_map: "nonfunc"
+      connections.dichroic_cut_map: "dichroic"
+      connections.spectral_wcs: "spectral_wcs"
+      connections.level1_img: "level1"
+      connections.sur_diag: "sur_diag"
+      connections.odir_obs: "odir_obs"
+      # TODO need gds ingest for integration test in running L1 pipeline
+      connections.planned_obs: "planned_obs"
+      connections.dqa_l1: "dqa_l1"
+      connections.initial_distortion_table: "initial_distortion_table"
+      l1_image.dtype_flags: "int16"
+      # Toggle optional GDS inputs: comment out connections when "use" flags are false
+      # Current configuration for L1 is to use SGT but not SPK or S-band data
+      # * S-band data:
+      gds_image_association.useSband: false
+      # connections.sband: "sband"
+      # connections.sband_mnemonics: "sband_mnemonics"
+      # * SGT (ground-track) data:
+      gds_image_association.useSgt: true
+      connections.sgt: "sgt"
+      # * SPK (ephemeris a/k/a position and velocity) data:
+      gds_image_association.useSpk: false
+      # connections.spk: "spk"
+      # L1 PEF is true as this is the first
+      # time PEF is accessible.
+      gds_image_association.usePlannedObs: true

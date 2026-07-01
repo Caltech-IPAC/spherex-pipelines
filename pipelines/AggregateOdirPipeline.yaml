@@ -1,0 +1,7 @@
+description: AggregateOdirPipeline
+tasks:
+  aggregate_odir:
+    class: spx_tasks.AggregateOdirTask
+    config:
+      connections.odir_obs: "odir_obs"
+      connections.odir_agg: "odir_agg"

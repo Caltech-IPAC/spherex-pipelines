@@ -1,0 +1,121 @@
+[build-system]
+requires = ["setuptools >= 61.0.0", "setuptools_scm", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spherex-pipelines"
+description = "SPHEREx data processing pipelines"
+readme = "README.md"
+authors = [
+    {name="Caltech/IPAC SPHEREx Team"},
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+requires-python = ">=3.10.0"
+dependencies = [
+    "alive-progress",
+    "astropy",
+    "opencv-python-headless",
+    "click <8.2",
+    "healpy >=1.17.1",
+    "joblib",
+    "kete==1.0.6",
+    "lsst_ctrl_mpexec",
+    "lsst_pipe_base",
+    "lsst_daf_butler[postgres]",
+    "matplotlib",
+    "numba",
+    "numpy",
+    "photutils <=1.13.0",
+    "pyarrow",
+    "pydantic >=2.3, <3.0",
+    "scipy >=1.6",
+    "scikit-learn",
+    "slack_sdk",
+    "sqlalchemy",
+    "spiceypy",
+    "tenacity",
+    "regions",
+    "sep",
+    "tqdm",
+]
+dynamic = ["version"]
+
+[project.urls]
+"Homepage" = "https://github.com/IPAC-SW/spherex-pipelines"
+
+[project.optional-dependencies]
+test = [
+    "pytest >= 3.2",
+    "flake8 <=5.0.4",
+    "pytest-xdist",
+    "pytest-cov",
+]
+docs = [
+    "spherex-sphinx @ git+https://github.com/SPHEREx/spherex-sphinx.git@main"
+]
+extra = [
+    "spherex-parameters @ git+https://github.com/SPHEREx/SPHEREx-Parameters@main",
+    "spherex_sky_simulator @ git+https://github.com/SPHEREx/SPHEREx-Sky-Simulator@main#subdirectory=py"
+]
+tractor = [
+    "tractor @ git+https://github.com/Caltech-IPAC/tractor-spherex.git@main",
+]
+
+[project.scripts]
+plan-tools = "spx_apps.plan_tools.script.cli_plan_tools:cli"
+photometry-tool = "spx_apps.photometry_tool.script.cli_photometry_tool:main"
+[tool.setuptools.packages.find]
+where = ["py_src"]
+
+[tool.setuptools]
+zip-safe = true
+
+[tool.setuptools.package-data]
+spx_butler = ["configs/*.yaml", "configs/*/*.yaml", "cli/*.yaml"]
+spx_utils = ["astrometry/*.sex", "astrometry/*.param", "astrometry/*.conf", "data/*.csv"]
+spx_apps = ["data/*.vot", "data/*.yaml"]
+
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "node-and-date"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--ignore=tools/template"]
+
+[tool.towncrier]
+    version = ""
+    package_dir = "py_src"
+    filename = "CHANGES.md"
+    directory = "docs/changes"
+    start_string = "<!-- towncrier release notes start -->\n"
+    underlines = ["", "", ""]
+    title_format = "## SPHEREx Pipelines {version} ({project_date})"
+    issue_format = "[[#{issue}](https://jira.ipac.caltech.edu/browse/{issue})]"
+    template = "docs/changes/template.jinja"
+    [[tool.towncrier.type]]
+        directory = "new"
+        name = "New Features"
+        showcontent = true
+    [[tool.towncrier.type]]
+        directory = "change"
+        name = "Changes"
+        showcontent = true
+    [[tool.towncrier.type]]
+        directory = "bugfix"
+        name = "Bug Fixes"
+        showcontent = true
+    [[tool.towncrier.type]]
+        directory = "perf"
+        name = "Enhancements"
+        showcontent = true
+    [[tool.towncrier.type]]
+        directory = "other"
+        name = "Other"
+        showcontent = true
