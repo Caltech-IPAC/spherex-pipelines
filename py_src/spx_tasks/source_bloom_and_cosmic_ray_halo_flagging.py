@@ -60,6 +60,16 @@ class SourceBloomAndCosmicRayHaloFlaggingConfig(
         dtype=bool,
         default=False
     )
+    transient_saturated_frac = Field(
+        doc="If transient fraction exceeds this, skip bloom/snowball/nonoverflow to avoid runaway loops.",
+        dtype=float,
+        default=0.85
+    )
+    transient_saturated_mode = Field(
+        doc="What to do if transient-saturated: 'skip_all' or 'halo_only'.",
+        dtype=str,
+        default="halo_only"
+    )
 
 
 class SourceBloomAndCosmicRayHaloFlaggingTask(pipeBase.PipelineTask):
@@ -121,9 +131,34 @@ class SourceBloomAndCosmicRayHaloFlaggingTask(pipeBase.PipelineTask):
         self.log.info("Starting BSH (Bloom, Snowball, Halo) flagging.")
         bsh_diag_image = None  # Initialize diagnostic image as None
 
-        # NOTE make sure dataset type name has L1 in name
         # Instantiate the flagger
         bsh = BSHFlagger(spximg_out, cfg=self.config.bsh, verbose=False)
+        # Handling for global transient saturation
+        trn_frac = float(getattr(bsh, "trans_frac", np.nan))
+        if np.isfinite(trn_frac) and (trn_frac >= self.config.transient_saturated_frac):
+            self.log.warning(
+                f"BSH: transient-saturated frame (TRANSFRC={trn_frac:.3f} >= "
+                f"{self.config.transient_saturated_frac:.3f}); skipping bloom/snowball."
+            )
+
+            # Status in header for downstream QA
+            spximg_out.header["BSHSTAT"] = ("TRNSAT", "BSH: transient-saturated; bloom/snowball skipped")
+            spximg_out.header["TRNSATF"] = (trn_frac, "Transient fraction triggering TRNSAT handling")
+
+            # Ensure layers are clean/defined
+            bsh.bloom_flag[:, :] = 0
+            bsh.snowball_flag[:, :] = 0
+            bsh.halo_flag[:, :] = 0
+
+            if self.config.transient_saturated_mode == "halo_only":
+                bsh.mark_transient_halo()
+                apply_bsh_flags_to_spx(spximg_out, bsh)
+            else:
+                # Skip all
+                pass
+
+            # Return early
+            return pipeBase.Struct(spximg_out=spximg_out, bsh_diag_img=None)
 
         # Run the detection methods
         bsh.start_bloom_flag()

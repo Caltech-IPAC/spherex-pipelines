@@ -430,7 +430,7 @@ def populate_temp_butler_from_export(
         temp_butler_root: str,
         export_file: str,
         coverage_table: Table,
-        srccat_dataids: list[dict]
+        srccat_dataids: list[dict] = None
 ) -> None:
     """Create and populate a new temporary Butler from exported data.
 
@@ -447,6 +447,7 @@ def populate_temp_butler_from_export(
         Astropy table with coverage information needed to ingest source catalogs.
     srccat_dataids : list[dict]
         A list of data IDs for the source catalogs to be ingested.
+        Defaults to None to be compatible with mosaic tool.
     """
     instrument = os.getenv("SPXPHOTO_INSTRUMENT", "spx")
 
@@ -460,7 +461,9 @@ def populate_temp_butler_from_export(
     # We are using the same source catalog for all data ids:
     # the Perform Forced Photometry module will filter out
     # the sources outside the image.
-    ingest_srccat(temp_butler, coverage_table, srccat_dataids)
+    # skip this step for mosaic tool (where srccat_dataids is None.)
+    if srccat_dataids:
+        ingest_srccat(temp_butler, coverage_table, srccat_dataids)
 
     temp_butler_root = None
 

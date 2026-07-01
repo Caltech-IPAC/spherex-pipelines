@@ -18,9 +18,10 @@ from spx_apps.common_cli import runid_option, jobid_option, result_dir_option, \
     setup_exit_handlers, extract_log_config_and_ids_from_argv, force_override_runid, \
     extract_err_dir_from_argv, log_start_time, safe_exit, generate_error_summary, \
     parse_detectors, parse_time, fake_option
-from spx_apps.photometry_tool.exceptions import EmptyLVFQueryResultError
-
-
+from spx_apps.photometry_tool.temp_butler import populate_temp_butler_from_export
+from .exceptions import EmptyMosaicQueryError
+from ..temp_butler import collect_inputs_for_temp_butler
+from lsst.daf.butler import Butler, MissingDatasetTypeError
 # Global variables for timing
 _start_time = None
 _script_name = "mosaic_tool"
@@ -66,7 +67,8 @@ def validate_size(ctx, param, value):
         xsize, ysize = float(x_str), float(y_str)
     except ValueError:
         raise click.BadParameter(f"Invalid --size format: '{value}', expected xsize,ysize (floats)")
-
+    if xsize > 5 or ysize > 5:
+        raise click.BadParameter(f"Invalid size values: {xsize},{ysize}. Maximum size is 5 degrees.")
     if xsize <= 0 or ysize <= 0:
         raise click.BadParameter(f"Invalid size values: {xsize},{ysize}. Both must be positive.")
     return (xsize, ysize)
@@ -332,12 +334,12 @@ def create_mosaic(
         symlink_path.symlink_to(dest_file)
         logging.info(f"Copied VOTable to {dest_file} and symlinked as {symlink_path}")
     elif fake in ["error-short", "error-detail"]:
+        sample_polygon = "POLYGON 322.1172900 -2.4604856 325.6680542 -5.9804809"
+        sample_polygon += " 322.1172900 -9.5233144 318.5665258 -5.9804809"
         exit_code = 13
         try:
-            raise EmptyLVFQueryResultError(n_src=1,
-                                           instrument="spx",
-                                           dataset_type="level2")
-        except EmptyLVFQueryResultError as mdte:
+            raise EmptyMosaicQueryError(mosaic_region=sample_polygon)
+        except EmptyMosaicQueryError as mdte:
             logging.error(mdte)
             generate_error_summary(message="No level2 image matches for the requested mosaic volume.",
                                    error_dir=err_dir, write_to_file=True,
@@ -349,6 +351,69 @@ def create_mosaic(
     elif fake == "error-signal":
         # Kill with SIGINT
         os.kill(os.getpid(), signal.SIGINT)
+    elif fake is None:
+        butler_repo = os.getenv("SPXTOOL_BUTLER")
+        try:
+            butler = Butler(butler_repo)
+            logging.info(f"Butler {butler} exists")
+        except Exception as e:
+            error_description = f"Butler ({butler_repo}) does not exist or is not a valid Butler path."
+            logging.error(e)
+            logging.error(error_description)
+
+            generate_error_summary(message=error_description, error_dir=err_dir,
+                                   write_to_file=True, error_type="fatal")
+            if log_dir is not None:
+                error_symlink.unlink(missing_ok=True)
+                error_symlink.symlink_to(log_file)
+            safe_exit(11)
+
+        try:
+            # Create pool for collect process
+            with multiprocessing.Pool(processes=1) as pool:
+                collect_result = pool.apply_async(
+                    collect_inputs_for_temp_butler,
+                    args=(butler_repo, tmp_dir, center, size, rotation, time, detectors, pixel_scale)
+                )
+                # This will automatically propagate exceptions from the child process
+                collect_results = collect_result.get()
+            logging.info(f"Temp butler root: {collect_results['temp_butler_root']}")
+            logging.info(f"export_file: {collect_results['export_file']}")
+            logging.info(f"coverage_table: {collect_results['coverage_table']}")
+            # Create pool for populate process
+            with multiprocessing.Pool(processes=1) as pool:
+                populate_result = pool.apply_async(
+                    populate_temp_butler_from_export,
+                    args=(
+                        collect_results["temp_butler_root"],
+                        collect_results["export_file"],
+                        collect_results["coverage_table"],
+                        collect_results["srccat_dataids"]
+                    )
+                )
+                # This will also automatically propagate exceptions
+                populate_results = populate_result.get()
+
+            logging.info(f'Temp butler root: {populate_results["temp_butler_root"]}')
+
+        except MissingDatasetTypeError as mdte:
+            logging.error(f"Error: {mdte}")
+            exit_code = 12
+            generate_error_summary(message=mdte, error_dir=err_dir,
+                                   write_to_file=True, error_type="fatal")
+            if log_dir is not None:
+                error_symlink.unlink(missing_ok=True)
+                error_symlink.symlink_to(log_file)
+            safe_exit(exit_code)
+        except EmptyMosaicQueryError as elqe:
+            logging.error(f"Error: {elqe}")
+            exit_code = 13
+            generate_error_summary(message=elqe, error_dir=err_dir,
+                                   write_to_file=True, error_type="fatal", user_error=True)
+            if log_dir is not None:
+                error_symlink.unlink(missing_ok=True)
+                error_symlink.symlink_to(log_file)
+            safe_exit(exit_code)
 
 
 cli.add_command(create_mosaic)

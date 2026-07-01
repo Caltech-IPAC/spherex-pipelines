@@ -310,8 +310,10 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
         if refcat is not None:
             # Fetch reference catalog data and validate
             refcat = refcat[0].get()  # TODO: can reading this be filtered in QR2 butler?
-            if len(np.unique(refcat["SPHERExRefID"])) != len(refcat):
-                raise ValueError("Duplicate 'SPHERExRefID' values found in reference catalog.")
+            uniq_ref_ids, counts = np.unique(refcat["SPHERExRefID"].data, return_counts=True)
+            if len(uniq_ref_ids) != len(refcat):
+                dup_ids = uniq_ref_ids[counts > 1]
+                raise ValueError(f"Duplicate 'SPHERExRefID' values found in reference catalog: {dup_ids}")
 
             # Indexing
             refcat_ids = refcat["SPHERExRefID"].data
@@ -421,7 +423,9 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
             if self.config.merge_refcat:
                 # Double check all source IDs have a match
                 if not np.all(np.isin(meas_table["source_id"], refcat_ids)):
-                    raise ValueError("1+ photometered sources were not found in the reference catalog.")
+                    missing_in_refcat = list(set(meas_table["source_id"]) - set(refcat_ids))
+                    raise ValueError(f"1+ photometered sources were not found in the reference catalog:"
+                                     f" {missing_in_refcat}")
 
                 # Find matches and add columns
                 matched_idx = np.searchsorted(refcat_sorted["SPHERExRefID"], meas_table["source_id"])

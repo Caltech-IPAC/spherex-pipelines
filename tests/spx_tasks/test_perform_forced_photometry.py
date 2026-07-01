@@ -276,11 +276,20 @@ class TestPerformForcedPhotometry():
             f"Expected fit results for 3 windows with 1+ sources to photometer, got" \
             f" {len(list(output.tractor_fits.keys()))}."
 
-    @pytest.mark.parametrize("hips_order, n_healpix_tabs", [(6, 1), (12, 3)])
-    def test_healpix_ordering(self, point_source, hips_order, n_healpix_tabs):
+    # NOTE: Only the point source sample includes 1+ sources that could be
+    #       in different HEALPix.
+    @pytest.mark.parametrize("hips_order, n_healpix_tabs, fake_high_pm", [
+        (6, 1, False), (12, 3, False), (12, 3, True)])
+    def test_healpix_ordering(self, point_source, hips_order, n_healpix_tabs, fake_high_pm):
         """Test that HEALPix indexing and ordering is correct."""
-        # NOTE: Only the point source sample includes 1+ sources that could be
-        #       in different HEALPix.
+        if fake_high_pm and hips_order == 12:
+            catalog = point_source["img"].catalog
+            # Move source 3 (HiPS12 idx 80465472) corrected position to
+            # the reference position of source 5 (HiPS12 idx 80465131)
+            hi_pm_mask = catalog["SPHERExRefID"] == 3
+            catalog["ra"][hi_pm_mask] = catalog["ref_ra"][catalog["SPHERExRefID"] == 5]
+            catalog["dec"][hi_pm_mask] = catalog["ref_dec"][catalog["SPHERExRefID"] == 5]
+
         config = PerformForcedPhotometryConfig(hips_order=hips_order)
         task = PerformForcedPhotometryTask(config=config)
         ps_output = task.run(point_source["img"], point_source["img"].catalog, point_source["global_bkgd"],
@@ -288,6 +297,21 @@ class TestPerformForcedPhotometry():
         assert len(ps_output.phot_meas.keys()) == n_healpix_tabs  # test grouping
         validate_output(point_source["img"].catalog, ps_output, global_bkgd=True,
                         pass_thru_cols=config.pass_thru_cols)
+
+        if fake_high_pm and hips_order == 12:
+            # Check for proper HEALPix assignment
+            assert 3 in ps_output.phot_meas[80465472]["source_id"], (
+                "High proper motion source not found in the tile corresponding to its reference position.")
+            assert 3 not in ps_output.phot_meas[80465131]["source_id"], (
+                "High proper motion source misplaced in the tile corresponding to its corrected position.")
+
+            # Check that photometry was performed on the corrected position
+            src3_mask = ps_output.phot_meas[80465472]["source_id"] == 3
+            src3_ra = ps_output.phot_meas[80465472]["ra"][src3_mask]
+            src3_dec = ps_output.phot_meas[80465472]["dec"][src3_mask]
+            assert src3_ra == catalog["ref_ra"][catalog["SPHERExRefID"] == 5] and \
+                   src3_dec == catalog["ref_dec"][catalog["SPHERExRefID"] == 5], (
+                "High proper motion source not photometered at its corrected position.")
 
     @pytest.mark.parametrize("bkgd_type", ["global_bkgd", "local_bkgd"])
     def test_background_subtraction(self, point_source, bkgd_type):

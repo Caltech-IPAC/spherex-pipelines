@@ -321,9 +321,12 @@ class TestCreateAllSkyCatalogTask():
         with pytest.raises(ValueError):
             CreateAllSkyCatalogConfig(merge_refcat=True, pass_thru_cols=[])
 
-    @pytest.mark.parametrize("phot_meas, fault_type", [("pipeline", "duplicate"), ("pipeline", "missing")],
-                             indirect=["phot_meas"])
-    def test_faulty_merge(self, phot_meas, refcat, fault_type):
+    @pytest.mark.parametrize("phot_meas, fault_type, exc_msg", [
+        ("pipeline", "duplicate", r"^Duplicate \'SPHERExRefID\' values found in reference catalog: \[1\]$"),
+        ("pipeline", "missing",
+         r"^1\+ photometered sources were not found in the reference catalog: \[np\.int64\(1\)\]$")],
+        indirect=["phot_meas"])
+    def test_faulty_merge(self, phot_meas, refcat, fault_type, exc_msg):
         """Check that faulty reference catalog matching raises errors."""
         config = CreateAllSkyCatalogConfig(merge_refcat=True)
         task = CreateAllSkyCatalogTask(config=config)
@@ -339,5 +342,5 @@ class TestCreateAllSkyCatalogTask():
             src_id_to_remove = phot_meas["meas_table_list"][0].get()["source_id"][0]
             refcat_table = refcat_table[refcat_table["SPHERExRefID"] != src_id_to_remove]
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=exc_msg):
             task.run(phot_meas["meas_table_list"], [MockDeferredDatasetHandle(refcat_table)])

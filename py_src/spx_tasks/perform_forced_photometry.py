@@ -209,8 +209,8 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
     cat_phot_cols = ListField(
         doc="Minimal list of input source catalog columns required to perform photometry.",
         dtype=str,
-        default=["SPHERExRefID", "ra", "dec", "ra_error", "dec_error", "sersic", "shape_r", "ab_ratio", "phi",
-                 "for_l3phot"]
+        default=["SPHERExRefID", "ra", "dec", "ra_error", "dec_error", "ref_ra", "ref_dec", "sersic",
+                 "shape_r", "ab_ratio", "phi", "for_l3phot"]
     )
 
     merge_srccat = Field(
@@ -509,14 +509,18 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
             srctab = srctab[l3phot_mask]
         self.log.debug(get_current_rss("Image-filtered catalog created"))
 
-        # Add HEALPix index for each source
+        # Add HEALPix index for each source, using refcat RA/DEC if available
+        # to ensure consistency over time
+        hips_order = self.config.hips_order
+        hips_col_name = f"hips{hips_order}"
+        hips_ra = "ref_ra" if "ref_ra" in self.config.cat_phot_cols and srctab.colnames else "ra"
+        hips_dec = "ref_dec" if "ref_dec" in self.config.cat_phot_cols and srctab.colnames else "dec"
+        col = Column(data=hp.ang2pix(2 ** hips_order, srctab[hips_ra], srctab[hips_dec], nest=True,
+                                     lonlat=True),
+                     name=hips_col_name, unit="")  # leaving unit None, makes "deg" unit
         # NOTE: We avoid copying columns to save memory. If future module
         # changes require a column's input data to be modified after the data
         # has been added to the table, switch to use `copy=True`.
-        hips_order = self.config.hips_order
-        hips_col_name = f"hips{hips_order}"
-        col = Column(data=hp.ang2pix(2 ** hips_order, srctab["ra"], srctab["dec"], nest=True, lonlat=True),
-                     name=hips_col_name, unit="")  # leaving unit None, makes "deg" unit
         srctab.add_column(col, copy=False)
 
         # Modify pixels that should be ignored by Tractor

@@ -186,7 +186,7 @@ to `IRSA-qr2-tools`.
 - SPXMOSAIC_QGRAPH_TIMEOUT - Qraph (execution plan) build timeout in seconds. Defaults to 1 hour.
 - SPXMOSAIC_PIPELINE_TIMEOUT - Pipeline execution timeout in seconds. Defaults to 12 hours.
 - SPXMOSAIC_SAMPLE_RESULT - (Not visible to IRSA), path to sample delivery in `--fake` mode.
-
+- SPXMOSAIC_BUFFER_SIZE - Buffer size for butler polygon query, defaults to 2 arcminutes.
 # Error codes:
 - 11 → Butler does not exist
 - 12 → Butler exists but there is no level2 data in it.
