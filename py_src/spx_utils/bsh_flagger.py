@@ -32,6 +32,11 @@ class BSHConfig(Config):
         dtype=int,
         default=5
     )
+    max_bloom_loops = Field(
+        doc="Maximum number of loops for regular bloom.",
+        dtype=int,
+        default=15
+    )
     satellite_halo_factor = Field(
         doc="Halo amplification for satellite track.",
         dtype=float,
@@ -213,6 +218,8 @@ class BSHFlagger:
         self.header['WTAVGCTR'] = (self.use_weighted_avg_ctr, 'T if weighted avg ctr used for bloom')
         self.header['MAXOVRLP'] = (self.cfg.max_nonoverbloom_loops,
                                    'Maximum number of loops for non-overflow bloom')
+        self.header['MAXBLMLP'] = (self.cfg.max_bloom_loops,
+                                   'Maximum number of loops for regular bloom')
         self.header['MAXSNWLP'] = (self.max_snow_loops, 'Maximum number of loops for snowball')
         self.header['SNWCIRCL'] = (self.force_snow_circle, 'T if snowballs are forced circular')
         self.header['SATHALOM'] = (self.cfg.satellite_halomethod,
@@ -232,7 +239,8 @@ class BSHFlagger:
         coordsB = np.column_stack(indexesB)
 
         # Remove overlaps, preserving order
-        mask = [tuple(idx) not in map(tuple, coordsB) for idx in coordsA]
+        coordsB_set = set(map(tuple, coordsB))
+        mask = [tuple(idx) not in coordsB_set for idx in coordsA]
         uniqueA = coordsA[mask]
 
         # Convert back to np.where style (rows, cols)
@@ -529,9 +537,10 @@ class BSHFlagger:
             # Use this to grow the edge of the bloom.
             edge_rows, edge_cols = np.array([]), np.array([])
             current_r = 0
+            rounds = 0
 
             # FIND all of the pixels in this blooming instance.
-            while (len(self.nn_rows) > 0):
+            while ((len(self.nn_rows) > 0) & (rounds <= self.cfg.max_bloom_loops)):
                 # Increment number of rounds
                 rounds += 1
 
@@ -557,7 +566,7 @@ class BSHFlagger:
                                               np.concatenate((edge_cols, self.nn_cols[indices])))
 
                     # Remove pixels not part of the bloom for the next iteration
-                    self.nn_rows, self.nn_cols =\
+                    self.nn_rows, self.nn_cols = \
                         np.delete(self.nn_rows, indices), np.delete(self.nn_cols, indices)
 
                 # Once we have edge rows, define radius to them
@@ -568,7 +577,7 @@ class BSHFlagger:
                     indices = np.where(np.sqrt((self.nn_rows-center_row)**2
                                                + (self.nn_cols-center_col)**2) > current_r)
 
-                    self.nn_rows, self.nn_cols =\
+                    self.nn_rows, self.nn_cols = \
                         np.delete(self.nn_rows, indices), np.delete(self.nn_cols, indices)
 
                 # Once we have radius, remove pixels out of radius from nns.
@@ -576,7 +585,7 @@ class BSHFlagger:
                     indices = np.where(np.sqrt((self.nn_rows-center_row)**2
                                                + (self.nn_cols-center_col)**2) > current_r)
 
-                    self.nn_rows, self.nn_cols =\
+                    self.nn_rows, self.nn_cols = \
                         np.delete(self.nn_rows, indices), np.delete(self.nn_cols, indices)
 
                 # add pixels to blooming
@@ -587,10 +596,40 @@ class BSHFlagger:
             if current_r == 0:
                 if self.verbose:
                     print(f"{self.name}: R{center_row:.1f}, C{center_col:.1f}: "
-                          "HOW did we get a radius of 0 here?")
-            indices = np.where(np.sqrt((self.bloom_rows-center_row)**2
-                                       + (self.bloom_cols-center_col)**2) > current_r)
-            self.bloom_rows, self.bloom_cols =\
+                          "Encountered Loop Termination, discarding pixels with low signal")
+
+                # If this condition is reached, define edge of bloom as first
+                # pixel that does not meet minimum signal requirement
+
+                current_pix_notover = self.small[self.bloom_rows, self.bloom_cols]
+                current_pix_smallsig = (self.fluence[self.bloom_rows, self.bloom_cols] < self.min_overflow/5)
+                indices = np.where(((current_pix_notover) & (current_pix_smallsig)))
+
+                if (len(indices[0]) > 0):
+                    # Pixels with low signal found.
+                    # Redefine r and get indices to discard.
+                    edge_rows = self.bloom_rows[indices]
+                    edge_cols = self.bloom_cols[indices]
+
+                    current_r = (np.sqrt(np.min((edge_rows-center_row)**2 + (edge_cols-center_col)**2))
+                                 + self.extend_radius)
+                    indices = np.where(np.sqrt((self.bloom_rows-center_row)**2
+                                               + (self.bloom_cols-center_col)**2) > current_r)
+
+                else:
+                    # No pixels with low signal found.
+                    # Keep all pixels. (indices has length 0.)
+                    if self.verbose:
+                        print(f"{self.name}: R{center_row:.1f}, C{center_col:.1f}: "
+                              "No low signal pixels found.  Keeping all pixels.")
+
+            else:
+                # Find pixels out of radius
+                indices = np.where(np.sqrt((self.bloom_rows-center_row)**2
+                                           + (self.bloom_cols-center_col)**2) > current_r)
+
+            # Delete selected pixels.
+            self.bloom_rows, self.bloom_cols = \
                 np.delete(self.bloom_rows, indices), np.delete(self.bloom_cols, indices)
 
             self.vis[(self.bloom_rows, self.bloom_cols)] = True
@@ -1212,7 +1251,7 @@ class BSHFlagger:
 
                     # Define radius to edge as min radius to non-bloom / late transient
                     # Add 1 to include late-transient
-                    current_r =\
+                    current_r = \
                         (np.sqrt(np.min((self.nn_rows[indices]-center_row)**2
                                         + (self.nn_cols[indices]-center_col)**2)) + self.extend_radius)
                     # Keep all pixels in this round in the bloom pix.

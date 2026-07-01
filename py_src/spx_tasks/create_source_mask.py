@@ -23,8 +23,43 @@ from spx_utils import log_dqa_result
 from spx_utils import refcat_utils
 
 
-def two_exponential_func(x, a, b, c, d, e):
-    return a * np.exp(b * x) + c + d * np.exp(e * x)
+def blended_exponential_radius(m, a1, b1, a2, b2, m0, w) -> np.ndarray:
+    """Blended exponential mask-radius model:
+
+    Parameters
+    ----------
+    m : `np.ndarray`
+        Magnitude(s).
+    a1, b1, a2, b2 : `float`
+        Linear-in-magnitude coefficients for the two exponential regimes.
+    m0 : `float`
+        Transition magnitude (midpoint of the blend).
+    w : `float`
+        Transition width (controls how sharp/smooth the blend is).
+
+    Returns
+    -------
+    `np.ndarray`
+        Radius value(s).
+
+    Notes
+    -----
+    Radius(m) = exp( [1 - s(m)](a1 + b1*m) + s(m)(a2 + b2*m) )
+    where
+    s(m) = 1 / (1 + exp(-(m - m0)/w))
+    https://rigel.caltech.edu/calibration_analysis_logbook/20251205_BrightStarMasking/
+
+    """
+    m = np.asarray(m, dtype=float)
+
+    if w == 0:  # Divide by zero catch
+        raise ValueError("Divide by Zero, should no occur in parameters.")
+    else:
+        s = 1. / (1. + np.exp(-(m - m0) / w))
+
+    R = np.exp((1.0 - s) * (a1 + b1 * m) + s * (a2 + b2 * m))
+
+    return R
 
 
 def mask_sources(spximg: SPHERExImage,
@@ -32,22 +67,25 @@ def mask_sources(spximg: SPHERExImage,
                  minmag: float,
                  maxmag: float,
                  dmag: float,
-                 params_dict: dict,
+                 blended_params_dict: dict,
                  plot_this: bool = True):
     """Mask sources based on their magnitudes and positions.
 
     Parameters
     ----------
-    spximg: `SPHERExImage`
+    spximg : `SPHERExImage`
         The SPHEREx image object.
-    cat: `Table`
+    cat : `Table`
         Source catalog.
-    minmag: `float`
+    minmag : `float`
         Minimum magnitude to consider.
-    maxmag: `float`
+    maxmag : `float`
         Maximum magnitude to consider.
-    dmag: `float`
+    dmag : `float`
         Magnitude bin width.
+    blended_params_dict : `dict`
+        Blended model params dict keyed by band:
+        {band: [a1, b1, a2, b2, m0, w]}
     plot_this: `bool`, optional
         Whether to plot the source mask.
 
@@ -63,17 +101,14 @@ def mask_sources(spximg: SPHERExImage,
     ny = rp.Kactive
     xoff = yoff = nx // 2
 
-    a, b, c, d, e = params_dict[band]
-
     # Pull out the needed parameters from the source catalog
     ABmag = np.array(cat[f'mag_det{band}'])
 
     ra_values = cat['ra']
     dec_values = cat['dec']
-    # Compute the galactic latitude of the center of the field
-    w = spximg.wcs
-    x, wy = w.wcs_pix2world((nx)//2, (ny)//2, 0)
-    ix, iy = w.world_to_pixel_values(ra_values, dec_values)
+
+    wcs_obj = spximg.wcs
+    ix, iy = wcs_obj.world_to_pixel_values(ra_values, dec_values)
 
     # Filter magnitudes
     inmagrange = np.logical_and(ABmag >= minmag, ABmag < maxmag)
@@ -81,12 +116,22 @@ def mask_sources(spximg: SPHERExImage,
     ypix = iy[inmagrange]
     abmag = ABmag[inmagrange]
 
-    image_mask = np.zeros([2*nx, 2*ny])
+    image_mask = np.zeros([2 * nx, 2 * ny])
+
+    # Pre-load blended parameters (per band)
+    if band not in blended_params_dict:
+        raise ValueError(f"No blended-exponential params provided for band={band}")
+    a1, b1, a2, b2, m0, w_blend = blended_params_dict[band]
 
     # Loop through sources applying the mask
     for xval, yval, ab in zip(xpix, ypix, abmag):
-        radius = two_exponential_func(ab, a, b, c, d, e)
-        if not np.isfinite(xval) or not np.isfinite(yval) or not np.isfinite(radius) or radius <= 0:
+        try:
+            radius = blended_exponential_radius(ab, a1, b1, a2, b2, m0, w_blend)
+        except Exception as e:
+            print(f"DEBUG: Exception {e} occured")
+            continue
+
+        if (not np.isfinite(xval) or not np.isfinite(yval) or not np.isfinite(radius) or radius <= 0):
             continue
 
         pixcoord = regions.PixCoord(x=xoff + xval, y=yoff + yval)
@@ -99,7 +144,6 @@ def mask_sources(spximg: SPHERExImage,
 
         # Check if bbox is valid and has nonzero area
         if iymax <= iymin or ixmax <= ixmin:
-            print("Degenerate mask")
             continue  # skip degenerate mask
 
         # Clip bbox to image bounds
@@ -120,9 +164,7 @@ def mask_sources(spximg: SPHERExImage,
         if mask_data is not None:
             image_mask[iymin_clip:iymax_clip, ixmin_clip:ixmax_clip] += mask_data[mask_yslice, mask_xslice]
 
-    # Regions defines a fractional bin hit, so round to places where there
-    # is a substantial contribution from the sources
-    whpl_type1mask = image_mask[xoff: xoff+nx, yoff: yoff+ny] > 0.2
+    whpl_type1mask = image_mask[xoff: xoff + nx, yoff: yoff + ny] > 0.2
 
     print(f"Type 1 mask fraction: {np.sum(whpl_type1mask)/(nx*ny)}")
     return whpl_type1mask
@@ -976,64 +1018,40 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
         default=45.0
     )
 
-    radius_model_params_det1 = ListField(
-        doc="Best-fit params (a, b, c, d, e) for masking radius model for det1.",
+    blended_radius_params_det1 = ListField(
+        doc="Blended-exponential radius params for det1: [a1, b1, a2, b2, m0, w].",
         dtype=float,
-        default=[1549.394538785231,
-                 -0.5676228206532781,
-                 -1.171193345373311,
-                 21.696403344092296,
-                 -0.11422932918227133]
+        default=[6.020, -0.2364, 1.623, -0.048, 10.175, 2.112]
     )
 
-    radius_model_params_det2 = ListField(
-        doc="Best-fit params (a, b, c, d, e) for masking radius model for det2.",
+    blended_radius_params_det2 = ListField(
+        doc="Blended-exponential radius params for det2: [a1, b1, a2, b2, m0, w].",
         dtype=float,
-        default=[2687.307388059228,
-                 -0.700108935102106,
-                 -430.3115359379916,
-                 452.0548207163596,
-                 -0.0025746614583621237]
+        default=[6.097, -0.3016, 4.539, -0.212, 8.190, 1.552]
     )
 
-    radius_model_params_det3 = ListField(
-        doc="Best-fit params (a, b, c, d, e) for masking radius model for det3.",
+    blended_radius_params_det3 = ListField(
+        doc="Blended-exponential radius params for det3: [a1, b1, a2, b2, m0, w].",
         dtype=float,
-        default=[1129.3791303500786,
-                 -0.4964646426157805,
-                 -392.2668988491356,
-                 396.44018424776357,
-                 -0.00023170701247192225]
+        default=[5.845, -0.3020, 2.245, -0.075, 12.364, 2.066]
     )
 
-    radius_model_params_det4 = ListField(
-        doc="Best-fit params (a, b, c, d, e) for masking radius model for det4.",
+    blended_radius_params_det4 = ListField(
+        doc="Blended-exponential radius params for det4: [a1, b1, a2, b2, m0, w].",
         dtype=float,
-        default=[2277.8750467986833,
-                 -0.574668713017225,
-                 -1094.9884170561486,
-                 1102.5221283727544,
-                 -0.00025050799854754794]
+        default=[11.193, -0.1271, 0.566, -0.001, 0.998, 6.278]
     )
 
-    radius_model_params_det5 = ListField(
-        doc="Best-fit params (a, b, c, d, e) for masking radius model for det5.",
+    blended_radius_params_det5 = ListField(
+        doc="Blended-exponential radius params for det5: [a1, b1, a2, b2, m0, w].",
         dtype=float,
-        default=[1072.98,
-                 -0.44,
-                 -11499.76,
-                 11491.65,
-                 0.0000575]
+        default=[6.005, -0.2561, 2.729, -0.096, 9.314, 1.979]
     )
 
-    radius_model_params_det6 = ListField(
-        doc="Best-fit params (a, b, c, d, e) for masking radius model for det6.",
+    blended_radius_params_det6 = ListField(
+        doc="Blended-exponential radius params for det6: [a1, b1, a2, b2, m0, w].",
         dtype=float,
-        default=[1291.3563832820591,
-                 -0.5222690984542122,
-                 -1571.3429167094394,
-                 1579.7923122647942,
-                 -0.00021954695317821506]
+        default=[5.631, -0.2801, 3.174, -0.124, 10.950, 2.007]
     )
 
     dbs_ghost_params_edge_3 = ListField(
@@ -1148,7 +1166,7 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
     ConfigClass = CreateSourceMaskConfig
     full_name = "Create Source Mask"
     ssdc_pipe_level = 2
-    ssdc_doc_tag = "SSDC-MS-019 v3.3"
+    ssdc_doc_tag = "SSDC-MS-019 v3.4"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1213,25 +1231,26 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
         # Crosstalk masking parameters
         t_int = spximg.header["TINT"]  # Integration time from header
 
-        params_dict = {1: self.config.radius_model_params_det1,
-                       2: self.config.radius_model_params_det2,
-                       3: self.config.radius_model_params_det3,
-                       4: self.config.radius_model_params_det4,
-                       5: self.config.radius_model_params_det5,
-                       6: self.config.radius_model_params_det6,
-                       }
+        blended_params_dict = {1: self.config.blended_radius_params_det1,
+                               2: self.config.blended_radius_params_det2,
+                               3: self.config.blended_radius_params_det3,
+                               4: self.config.blended_radius_params_det4,
+                               5: self.config.blended_radius_params_det5,
+                               6: self.config.blended_radius_params_det6,
+                               }
 
         # Mask construction (SOURCE / CROSSTALK / GHOST) is WCS-dependent.
         # If WCS blows up with InvalidCoordinateError and FINAST!=0, skip masks.
         try:
-            source_mask = mask_sources(spximg=spximg, cat=catalog,
+
+            source_mask = mask_sources(spximg=spximg,
+                                       cat=catalog,
                                        minmag=self.config.minmag,
                                        maxmag=self.config.maxmag,
                                        dmag=self.config.dmag,
-                                       params_dict=params_dict)
+                                       blended_params_dict=blended_params_dict,)
 
             if self.config.mask_xtalk:
-                # FIXME
                 xtalk_coupling_matrix = None
                 xtalk_mask = mask_crosstalk(spximg=spximg,
                                             cat=catalog,

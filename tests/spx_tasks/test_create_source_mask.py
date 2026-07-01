@@ -53,30 +53,46 @@ class TestCreateSourceMaskTask(unittest.TestCase):
         self.config.dbs_params_6 = [-0.0043, 0.0013, 9.4, 0.0, 225.0, 0.0]
 
     def test_mask_sources(self):
-        """Test the mask_sources function."""
+        """Test the mask_sources function (blended-exponential only)."""
         from spx_tasks.create_source_mask import mask_sources
 
-        params_dict = {
-            1: self.config.radius_model_params_det1,
-            2: self.config.radius_model_params_det2,
-            3: self.config.radius_model_params_det3,
-            4: self.config.radius_model_params_det4,
-            5: self.config.radius_model_params_det5,
-            6: self.config.radius_model_params_det6,
+        blended_params_dict = {
+            1: self.config.blended_radius_params_det1,
+            2: self.config.blended_radius_params_det2,
+            3: self.config.blended_radius_params_det3,
+            4: self.config.blended_radius_params_det4,
+            5: self.config.blended_radius_params_det5,
+            6: self.config.blended_radius_params_det6,
         }
 
-        source_mask = mask_sources(
-            spximg=self.spximg,
-            cat=self.catalog,
-            minmag=self.config.minmag,
-            maxmag=self.config.maxmag,
-            dmag=self.config.dmag,
-            params_dict=params_dict,
-            plot_this=False,
-        )
+        # Ensure we’re testing a known band
+        self.spximg.setArrayId(array_id=1)
 
-        # Assertions
+        with patch(
+            "spx_tasks.create_source_mask.blended_exponential_radius",
+            return_value=3.0,  # constant radius makes behavior predictable
+        ) as mock_blended:
+            source_mask = mask_sources(
+                spximg=self.spximg,
+                cat=self.catalog,
+                minmag=self.config.minmag,
+                maxmag=self.config.maxmag,
+                dmag=self.config.dmag,
+                blended_params_dict=blended_params_dict,
+                plot_this=False,
+            )
+
         self.assertIsInstance(source_mask, np.ndarray)
+
+        # New check: blended model was actually used
+        self.assertGreater(mock_blended.call_count, 0)
+
+        # Sanity check it was called with mags from the current band
+        band = self.spximg.getArrayId()
+        mags = np.array(self.catalog[f"mag_det{band}"])
+        # confirm first positional arg of first call is one of those mags
+        first_called_mag = float(mock_blended.call_args[0][0])
+        self.assertIn(first_called_mag, mags.tolist())
 
     def test_mask_crosstalk(self):
         """Test the mask_crosstalk function."""

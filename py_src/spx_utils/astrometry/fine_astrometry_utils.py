@@ -293,7 +293,7 @@ def astronet_run_b(input_image: str | Path,
 
         if attempt == 0:
             print("\nAttempt 1: With Gaussian filter (if applicable) and base radius")
-            if array_id in [2, 3, 4, 5, 6] and gaussian_kernel is not None:
+            if array_id in [2, 3, 4, 5] and gaussian_kernel is not None:
                 print("Applying Gaussian filter to noisy image...")
                 img_proc = convolve(img_proc, gaussian_kernel, boundary='extend')
 
@@ -303,7 +303,7 @@ def astronet_run_b(input_image: str | Path,
             solve_field_params["downsample"] = 1
 
         elif attempt == 1:
-            if array_id in [1]:
+            if array_id in [1, 6]:
                 continue
             print(f"\nAttempt: Top {num_sources_per_chunk} sources, NO Gaussian filter")
             solve_field_params = base_params.copy()
@@ -515,7 +515,7 @@ def se_run(img_path: str | Path,
     min_sources, max_sources = num_ref_cat*0.8, num_ref_cat*1.2
     new_thresh = float(detect_thresh)
     converged = False
-    max_iterations = 20
+    max_iterations = 30
     if override_loop is True:
         max_iterations = 1
 

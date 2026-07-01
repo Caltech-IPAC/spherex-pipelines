@@ -1141,6 +1141,14 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             print("[INFO] Using original image WCS for fine astrometry.")
             # fall back to original WCS
             spximg.wcs = spximg_input.wcs
+            spximg_out = spximg
+            spximg_out.header["FINAST"] = 5
+            # Proceed immediately to next try,
+            # usually no hope in convergence with astrometry.net fail
+            return pipeBase.Struct(spximg_out=spximg_out,
+                                   scamp_wcs=None,
+                                   astrometry_diagnostics=None)
+
         finally:
             clean(img_path1, wcs_output, img_stripped)
 
@@ -2057,7 +2065,7 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             else:
                 detect_thresh = self.config.detect_thresh_lowb[array_id]
                 print(f".detect_thresh_lowb used: {detect_thresh}")
-
+            early_exit = False
             while iteration < MAX_ITER:
                 print(f"Iteration [{iteration}]: using detect_thresh = {detect_thresh}")
                 # Step 1: Write temp image with current WCS
@@ -2118,11 +2126,13 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
                 spximg.wcs = new_wcs
                 print(f">>>>>> dAXIS1 = {daxis1}\", dAXIS2 = {daxis2}\"")
                 if daxis1 < 1.0 and daxis2 < 1.0 and contrast > 2:
+                    early_exit = True
                     break
                 elif daxis1 < 1.5 and daxis2 < 1.5 and contrast > 2:
                     print(f"[{iteration}] Accepting early SCAMP solution with contrast={contrast:.2f} "
                           f"and shifts RA={ra_shift:.2f}\", DEC={dec_shift:.2f}\""
                           f" dAXIS1 = {daxis1}\", dAXIS2 = {daxis2}\"")
+                    early_exit = True
                     break
 
                 print(f"ITERATION {iteration}")
@@ -2138,16 +2148,17 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
                 f"SExtractor detect thresh = {detect_thresh}\n"
                 f"nstars matched = {nstars}\n")
 
-            spximg_temp = copy.copy(spximg)
+            spximg_temp = copy.deepcopy(spximg)
             print(spximg_temp.wcs.to_header(relax=True))
             # Get SCAMP WCS (aka solved wcs)
-            head_path = img_ldac[:-4] + "head"
-            scamp_wcs = wcs_from_head(head_path)
-            print(">>>> SCAMP_WCS <<<")
-            print(scamp_wcs)
-            scamp_hdr = scamp_wcs.to_header(relax=True)
-            spximg_temp.wcs = scamp_wcs
-            spximg_temp.header = scamp_hdr
+            if early_exit is False:
+                head_path = img_ldac[:-4] + "head"
+                scamp_wcs = wcs_from_head(head_path)
+                print(">>>> SCAMP_WCS <<<")
+                print(scamp_wcs)
+                scamp_hdr = scamp_wcs.to_header(relax=True)
+                spximg_temp.wcs = scamp_wcs
+                spximg_temp.header = scamp_hdr
             print(spximg_temp.wcs.to_header(relax=True))
 
             # variables for temp file absolute paths
