@@ -1,3 +1,72 @@
+## SPHEREx Pipelines 6.5.6 (2026-03-23)
+
+
+### Changes
+
+- Precision for PSF header values: round to six digits to avoid floating point precision errors. [[#SP-2029](https://jira.ipac.caltech.edu/browse/SP-2029)]
+- Reword comments in PSF header. [[#SP-2038](https://jira.ipac.caltech.edu/browse/SP-2038)]
+
+
+### Bug Fixes
+
+- Bugfix on PSF zone convention: Canonical defined ordering is x-increasing first, then y-increasing. [[#SP-2005](https://jira.ipac.caltech.edu/browse/SP-2005)]
+- Click Updated Pin: To be compatible with `rasterio`, click is now pinned to `>8.3.0` to avoid bugs in `8.3.0`. [[#SP-1965](https://jira.ipac.caltech.edu/browse/SP-1965)]
+
+
+## SPHEREx Pipelines 6.5.5 (2026-01-07)
+
+
+### Changes
+
+- Create Source Mask: Implemented `blended_exponential_radius` method for estimating source mask radius. [[#SP-1899](https://jira.ipac.caltech.edu/browse/SP-1899)]
+- Max Bloom Loop: Adding maximum loop interation to bloom to prevent endless loop of searching
+  for non-transient pixels in exposures that are saturated with transient pixels. [[#SP-1924](https://jira.ipac.caltech.edu/browse/SP-1924)]
+- Removed gaussian fit for second attempt in astrometry.net call in fine astrometry, for detector 6. [[#SP-1925](https://jira.ipac.caltech.edu/browse/SP-1925)]
+
+
+### Bug Fixes
+
+- Reducing Time Complexity in BSH: Changed time complexity for removing indices in BSH flagger from
+  O(N*M) to O(N+M). [[#SP-1923](https://jira.ipac.caltech.edu/browse/SP-1923)]
+
+
+## SPHEREx Pipelines 6.5.4 (2026-01-05)
+
+
+### New Features
+
+- Mosaic tool: Temp butler query implementation. [[#SP-1894](https://jira.ipac.caltech.edu/browse/SP-1894)]
+
+
+### Changes
+
+- BSH Flagging: added handling for runaway loops when an image is completely saturated with transients (runaway loops caused by algorithm unable to find the border end of transients); bloom and snowball flagging is skipped if more than 85% of the image is flagged transient, which is ~3.83 Million pixels; halo flagging is still allowed since it is not affected. [[#SP-1922](https://jira.ipac.caltech.edu/browse/SP-1922)]
+
+
+### Bug Fixes
+
+- Level 3 Bugfix: Modified HiPS ID calculation in Perform Forced Photometry to use reference coordinates if
+  available, ensuring consistent output table tiling over time. Improved error reporting related to faulty
+  reference catalogs for easier bug identification. [[#SP-1917](https://jira.ipac.caltech.edu/browse/SP-1917)]
+
+
+### Other
+
+- Dropped support for Python 3.10; unit test builds now run on Python 3.13. [[#SP-1865](https://jira.ipac.caltech.edu/browse/SP-1865)]
+
+
+## SPHEREx Pipelines 6.5.3 (2025-12-19)
+
+
+### Bug Fixes
+
+- Incompatible Parsl Version with LSST Ctrl BPS Parsl: Due to incompatible versions between parsl and lsst-ctrl-bps-parsl,
+  it's necessary to pin parsl to 2025.11.10 as they do not utilize semantic versions, leading to possible interface-breaking
+  changes. [[#SP-1911](https://jira.ipac.caltech.edu/browse/SP-1911)]
+- Renaming the Query Custom Catalog module: Due to errors encountered when generating the quantum graph for 
+  Query Custom Catalog in R6.5, the module was renamed to allow graph generation to succeed. [[#SP-1913](https://jira.ipac.caltech.edu/browse/SP-1913)]
+
+
 ## SPHEREx Pipelines 6.5 (2025-12-11)
 
 

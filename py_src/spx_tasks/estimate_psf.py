@@ -251,6 +251,8 @@ def _process_psf_bin(ibin, config, imageHandles, catalogHandles, spherex_image_s
     """
     ny, nx = spherex_image_shape
     bin_width_x, bin_width_y = nx / config.bins_x, ny / config.bins_y
+    # Rows-first ordering
+    # ibin = iy * bins_x +ix
     iy, ix = np.unravel_index(ibin, (config.bins_y, config.bins_x))
     x_min, x_max = ix * bin_width_x, (ix + 1) * bin_width_x
     y_min, y_max = iy * bin_width_y, (iy + 1) * bin_width_y
@@ -440,7 +442,6 @@ class EstimatePSFTask(pipeBase.PipelineTask):
         ny, nx = spherex_image_shape
         x_centers = (np.arange(bins_x) + 0.5) * (nx / bins_x)
         y_centers = (np.arange(bins_y) + 0.5) * (ny / bins_y)
-        yy, xx = np.meshgrid(y_centers, x_centers)
         return x_centers, y_centers
 
     def _generate_plots(self, psf_stack_data, psf_decon_data, fwhms_stack, fwhms_decon,
@@ -485,33 +486,34 @@ class EstimatePSFTask(pipeBase.PipelineTask):
         im = None
 
         # Loop through the subplot grid by row and column
-        for row in range(bins_y):
-            for col in range(bins_x):
-                # Get the correct subplot axis from the grid.
+        for iy in range(bins_y):          # iy=0 is bottom row in detector coords
+            for ix in range(bins_x):      # ix increases left->right
+                i = iy * bins_x + ix      # x-fast then y
+                row = (bins_y - 1) - iy   # map bottom->top for the figure
+                col = ix
+
                 ax = axes[row, col]
 
-                # Calculate the corresponding data index 'i' for a bottom-left origin.
-                data_row = (bins_y - 1) - row
-                i = data_row * bins_x + col
-
                 if np.sum(data[i]) > 0:
-                    im = ax.imshow(data[i], origin='lower', cmap='nipy_spectral',
-                                   norm=colors.Normalize(vmin=vmin, vmax=vmax))
+                    im = ax.imshow(
+                        data[i],
+                        origin="lower",          # keep PSF image origin consistent
+                        cmap="nipy_spectral",
+                        norm=colors.Normalize(vmin=vmin, vmax=vmax),
+                    )
 
-                # Add subplot titles, axis labels, and ticks.
-                ax.set_title(f"Bin {i}, D{detector_id}", fontsize=10)
+                ax.set_title(f"(ix={ix}, iy={iy})  i={i}  D{detector_id}", fontsize=10)
                 ax.set_xlabel("Pixels (oversampled)", fontsize=8)
                 ax.set_ylabel("Pixels (oversampled)", fontsize=8)
-                ax.tick_params(axis='both', which='major', labelsize=8)
 
-                # If FWHM values were provided, display them on the plot.
-                if fwhms is not None:
-                    fwhm = fwhms[i]
-                    if not np.isnan(fwhm):
-                        ax.text(0.05, 0.95, f'FWHM: {fwhm:.2f}"',
-                                transform=ax.transAxes, fontsize=9, color='white',
-                                verticalalignment='top',
-                                bbox=dict(boxstyle='round,pad=0.3', fc='black', alpha=0.5))
+                if fwhms is not None and np.isfinite(fwhms[i]):
+                    ax.text(
+                        0.05, 0.95, f'FWHM: {fwhms[i]:.2f}"',
+                        transform=ax.transAxes,
+                        fontsize=9, color="white",
+                        va="top",
+                        bbox=dict(boxstyle="round,pad=0.3", fc="black", alpha=0.5),
+                    )
 
         if im is not None:
             fig.subplots_adjust(right=0.9)

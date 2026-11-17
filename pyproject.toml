@@ -23,7 +23,7 @@ dependencies = [
     "alive-progress",
     "astropy",
     "opencv-python-headless",
-    "click >=8.2.0,<8.3.0",
+    "click >8.3.0",
     "healpy >=1.17.1",
     "joblib",
     "kete==1.0.6",

@@ -11,7 +11,7 @@ The data products themselves are available at the NASA/IPAC Infrared Science Arc
 (IRSA; https://irsa.ipac.caltech.edu/Missions/spherex.html).
 The pipeline modules are implemented primarily in Python as an application of the open-source
 data access and pipeline construction middleware developed for the Vera C. Rubin Observatory
-(Jenness et al. 2022).
+(Jenness et al., 2022).
 
 ## Purpose
 
@@ -19,7 +19,7 @@ This repository contains essentially all the code for the SPHEREx Level 1 throug
 pipelines.
 
 Certain details of the communication with the spacecraft and the handling of its raw telemetry
-are not able to be made public at this time and are maintained elsewhere.
+cannot be made public at this time and are maintained elsewhere.
 The code and its internal documentation contain references to additional repositories required
 to operate the code in production but which are not controlled by the SSDC and are not
 currently public.
@@ -32,7 +32,7 @@ https://thetractor.readthedocs.io/), with some modifications that are maintained
 
 ## Public-access repository
 
-The [`Caltech-IPAC/spherex-pipelines` repository](https://github.com/Caltech-IPAC/spherex-pipelines)
+The [`Caltech-IPAC/spherex-pipelines`](https://github.com/Caltech-IPAC/spherex-pipelines)
 copy of this repository contains snapshots of the code as used for each public data production,
 intended to help the astronomy community understand the details of how the pipeline algorithms
 are implemented.
@@ -56,14 +56,23 @@ of the actual internal pipeline development repository.
 We are not able to directly mirror the development repository for this mission, due to a
 variety of constraints, but we make every effort to ensure that the public version is an
 accurate copy of the code actually executed.
-Each tag in the public-access repository is paired with a corresponding tag in the development
-repository.
+
+For the initial public software release, including snapshots of R6.4, R6.5.3, R6.5.4, R6.5.5,
+and R6.5.6, a limited number of retroactive changes were made from the as-executed code,
+including removing internal execution environment details and a very small number of
+incorrect comments.
+These changes have also been made to the head of internal development, and we expect that
+future public releases will involve far fewer such changes.
+
+The full provenance of the changes required for public release is maintained by the project,
+and in particular each tag in the public-access repository is paired with a corresponding tag
+in the internal development repository with precisely identical content.
 
 ## References
 
 The following links provide information on the SPHEREx mission, pipeline and data products:
-* SPHERE Mission Description: "The SPHEREx Satellite Mission", Bock et al, 2026, https://ui.adsabs.harvard.edu/abs/2026ApJ...999..139B
-* SPHEREx Pipeline Infrastructure and High-Level Description: "The SPHEREx Image and Spectrophotometry Processing Pipeline", Akeson et al, 2026, https://ui.adsabs.harvard.edu/abs/2025arXiv251115823A
+* SPHEREx Mission Description: "The SPHEREx Satellite Mission", Bock et al., 2026, https://ui.adsabs.harvard.edu/abs/2026ApJ...999..139B
+* SPHEREx Pipeline Infrastructure and High-Level Description: "The SPHEREx Image and Spectrophotometry Processing Pipeline", Akeson et al., 2026, https://ui.adsabs.harvard.edu/abs/2025arXiv251115823A
 * SPHEREx Explanatory Supplement, includes algorithm and data products details: https://irsa.ipac.caltech.edu/data/SPHEREx/docs/SPHEREx_Expsupp_QR.pdf
 * SPHEREx Page at IRSA: https://irsa.ipac.caltech.edu/Missions/spherex.html
 * SPHEREx Data Simulator: https://ui.adsabs.harvard.edu/abs/2025ApJS..281...10C/abstract
