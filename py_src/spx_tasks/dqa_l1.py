@@ -2,7 +2,6 @@ __all__ = ["DQAL1Config", "DQAL1Task", "check_l1_dqa"]
 
 # Standard library imports
 import copy
-import logging
 
 # Related third party imports
 from lsst.pex.config import Field, DictField
@@ -92,6 +91,12 @@ class DQAL1Config(pipeBase.PipelineTaskConfig, pipelineConnections=DQAL1Connecti
         doc="Bitmask of flags that justify NaN or Inf values in L1.",
         dtype=int,
         default=(Flag.MISSING_DATA | Flag.NONFUNC | Flag.SUR_ERROR | Flag.PHANMISS)
+    )
+
+    missing_data_percentage_threshold = Field(
+        doc="Maximum acceptable percentage of pixels flagged with MISSING_DATA.",
+        dtype=float,
+        default=1.5
     )
 
     max_transient_pix = Field(
@@ -222,10 +227,37 @@ class DQAL1Task(pipeBase.PipelineTask):
         if not (shape_cond & bit_cond):
             dqa_result = False
 
-        nan_check_pass, nan_percentage = DQAL1Task().check_nan_percent(spximg)
-        if nan_check_pass is False:
+        # Percentage of NaN pixels is within threshold
+        nan_check_pass, nan_percentage = self.check_nan_percent(spximg)
+        nan_percentage_check = {
+            "result": "PASS" if nan_check_pass else "FAIL",
+            "description": f"Percentage of NaN pixels ({nan_percentage:.2f}%) is within the "
+                           f"{self.config.nan_percentage_threshold}% threshold."
+            if nan_check_pass else
+            f"Percentage of NaN pixels ({nan_percentage:.2f}%) exceeds the "
+            f"{self.config.nan_percentage_threshold}% threshold."
+        }
+        log_threshold_test(self.log.logger, nan_percentage_check,
+                           warning_message=f"Bad input: NaN % = {nan_percentage:3.1f}%")
+        if not nan_check_pass:
             dqa_result = False
-            logging.error(f"Bad input: NaN % = {nan_percentage:3.1f}%")
+
+        # Percentage of pixels flagged with MISSING_DATA is within threshold
+        missing_data_pass, missing_data_percentage = self.check_missing_data_percent(spximg)
+        missing_data_check = {
+            "result": "PASS" if missing_data_pass else "FAIL",
+            "description": f"Percentage of pixels flagged with MISSING_DATA "
+                           f"({missing_data_percentage:.2f}%) is within the "
+                           f"{self.config.missing_data_percentage_threshold}% threshold."
+            if missing_data_pass else
+            f"Percentage of pixels flagged with MISSING_DATA "
+            f"({missing_data_percentage:.2f}%) exceeds the "
+            f"{self.config.missing_data_percentage_threshold}% threshold."
+        }
+        log_threshold_test(self.log.logger, missing_data_check,
+                           warning_message="MISSING_DATA pixel percentage exceeds threshold.")
+        if not missing_data_pass:
+            dqa_result = False
 
         # TODO: Implement checks on fully sampled pixel subset
         # TODO: Check metadata for completion and values in expected ranges
@@ -236,7 +268,8 @@ class DQAL1Task(pipeBase.PipelineTask):
 
         # Add all results to record object
         dqa_record = Level1DQA(metadata_summary={}, image_statistics=img_stats_dict,
-                               threshold_tests=[data_test_1, data_test_2, flags_test_1, nan_check])
+                               threshold_tests=[data_test_1, data_test_2, flags_test_1, nan_check,
+                                                nan_percentage_check, missing_data_check])
 
         spximg_out = copy.copy(spximg)
         if dqa_result:
@@ -296,12 +329,35 @@ class DQAL1Task(pipeBase.PipelineTask):
         else:
             return True, nan_percentage
 
+    def check_missing_data_percent(self, spximg: SPHERExImage) -> tuple[bool, float]:
+        """Check if percentage of pixels flagged with MISSING_DATA exceeds threshold.
+
+        Parameters
+        ----------
+        spximg : SPHERExImage
+            The SPHEREx image object.
+
+        Returns
+        -------
+        bool
+            True if the MISSING_DATA percentage is within threshold, False otherwise.
+        float
+            Percentage of pixels flagged with MISSING_DATA.
+
+        """
+        total_elements = spximg.flags.size
+        num_missing = np.count_nonzero(spximg.flags & Flag.MISSING_DATA)
+        missing_data_percentage = (num_missing / total_elements) * 100
+        if missing_data_percentage > self.config.missing_data_percentage_threshold:
+            return False, missing_data_percentage
+        else:
+            return True, missing_data_percentage
+
 
 def check_l1_dqa(spximg: SPHERExImage) -> None:
     """Minimum DQA on level 1 simulated images.
 
-    Raises ValueError if either L1DQAFLG header indicates failed DQA or
-    the percentage of NaN values exceeds the threshold.
+    Raises ValueError if L1DQAFLG header indicates failed DQA.
 
     Parameters
     ----------
@@ -309,11 +365,6 @@ def check_l1_dqa(spximg: SPHERExImage) -> None:
         SPHEREx image
 
     """
-    nan_check_pass, nan_percentage = DQAL1Task().check_nan_percent(spximg)
-
     if "L1DQAFLG" in spximg.header:
         if spximg.header["L1DQAFLG"] == "Fail":
             raise ValueError("Bad input: Failed L1 DQA.")
-    elif nan_check_pass is False:
-        # Raise error if the percentage of NaN values exceeds the threshold
-        raise ValueError(f"Bad input: NaN % = {nan_percentage:3.1f}%")

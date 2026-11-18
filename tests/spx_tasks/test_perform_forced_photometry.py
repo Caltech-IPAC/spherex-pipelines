@@ -561,6 +561,7 @@ class TestPerformForcedPhotometry():
         ("PSF", False, "Using legacy PSF for photometry fitting."),
         ("EPSF", True, "Using EPSF override from input calibration for photometry fitting.")
     ])
+    @pytest.mark.optional_deps  # builds fake_PSF()/fake_epsf(), which need the simulator
     def test_psf_extensions(self, point_source, psf_extension, override_epsf, log_msg, caplog):
         """Test that PSF extensions are properly selected."""
         # Set up appropriate config/inputs

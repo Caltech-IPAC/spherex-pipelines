@@ -87,20 +87,25 @@ def patch_field_xml_bytes(xml_bytes, id_="obs_publisher_did"):
     # find all TR rows under TABLEDATA
     xpath_tr = f".//{{{ns}}}TR" if ns else ".//TR"
     width = None
-    fallback_width = None
     for tr in root.findall(xpath_tr):
         tds = tr.findall(f"{{{ns}}}TD") if ns else tr.findall("TD")
         if col_index < len(tds):
             text = (tds[col_index].text or "")
-            matches = [m.start() for m in re.finditer(r"ivo://", text)]
-            if len(matches) >= 2:
-                width = matches[1] - matches[0]
-                break
-            elif len(matches) == 1 and fallback_width is None:
-                # single entry: the whole (unstripped) cell is one stride
-                fallback_width = len(text)
-    if width is None:
-        width = fallback_width
+            if id_ == "obs_publisher_did":
+                # Stride = distance between the first two "ivo://" markers.
+                matches = [m.start() for m in re.finditer(r"ivo://", text)]
+                if len(matches) >= 2:
+                    width = matches[1] - matches[0]
+                    break
+            else:
+                # Non-ivo columns (e.g. data_collection) are packed as
+                # space-separated fixed-width tokens; the stride is the
+                # distance to the first space separator (inclusive).
+                stripped = text.strip()
+                space_idx = stripped.find(" ")
+                if space_idx != -1:
+                    width = space_idx + 1
+                    break
 
     if width is None:
         raise ValueError(f"Could not determine width from <TD> values in column {col_index}.")
@@ -383,7 +388,7 @@ def add_publisher_did_col(tbl: Table):
         n_entries = len(lvf_id_strs)
 
         # per-measurement prefix: ivo://irsa.ipac/{data_collection}
-        prefix = np.char.add("ivo://irsa.ipac/", np.asarray(data_collection_col[i]).astype(str))
+        prefix = np.char.add("ivo://irsa.ipac/spherex_", np.asarray(data_collection_col[i]).astype(str))
 
         # pre-suffix array: "?" or "_deep?"
         pre_suffix = np.full(n_entries, "?", dtype="U10")

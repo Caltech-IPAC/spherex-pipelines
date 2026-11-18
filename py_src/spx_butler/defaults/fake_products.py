@@ -803,8 +803,6 @@ def fake_zodi_scaling(num_bins: int = 64) -> Table:
         Central wavelength in microns.
     ZodiScale : float
         Multiplicative scale applied to zodi model.
-    ZodiOffset_nWm2sr : float
-        Additive offset in nu*I_nu units of nW m^-2 sr^-1.
 
     Notes
     -----
@@ -813,15 +811,12 @@ def fake_zodi_scaling(num_bins: int = 64) -> Table:
     """
     wavelength_um = np.linspace(0.75, 5.0, num_bins, dtype=np.float32)
     zodi_scale = np.ones(num_bins, dtype=np.float32)
-    zodi_offset = np.zeros(num_bins, dtype=np.float32)
 
     tab = Table()
     tab["wavelength_um"] = wavelength_um
     tab["ZodiScale"] = zodi_scale
-    tab["ZodiOffset_nWm2sr"] = zodi_offset
 
     tab["wavelength_um"].unit = u.um
-    tab["ZodiOffset_nWm2sr"].unit = u.nW / (u.m**2 * u.sr)
 
     return tab
 

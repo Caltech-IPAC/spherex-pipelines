@@ -5,6 +5,7 @@ from astropy.table import Table
 from spx_data import SPHERExImage, Zodi, spherex_image_reader
 from spx_tasks import GetZodiModelConfig, GetZodiModelTask, hasSPHERExSimulator
 
+pytestmark = pytest.mark.optional_deps
 
 test_root = Path(__file__).parent.parent
 
@@ -29,7 +30,6 @@ def make_zodi_scaling_table(scale=1.0, offset=0.0):
         {
             "wavelength_um": np.array([0.5, 1.0, 1.5], dtype=float),
             "ZodiScale": np.array([scale, scale, scale], dtype=float),
-            "ZodiOffset_nWm2sr": np.array([offset, offset, offset], dtype=float),
         }
     )
 
@@ -48,7 +48,7 @@ def test_GetZodiModel_basic():
 
     output = task.run(
         spximg=spximg,
-        zodi_scaling=zodi_scaling,
+        zodi_scaling_v2=zodi_scaling,
         spectral_wcs=spectral_wcs,
     )
 
@@ -83,6 +83,6 @@ def test_GetZodiModel_run_uses_build_zodi_correction_maps(monkeypatch):
     with pytest.raises(RuntimeError, match="patch hit"):
         task.run(
             spximg=spximg,
-            zodi_scaling=zodi_scaling,
+            zodi_scaling_v2=zodi_scaling,
             spectral_wcs=spectral_wcs,
         )

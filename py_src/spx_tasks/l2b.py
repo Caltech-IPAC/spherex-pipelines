@@ -87,8 +87,8 @@ class L2bConnections(pipeBase.PipelineTaskConnections,
         isCalibration=True,
         minimum=0,
     )
-    zodi_scaling = cT.PrerequisiteInput(
-        name="zodi_scaling",
+    zodi_scaling_v2 = cT.PrerequisiteInput(
+        name="zodi_scaling_v2",
         doc="Detector-dependent 1D zodi scaling table in ECSV format.",
         storageClass="AstropyTable",
         dimensions=("instrument", "detector"),
@@ -260,7 +260,7 @@ class L2bTask(pipeBase.PipelineTask):
             dark: SPHERExImage,
             sip: Sip,
             srccat: Table,
-            zodi_scaling: Table,
+            zodi_scaling_v2: Table,
             spectral_wcs: HDUList,
             psf_avg: PSFZoneData | None = None,
             epsf: SPHERExImage | None = None,
@@ -316,7 +316,7 @@ class L2bTask(pipeBase.PipelineTask):
         # Get Zodi Model
         # Adds zodi layer
         task: GetZodiModelTask = getattr(self, "get_zodi_model")
-        result = task.run(spximg, zodi_scaling, spectral_wcs)
+        result = task.run(spximg, zodi_scaling_v2, spectral_wcs)
         spximg = result.spximg_out
 
         # Measure Per-Exposure PSF

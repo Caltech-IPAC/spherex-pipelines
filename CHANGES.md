@@ -1,8 +1,77 @@
+## SPHEREx Pipelines 7.1.1 (2026-09-10)
+
+### Changes
+
+- Photometry Tool: 
+  - Added new calibrations for release, fixed VOTable regression. [[#SP-2260](https://jira.ipac.caltech.edu/browse/SP-2260)]
+  - Updated flux correction strategy to account for data release version. [[#SP-2264](https://jira.ipac.caltech.edu/browse/SP-2264)]
+- Added helper methods to `LVFContourChannelDefinition` to support efficient geometric spectral channel lookup. [[#SP-2277](https://jira.ipac.caltech.edu/browse/SP-2277)]
+- Spectral Channels: Reworked the spectral channel definition interface to support custom resolutions and per-detector templates. [[#SP-2276](https://jira.ipac.caltech.edu/browse/SP-2276)]
+- Create All Sky Catalog: Updated Nyquist completeness computation to use geometric channel boundaries instead
+  of wavelength ranges. Redefined Nyquist completeness from the fraction of 102 channels with 2+ samples to
+  the fraction of 204 half-channels with 1+ sample. [[#SP-2254](https://jira.ipac.caltech.edu/browse/SP-2254)]
+
+
+### Bug Fixes
+
+- Photometry Tool: Added `--qgraph-datastore-records` when building quantum graph to ensure dataset artifacts are available during execution. [[#SP-2291](https://jira.ipac.caltech.edu/browse/SP-2291)]
+- Mosaic tool: Added support for multiple datastore roots. [[#SP-2292](https://jira.ipac.caltech.edu/browse/SP-2292)]
+
+
+### Other
+
+- Made `spherex-parameters` an optional dependency. SSDC pipelines now access required parameters through
+  `spx_data.spx_param`, which provides built-in fallback values when the package is unavailable.
+  GitHub Actions workflow now tests both configurations: with and without the optional `spherex-parameters`
+  and `spherex-sky-simulator` dependencies. [[#SP-2255](https://jira.ipac.caltech.edu/browse/SP-2255)]
+- Pinned SWIG to <4.5 to fix compilation issues. [[#SP-2283](https://jira.ipac.caltech.edu/browse/SP-2283)]
+
+
+## SPHEREx Pipelines 7.0.5 (2026-09-10)
+
+### Bug Fixes
+
+- Get Zodi Model: Corrected Zodiacal light model to not apply offset from diffuse background. Created new dataset type `zodi_scaling_v2` and scripts to support calibration generation. [[#SP-2303](https://jira.ipac.caltech.edu/browse/SP-2303)]
+
+### Other
+
+- Added a custom butler command to produce Level 2 images with recomputed ZODI. [[#SP-2305](https://jira.ipac.caltech.edu/browse/SP-2305)]
+
+
+## SPHEREx Pipelines 7.0.4 (2026-07-28)
+
+### Bug Fixes
+
+- Airglow/Aurora/Shuttle-Glow Fitting: Improved error handling for airglow and aurora/shuttle-glow fitting. The He I airglow background fit now reports a clear error when no valid pixels remain after flagging, instead of failing with an internal exception. Spectral image creation now logs these failures and continues processing the image instead of aborting. [[#SP-2278](https://jira.ipac.caltech.edu/browse/SP-2278)]
+
+
 ## SPHEREx Pipelines 7.0.3 (2026-07-15)
 
 ### Bug Fixes
 
 - Fixed false-positive failures in Level 1 DQA. [[#SP-2261](https://jira.ipac.caltech.edu/browse/SP-2261)]
+- Added a missing-data-percentage check to prevent exposures affected by bad memory blocks from passing Level 1 DQA. [[#SP-2271](https://jira.ipac.caltech.edu/browse/SP-2271)]
+
+
+## SPHEREx Pipelines 7.1.0 (2026-07-20)
+
+### New Features
+
+- Added the `mosaic-tool create-hips-tile` command for generating individual HiPS tiles. [[#SP-1307](https://jira.ipac.caltech.edu/browse/SP-1307)]
+
+
+### Changes
+
+- L3 Flux Corrections: Added script to generate "dummy", no-op L3 flux correction
+  calibration files. Modified calibration standardization script to work directly
+  with real L3 flux correction calibration source files. [[#SP-2251](https://jira.ipac.caltech.edu/browse/SP-2251)]
+- Calibrations: Modified calibration chain scripts to support start/end dates for custom validity intervals.
+  Added script and documentation for level 3-specific calibration chain. [[#SP-2266](https://jira.ipac.caltech.edu/browse/SP-2266)]
+
+
+### Bug Fixes
+
+- Fixed corrupted `table_meta_yaml` in all-sky catalog Parquet metadata: when the measurement table had no table-level metadata, the `version_allsky_cat` entry was appended to the `datatype` column list instead of being written under a new top-level `meta` YAML key. [[#SP-2265](https://jira.ipac.caltech.edu/browse/SP-2265)]
 
 
 ## SPHEREx Pipelines 7.0.2 (2026-07-13)
@@ -13,6 +82,7 @@
 - Fixed a Level 1 Correct Preamplifier failure ("Ref pixels must be flagged") on exposures with missing reference pixels.
   Reference pixels flagged `MISSING_DATA` are now accepted and, like missing phantom pixels, excluded from the correction statistics.
   Active pixels that cannot be corrected because a readout channel has no valid reference pixels are set to `NaN` and flagged `PHANMISS`, consistent with the phantom correction behavior. [[#SP-2259](https://jira.ipac.caltech.edu/browse/SP-2259)]
+- Level 3a: For images with poor fine astrometry that have SSO fitting enabled, return a null SSO photometry object when photometry is skipped. [[#SP-2258](https://jira.ipac.caltech.edu/browse/SP-2258)]
 
 
 ## SPHEREx Pipelines 7.0.1 (2026-07-10)

@@ -11,6 +11,7 @@ import pyarrow as pa
 from astropy.table import meta, Column
 from lsst.pex.config import ListField, ChoiceField, Field
 from lsst.daf.butler import DataCoordinate, DeferredDatasetHandle
+from numba import njit
 import astropy.units as u
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
@@ -18,83 +19,159 @@ import lsst.pipe.base.connectionTypes as cT
 # Local application/library specific imports
 from spx_data import FluxCorrectionsCube
 from spx_butler import REFCAT_SKYPIX_NAME
-from spherex_parameters import load_spherex_parameters
 from spx_data.spx_version import SSDC_PIPELINES_VERSION
 from spx_utils.utils import get_refcat_provenance
+from spx_data.spectral_channel import LVFChannelDefinitionV2
 
-params = load_spherex_parameters()
 # ==============================================================================
 
 META_YAML_TYPE_TAG = "meta: !!omap"  # ordered mapping for YAML parsers
+N_DETECTORS = 6
 
 
-def _as_array(x):
-    if hasattr(x, "value"):
-        x = x.value
-    return np.asarray(x)
-
-
-def _get_spectral_channel_arrays(params):
-    """Extract spectral channel arrays from params."""
-    wave_min = _as_array(params["spectral_channel"]["lmin"]["quantity"])
-    wave_max = _as_array(params["spectral_channel"]["lmax"]["quantity"])
-    wave_mean = _as_array(params["spectral_channel"]["lmean"]["quantity"])
-    resolution = _as_array(params["spectral_channel"]["R"]["quantity"])
-
-    channel_sizes = wave_mean / resolution
-    return wave_min, wave_max, channel_sizes
-
-
-def compute_nyquist_metric(wavelengths: list[float], params: dict) -> float:
-    """Compute Nyquist completeness as fraction of spectral channels
-    containing at least two measurements.
+@njit(cache=True)
+def compute_nyquist_metric(meas_half_channels: np.ndarray, seen: np.ndarray) -> float:
+    """Compute Nyquist completeness as fraction of spectral half-channels
+    containing at least one measurement.
 
     Parameters
     ----------
-    wavelengths : `list[float]`
-        The list of observed wavelengths for a given source.
-    params : `dict`
-        Dictionary containing spectral channel parameters.
+    meas_half_channels : `numpy.ndarray`
+        Per-measurement array of spectral half-channel numbers.
+    seen : `numpy.ndarray`
+        Boolean array of length equal to the total number of spectral
+        half-channels across all detectors. Tracks which half-channels contain
+        at least one measurement.
 
     Returns
     -------
     `float`
-        Nyquist sampling metric in the range (0,1),
-        where 1 indicates complete sampling.
+        Nyquist sampling metric in the range (0,1), where 1 indicates complete
+        sampling.
 
     Notes
     -----
     This is the production metric used for nyquist_computation.
     """
-    wavelengths = np.asarray(wavelengths)
-    if len(wavelengths) < 2:
+    if len(meas_half_channels) < 1:  # no measurements for this source
         return 0.0
-    wave_min, wave_max, _ = _get_spectral_channel_arrays(params)
-    n_channels = len(wave_min)
-    # Assign each wavelength to a spectral channel.
-    chan = np.searchsorted(wave_max, wavelengths, side="right")
 
-    in_range = (chan >= 0) & (chan < n_channels)
-    valid = np.zeros(len(wavelengths), dtype=bool)
+    seen[:] = False  # reset seen array for this source
+    n_seen = 0
+    n_half_chan_glob = len(seen)
+    for k in range(meas_half_channels.shape[0]):
+        c = meas_half_channels[k]
+        if 1 <= c <= n_half_chan_glob:
+            idx = c - 1  # convert channel # to 0-based idx
+            if not seen[idx]:
+                seen[idx] = True
+                n_seen += 1
 
-    chan_in_range = chan[in_range]
-    wavelengths_in_range = wavelengths[in_range]
+    if n_seen == 0:  # no valid active resolution channels for this source
+        return 0.0
 
-    valid[in_range] = (
-        (wavelengths_in_range >= wave_min[chan_in_range])
-        & (wavelengths_in_range < wave_max[chan_in_range])
+    return n_seen / n_half_chan_glob
+
+
+@njit(cache=True)
+def _nyquist_diagnostics_core(wavelengths: np.ndarray, meas_full_channels: np.ndarray,
+                              n_full_chan_global: int, channel_sizes: np.ndarray, counts: np.ndarray,
+                              spread: np.ndarray, spread_fraction: np.ndarray, max_w: np.ndarray,
+                              min_w: np.ndarray) -> tuple:
+    """JIT-optimized core function that fills counts/spread/spread_fraction in
+    place and computes the six summary fractions.
+
+    Returns
+    -------
+    `tuple`
+        A tuple of six float values representing the fraction of spectral
+        channels with the following properties: 1+ measurements,
+        2+ measurements, spread >= 0.05, spread >= 0.15, spread >= 0.33, and
+        spread >= 0.50.
+    """
+    n = wavelengths.shape[0]
+
+    # Reset all pre-allocated buffer arrays for this source
+    for c in range(n_full_chan_global):
+        counts[c] = 0
+        spread[c] = np.nan
+        spread_fraction[c] = np.nan
+        max_w[c] = -np.inf
+        min_w[c] = np.inf
+
+    if n == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+
+    # Compute per-channel counts and min/max wavelengths
+    for k in range(n):
+        chan = meas_full_channels[k]
+        if chan < 1 or chan > n_full_chan_global:
+            continue
+        idx = chan - 1  # channel number -> 0-based index
+        wl = wavelengths[k]
+        counts[idx] += 1
+        if wl > max_w[idx]:
+            max_w[idx] = wl
+        if wl < min_w[idx]:
+            min_w[idx] = wl
+
+    # Compute summary fractions
+    n_1plus = 0
+    n_2plus = 0
+    n_005 = 0
+    n_015 = 0
+    n_033 = 0
+    n_050 = 0
+    for c in range(n_full_chan_global):
+        if counts[c] >= 1:
+            n_1plus += 1
+        if counts[c] >= 2:
+            n_2plus += 1
+            sf = (max_w[c] - min_w[c]) / channel_sizes[c]
+            spread[c] = max_w[c] - min_w[c]
+            spread_fraction[c] = sf
+            if sf >= 0.05:
+                n_005 += 1
+            if sf >= 0.15:
+                n_015 += 1
+            if sf >= 0.33:
+                n_033 += 1
+            if sf >= 0.50:
+                n_050 += 1
+
+    return (
+        n_1plus / n_full_chan_global,
+        n_2plus / n_full_chan_global,
+        n_005 / n_full_chan_global,
+        n_015 / n_full_chan_global,
+        n_033 / n_full_chan_global,
+        n_050 / n_full_chan_global,
     )
-    chan_valid = chan[valid]
-    if len(chan_valid) < 2:
-        return 0.0
-    counts = np.bincount(chan_valid, minlength=n_channels)
-    good = counts >= 2
-    nyquist_metric = np.sum(good) / n_channels
-    return float(np.clip(nyquist_metric, 0.0, 1.0))
 
 
-def compute_nyquist_diagnostics(wavelengths, params):
+def compute_nyquist_diagnostics(base_chan_def: LVFChannelDefinitionV2, wavelengths: np.ndarray,
+                                meas_full_channels: np.ndarray, n_full_chan_global: int,
+                                channel_sizes: np.ndarray, counts: np.ndarray, spread: np.ndarray,
+                                spread_fraction: np.ndarray, max_w: np.ndarray, min_w: np.ndarray) -> dict:
     """Compute diagnostic information for testing Nyquist spread behavior.
+
+    Parameters
+    ----------
+    base_chan_def : `spx_data.spectral_channel.LVFChannelDefinitionV2`
+        Base channel definition for the LVF.
+    wavelengths: `numpy.ndarray`
+        Array of wavelengths per measurement.
+    meas_full_channels : `numpy.ndarray`
+        Array of full-resolution spectral channel numbers per measurement.
+    n_full_chan_global : `int`
+        Total number of active, full-resolution spectral channels across all
+        detectors.
+    channel_sizes : `numpy.ndarray`
+        Array of spectral channel sizes per spectral channel.
+    counts, spread, spread_fraction, max_w, min_w : `numpy.ndarray`
+        Pre-allocated buffer arrays of length ``n_full_chan_global`` to store
+        per-channel counts, spreads, spread fractions, and maximum/minimum
+        wavelengths.
 
     Returns
     -------
@@ -109,60 +186,51 @@ def compute_nyquist_diagnostics(wavelengths, params):
         - frac_bins_with_spread_015
         - frac_bins_with_spread_033
         - frac_bins_with_spread_050
+
+    Raises
+    ------
+    ValueError
+        If ``n_full_chan_global`` is not equal to product of the number of base
+        channels and the number of detectors. Although ``n_full_chan_global``
+        is invariant across sources, this guards against silent errors from
+        using this function with unsupported resolutions.
+
+    Notes
+    -----
+    ``counts_per_channel``, ``spread_per_channel``, and
+    ``spread_fraction_per_channel`` are the same buffer arrays passed in as
+    arguments, NOT copies. Since they are reset and overwritten in place on
+    each call, they only reflect the current source's values until the next
+    call to this function. If you need to retain the current source's values,
+    copy and store them before the next call.
     """
-    wavelengths = np.asarray(wavelengths)
-    wave_min, wave_max, channel_sizes = _get_spectral_channel_arrays(params)
-    n_channels = len(wave_min)
-    counts = np.zeros(n_channels, dtype=int)
-    spread = np.full(n_channels, np.nan)
-    spread_fraction = np.full(n_channels, np.nan)
-    if len(wavelengths) == 0:
-        return {
-            "counts_per_channel": counts,
-            "spread_per_channel": spread,
-            "spread_fraction_per_channel": spread_fraction,
-            "frac_bins_with_1plus": 0.0,
-            "frac_bins_with_2plus": 0.0,
-            "frac_bins_with_spread_005": 0.0,
-            "frac_bins_with_spread_015": 0.0,
-            "frac_bins_with_spread_033": 0.0,
-            "frac_bins_with_spread_050": 0.0,
-        }
-    chan = np.searchsorted(wave_max, wavelengths, side="right")
+    if n_full_chan_global != base_chan_def.n_base_channels * N_DETECTORS:
+        raise ValueError(f"Nyquist diagnostics are currently only supported for full-resolution global"
+                         f" channels (1-{base_chan_def.n_base_channels * N_DETECTORS}). Found"
+                         f" n_full_chan_global={n_full_chan_global}.")
 
-    in_range = (chan >= 0) & (chan < n_channels)
-    valid = np.zeros(len(wavelengths), dtype=bool)
+    frac_1plus, frac_2plus, frac_005, frac_015, frac_033, frac_050 = _nyquist_diagnostics_core(
+        wavelengths, meas_full_channels, n_full_chan_global, channel_sizes, counts, spread, spread_fraction,
+        max_w, min_w)
 
-    chan_in_range = chan[in_range]
-    wavelengths_in_range = wavelengths[in_range]
-
-    valid[in_range] = (
-        (wavelengths_in_range >= wave_min[chan_in_range])
-        & (wavelengths_in_range < wave_max[chan_in_range])
-    )
-    wavelengths_valid = wavelengths[valid]
-    chan_valid = chan[valid]
-    if len(chan_valid) > 0:
-        counts = np.bincount(chan_valid, minlength=n_channels)
-    for channel_idx in np.where(counts >= 2)[0]:
-        w = wavelengths_valid[chan_valid == channel_idx]
-        spread[channel_idx] = np.max(w) - np.min(w)
-        spread_fraction[channel_idx] = spread[channel_idx] / channel_sizes[channel_idx]
-
-    def frac_with_spread(threshold):
-        good = (counts >= 2) & (spread_fraction >= threshold)
-        return float(np.sum(good) / n_channels)
     return {
         "counts_per_channel": counts,
         "spread_per_channel": spread,
         "spread_fraction_per_channel": spread_fraction,
-        "frac_bins_with_1plus": float(np.sum(counts >= 1) / n_channels),
-        "frac_bins_with_2plus": float(np.sum(counts >= 2) / n_channels),
-        "frac_bins_with_spread_005": frac_with_spread(0.05),
-        "frac_bins_with_spread_015": frac_with_spread(0.15),
-        "frac_bins_with_spread_033": frac_with_spread(0.33),
-        "frac_bins_with_spread_050": frac_with_spread(0.50),
+        "frac_bins_with_1plus": float(frac_1plus),
+        "frac_bins_with_2plus": float(frac_2plus),
+        "frac_bins_with_spread_005": float(frac_005),
+        "frac_bins_with_spread_015": float(frac_015),
+        "frac_bins_with_spread_033": float(frac_033),
+        "frac_bins_with_spread_050": float(frac_050),
     }
+
+
+def _channel_dtype(n_glob: int) -> np.dtype:
+    """Determine the smallest unsigned integer dtype that can hold the given
+    number of channels.
+    """
+    return np.uint8 if n_glob <= np.iinfo(np.uint8).max else np.uint16
 
 
 def add_meta_yaml(meta_yaml: list, mode: Literal["field", "version"], field_dict: dict | None = None):
@@ -753,9 +821,20 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
             if self.config.apply_flux_corrections and l3_flux_corrections is not None:
                 flux_ratios = FluxCorrectionsCube(l3_flux_corrections, run_cache_key=flux_corr_run).cube
                 idx_ax0 = combined["det_id"] - 1  # detector
-                idx_ax1 = combined["y_image"].astype(int)  # y pixel
-                idx_ax2 = combined["x_image"].astype(int)  # x pixel
+                idx_ax1 = np.ceil(combined["y_image"]-0.5).astype(np.int32)  # y pixel
+                idx_ax2 = np.ceil(combined["x_image"]-0.5).astype(np.int32)  # x pixel
                 factors = flux_ratios[idx_ax0, idx_ax1, idx_ax2]
+                # In photometry tool mode the provided flux corrections are
+                # QR2-only (IRSA prod butler ingests QR2 flux corrs only), so
+                # restrict corrections to QR2 measurements and leave QR3 (and
+                # any other collection) measurements unchanged (factor = 1).
+                if self.config.phot_tool_mode:
+                    is_qr2 = (
+                        combined["data_collection"].astype(str)
+                        .str.contains("qr2")
+                        .to_numpy()
+                    )
+                    factors = np.where(is_qr2, factors, 1.0)
                 combined["flux"] *= factors
                 combined["flux_err"] *= factors
                 combined["flux_bkg"] *= factors
@@ -797,13 +876,39 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
             first_row_idx = offsets_np[:-1]
             uniq_source_ids = sid_arr[first_row_idx]
 
-            # Compute Nyquist per source by slicing the dense lambda buffer.
-            # Slices are zero-copy numpy views, so this loop has effectively
-            # no allocation cost beyond the small nyquist_vals output array.
-            lambda_data = combined["lambda"].to_numpy()
+            # Precompute global channel numbers per detector/pixel up front
+            # so the per-source loop below can slice them out (zero-copy numpy
+            # views) at effectively no extra allocation cost.
+            x_data = combined["x_image"].to_numpy()
+            y_data = combined["y_image"].to_numpy()
+            det_data = combined["det_id"].to_numpy()
+
+            base_chan_def = LVFChannelDefinitionV2.from_reference(n_subchannels=2)
+            half_chan_def = base_chan_def.at_resolution(2)
+            n_half_chan_glob = half_chan_def.n_channels_per_array * N_DETECTORS
+            combined_half_chan_nums = half_chan_def.get_global_channel_numbers(
+                array_ids=det_data, x=x_data, y=y_data, dtype=_channel_dtype(n_half_chan_glob))
+
+            seen = np.full(n_half_chan_glob, False, dtype=bool)
             nyquist_vals = np.empty(n_sources, dtype=np.float32)
 
             if self.config.enable_nyquist_diagnostics:
+                lambda_data = combined["lambda"].to_numpy()
+                spec_stats = base_chan_def.spectral_stats
+                channel_sizes = spec_stats["BANDWIDTH"].value
+
+                full_chan_def = base_chan_def.at_resolution(1)
+                n_full_chan_glob = full_chan_def.n_channels_per_array * N_DETECTORS
+                combined_full_chan_nums = full_chan_def.get_global_channel_numbers(
+                    array_ids=det_data, x=x_data, y=y_data, dtype=_channel_dtype(n_full_chan_glob))
+
+                # Pre-allocate buffer arrays for Nyquist diagnostics
+                counts = np.zeros(n_full_chan_glob, dtype=np.int32)
+                spread = np.full(n_full_chan_glob, np.nan, dtype=np.float32)
+                spread_fraction = np.full(n_full_chan_glob, np.nan, dtype=np.float32)
+                max_w = np.full(n_full_chan_glob, -np.inf, dtype=np.float32)
+                min_w = np.full(n_full_chan_glob, np.inf, dtype=np.float32)
+
                 diag_frac_1plus = np.empty(n_sources, dtype=np.float32)
                 diag_frac_2plus = np.empty(n_sources, dtype=np.float32)
                 diag_spread_005 = np.empty(n_sources, dtype=np.float32)
@@ -812,10 +917,14 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
                 diag_spread_050 = np.empty(n_sources, dtype=np.float32)
 
             for i in range(n_sources):
-                wls = lambda_data[offsets_np[i]:offsets_np[i + 1]]
-                nyquist_vals[i] = compute_nyquist_metric(wls, params)
+                meas_half_chan_glob = combined_half_chan_nums[offsets_np[i]:offsets_np[i + 1]]
+                nyquist_vals[i] = compute_nyquist_metric(meas_half_chan_glob, seen)
                 if self.config.enable_nyquist_diagnostics:
-                    diag = compute_nyquist_diagnostics(wls, params)
+                    wls = lambda_data[offsets_np[i]:offsets_np[i + 1]]
+                    meas_full_chan_glob = combined_full_chan_nums[offsets_np[i]:offsets_np[i + 1]]
+                    diag = compute_nyquist_diagnostics(base_chan_def, wls, meas_full_chan_glob,
+                                                       n_full_chan_glob, channel_sizes, counts, spread,
+                                                       spread_fraction, max_w, min_w)
                     diag_frac_1plus[i] = diag["frac_bins_with_1plus"]
                     diag_frac_2plus[i] = diag["frac_bins_with_2plus"]
                     diag_spread_005[i] = diag["frac_bins_with_spread_005"]
@@ -823,7 +932,7 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
                     diag_spread_033[i] = diag["frac_bins_with_spread_033"]
                     diag_spread_050[i] = diag["frac_bins_with_spread_050"]
 
-            del lambda_data
+            del combined_half_chan_nums, seen
 
             # Build pyarrow arrays directly, column by column.
             arrays_by_name = {
@@ -845,6 +954,14 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
 
             if self.config.enable_nyquist_diagnostics:
                 del (
+                    lambda_data,
+                    channel_sizes,
+                    combined_full_chan_nums,
+                    counts,
+                    spread,
+                    spread_fraction,
+                    max_w,
+                    min_w,
                     diag_frac_1plus,
                     diag_frac_2plus,
                     diag_spread_005,

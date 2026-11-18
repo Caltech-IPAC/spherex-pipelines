@@ -11,6 +11,8 @@ from spx_data import PSFZoneData, relabel_buggy_psf_header_to_xfast
 from spx_tests import get_sample_psf
 from spx_butler.defaults.fake_products import fake_PSF, hasSPHERExSimulator
 
+pytestmark = pytest.mark.optional_deps
+
 
 @pytest.mark.skipif(not hasSPHERExSimulator, reason="SPHEREx Simulator is not installed")
 def test_psf(tmp_path, caplog):

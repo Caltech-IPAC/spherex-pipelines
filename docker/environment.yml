@@ -26,11 +26,11 @@ dependencies:
     - psycopg2
     - pyarrow
     - pydantic >=2.3, <3.0
-    - python >=3.10.0, <3.12
+    - python <3.14
     - pyyaml
     - requests
     - scipy
     - scikit-image
     - spiceypy
     - sqlalchemy
-    - swig
+    - swig <4.5

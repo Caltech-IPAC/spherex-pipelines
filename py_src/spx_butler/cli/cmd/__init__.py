@@ -3,6 +3,7 @@ from .commands import (
     ingest_calibrations,
     estimate_flat_field,
     run_l2a,
+    recompute_zodi,
     update_exposure_region,
     create_tagged_primary_calibrators,
     report_contiguous_obs,

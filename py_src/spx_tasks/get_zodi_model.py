@@ -2,19 +2,18 @@ __all__ = ["GetZodiModelConfig", "GetZodiModelTask", "hasSPHERExSimulator"]
 
 # Standard library imports
 import copy
-import numpy as np
-from astropy import constants as const
-from astropy.io.fits import HDUList
-from astropy.table import Table
-from astropy.time import Time
-import astropy.units as u
-from astropy.coordinates import SkyCoord
-from scipy.interpolate import RectBivariateSpline
+import functools
 
 # Related third party imports
 from lsst.pex.config import Field
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
+import numpy as np
+from astropy.io.fits import HDUList
+from astropy.table import Table
+from astropy.time import Time
+from astropy.coordinates import SkyCoord
+from scipy.interpolate import RectBivariateSpline
 
 # Simulator dependencies
 try:
@@ -31,27 +30,35 @@ from spx_tasks import add_history
 # ==============================================================================
 
 
-def _build_zodi_correction_maps(zodi_scaling, spectral_wcs):
+@functools.lru_cache(maxsize=1)
+def _get_zodi_model():
+    """Return the shared zodi model.
+
+    Constructing the model takes ~0.2 s and the result does not depend on the
+    exposure, so it is built once per process.
+    """
+    return SPsky.zodicalc.ModifiedKelsallModelWithHPFT()
+
+
+@functools.lru_cache(maxsize=1)
+def _get_instrument():
+    """Return the shared instrument model.
+
+    Constructing the tabular bandpass takes ~1.3 s and does not depend on the
+    exposure, so it is built once per process.
+    """
+    return SPinst.Instrument(lvf_model=SPinst.Tabular_Bandpass())
+
+
+def _build_zodi_correction_maps(zodi_scaling: Table, spectral_wcs: HDUList) -> np.ndarray:
+    """Interpolate 1D zodi scaling to 2D map using spectral WCS."""
     wl = np.asarray(zodi_scaling["wavelength_um"], dtype=float)
     scale_1d = np.asarray(zodi_scaling["ZodiScale"], dtype=float)
-    offset_1d = np.asarray(zodi_scaling["ZodiOffset_nWm2sr"], dtype=float)
-
     cwave_um = np.asarray(spectral_wcs["CWAVE"].data, dtype=float)
 
     scale_2d = np.interp(cwave_um, wl, scale_1d)
-    offset_2d_nw = np.interp(cwave_um, wl, offset_1d)
 
-    # Convert nuI_nu [nW m^-2 sr^-1] -> I_nu [MJy/sr]
-    wavelength = cwave_um * u.um
-    offset = offset_2d_nw * u.nW / (u.m**2 * u.sr)
-
-    offset_2d_mjy = (
-        (offset * wavelength / const.c)
-        .to(u.MJy / u.sr)
-        .value
-    )
-
-    return scale_2d, offset_2d_mjy
+    return scale_2d
 
 
 class GetZodiModelConnections(pipeBase.PipelineTaskConnections,
@@ -63,14 +70,13 @@ class GetZodiModelConnections(pipeBase.PipelineTaskConnections,
         storageClass="SPHERExImage",
         dimensions=("instrument", "exposure"),
     )
-    zodi_scaling = cT.PrerequisiteInput(
-        name="zodi_scaling",
+    zodi_scaling_v2 = cT.PrerequisiteInput(
+        name="zodi_scaling_v2",
         doc="Detector-dependent 1D zodi scaling table in ECSV format.",
         storageClass="AstropyTable",
         dimensions=("instrument", "detector"),
         isCalibration=True,
     )
-
     spectral_wcs = cT.PrerequisiteInput(
         name="spectral_wcs",
         doc="Spectral calibration product containing CWAVE image.",
@@ -130,7 +136,7 @@ class GetZodiModelTask(pipeBase.PipelineTask):
     ConfigClass = GetZodiModelConfig
     full_name = "Get Zodi Model"
     ssdc_pipe_level = 2
-    ssdc_doc_tag = "SSDC-MS-022 v2.3"
+    ssdc_doc_tag = "SSDC-MS-022 v2.4"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -139,7 +145,7 @@ class GetZodiModelTask(pipeBase.PipelineTask):
     def run(
         self,
         spximg: SPHERExImage,
-        zodi_scaling: Table,
+        zodi_scaling_v2: Table,
         spectral_wcs: HDUList,
         ) -> pipeBase.Struct:
         """Return zodi model based on exposure meta-data.
@@ -150,6 +156,10 @@ class GetZodiModelTask(pipeBase.PipelineTask):
             Input SPHEREx image. Observation time, observation coordinates, and
             array ID will be used to generate an image of the zodi model,
             appended to the input `spx_image` object with Zodi model appended.
+        zodi_scaling_v2 : `astropy.table.Table`
+            Wavelength-dependent zodi scale calibration.
+        spectral_wcs : `astropy.io.fits.HDUList`
+            Spectral WCS calibration containing central wavelength.
 
         Returns
         -------
@@ -171,7 +181,7 @@ class GetZodiModelTask(pipeBase.PipelineTask):
             raise ImportError("SPHEREx Simulator is not available")
 
         # > Get zodi model from SPHEREx Sky Simulator
-        zodi_model = SPsky.zodicalc.ModifiedKelsallModelWithHPFT()
+        zodi_model = _get_zodi_model()
         subsample = self.config.zodi_subsample
         sparse_bandpass = self.config.sparse_bandpass
 
@@ -193,7 +203,7 @@ class GetZodiModelTask(pipeBase.PipelineTask):
         ra_, dec_ = wcs.all_pix2world(ix_grid_ss, iy_grid_ss, 0)
         cc = SkyCoord(ra_, dec_, frame='icrs', unit='deg')
 
-        SPHEREx_Inst = SPinst.Instrument(lvf_model=SPinst.Tabular_Bandpass())
+        SPHEREx_Inst = _get_instrument()
 
         # get bandpass functions at subsampled pixels
         npix_blind = spx_param.get_npix_blind()
@@ -224,9 +234,8 @@ class GetZodiModelTask(pipeBase.PipelineTask):
         zodi_model_name = "KEL98_WAVESCL_V1"
 
         # Get zodi correction
-        scale_2d, offset_2d_mjy = _build_zodi_correction_maps(zodi_scaling, spectral_wcs)
-        # Scale plus offset applied to zodi
-        zl_map_corr = zl_map * scale_2d + offset_2d_mjy
+        scale_2d = _build_zodi_correction_maps(zodi_scaling_v2, spectral_wcs)
+        zl_map_corr = zl_map * scale_2d
 
         # Create an Output object
         # Use shallow copy when feasible

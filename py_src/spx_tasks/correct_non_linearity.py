@@ -10,7 +10,7 @@ import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 
 # Local application/library specific imports
-from spx_data import Flag, GainFactors, NonLinearityParameters, ReadoutParameters, spx_param, SPHERExImage
+from spx_data import Flag, GainFactors, NonLinearityParameters, ReadoutParameters, SPHERExImage
 from spx_utils import l1_utils, utils
 from spx_utils.utils import get_overflow_threshold
 from spx_tasks import add_history
@@ -51,11 +51,6 @@ class CorrectNonLinearityConnections(pipeBase.PipelineTaskConnections,
 class CorrectNonLinearityConfig(pipeBase.PipelineTaskConfig,
                                 pipelineConnections=CorrectNonLinearityConnections):
     """Configuration for CorrectNonLinearity task."""
-
-    t_exp = Field(
-        "Time the detector accumulated charge, measured in seconds.",
-        dtype=float,
-        default=1.5349*75)  # TSAMP * SURLIM
 
     dqa_nonlinear_threshold = Field(
         "DQA on threshold for nonlinearityh",
@@ -241,6 +236,11 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
         else:
             raise ValueError("Missing required header keyword: SURDLY")
 
+        if "TSAMP" in spximg.header:
+            t_frame = spximg.header["TSAMP"]
+        else:
+            raise ValueError("Missing required header keyword: TSAMP")
+
         # Get overflow thresholds in ADU for active pixels.
         ovrflw_thresh = get_overflow_threshold(spximg.header, "KOVR_A")
 
@@ -254,7 +254,6 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
         self.log.info(f"OVRFLW THRESH = {ovrflw_thresh}")
 
         # SUR frame duration in seconds.
-        t_frame = spx_param.get_sample_time().value
         self.log.info(f"t_frame = {t_frame} [s]")
         # Exposure duration in seconds.
         self.log.info(f"t_exposure = surlim x t_frame = {surlim*t_frame}")

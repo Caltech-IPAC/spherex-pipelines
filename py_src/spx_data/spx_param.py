@@ -1,10 +1,49 @@
-__all__ = ["get_sample_time", "get_npix_x", "get_npix_y",
-           "get_num_samples", "get_nonlinear_flag_threshold", "get_lvf_values",
-           "format_unit", "get_pix_scale", "readout_params"]
+# all calls should go through spx_data.spx_param
+__all__ = ["format_unit", "get_aperture", "get_cds_read_noise", "get_detector_efficiency",
+           "get_filter_resolving_power", "get_lvf_values", "get_npix_blind", "get_npix_x",
+           "get_npix_x_active", "get_npix_y", "get_npix_y_active", "get_num_samples",
+           "get_pix_scale", "get_sample_time", "readout_params"]
 
 from types import SimpleNamespace
 from typing import Union
 import astropy.units as u
+
+
+def _as_namespace(param_dict: dict) -> SimpleNamespace:
+    """Local copy of spherex_parameters.as_namespace()'s algorithm.
+
+    Used only in the fallback branch below, where spherex_parameters (and
+    its as_namespace()) is by definition unavailable, so that fallback
+    namespaces (e.g. readout_params) are derived from the fallback
+    _param_dict the same way the live branch derives them.
+    """
+    if "quantity" in param_dict:
+        return param_dict["quantity"]
+    elif "value" in param_dict:
+        return param_dict["value"]
+    else:
+        return SimpleNamespace(**{k: _as_namespace(v) for k, v in param_dict.items()})
+
+
+def _get_array_values(param_dict: dict, array_id: int, group: str) -> dict:
+    """Local copy of spherex_parameters.get_array_values()'s algorithm.
+
+    Used only in the fallback branch below (see _as_namespace() above for
+    why), so lvf_params is derived from the fallback _param_dict the same
+    way the live branch derives it.
+    """
+    if group not in param_dict:
+        raise ValueError(f"Group {group} does not exist.")
+    if not 1 <= array_id <= 6:
+        raise ValueError(f"Array ID {array_id} is out of range 1 to 6.")
+    array_dict = {}
+    for param, item in param_dict[group].items():
+        value = item["value"]
+        if not isinstance(value, list) or len(value) != 6:
+            continue
+        array_dict[param] = value[array_id - 1]
+    return array_dict
+
 
 try:
     from spherex_parameters import as_namespace, load_spherex_parameters, get_array_values
@@ -21,26 +60,51 @@ except ImportError:
     # Fallback values when spherex-parameters are not installed
     #
     # This module is a single point of access for the values from
-    # spherex-parameters repo. While this repo is useful for simulations,
+    # spherex-parameters repo.
+    #
     # SSDC pipelines should be using the values from the headers
     # and migrate away from using the parameters in this module.
+    # fmt: off
     _param_dict = {
         'nominal_camera_model': {
+            # get_pix_scale() -- measure_psf.py, compute_solar_system_objects.py,
+            # psf.py (PSF model WCS), psf_fwhm.py, tractor_utils.py (photometry WCS)
             'pix_scale': {
                 'name': 'Pixel Scale',
                 'quantity': 6.15 << u.arcsec
             },
+            # get_npix_x() -- fake_products.py, sample_data.py (test/fake data
+            # shape); also the basis for get_npix_x_active() (perform_forced_
+            # photometry.py, lvf.py, wavelength_model.py, spectral_lookup.py,
+            # fake_products.py)
             'npix_x': {
                 'name': 'Number of Array Pixels (Spatial Direction)',
                 'value': 2048,
                 'unit': None,
             },
+            # get_npix_y() -- fake_products.py, sample_data.py (test/fake data
+            # shape); also the basis for get_npix_y_active() (same consumers
+            # as get_npix_x_active() above)
             'npix_y': {
                 'name': 'Number of Array Pixels (Cross Channel Direction)',
                 'value': 2048,
                 'unit': None,
             }
         },
+        'nominal_instrument_models': {
+            # get_aperture() -- update_photometric_calibration.py (effective
+            # aperture area in the MJy/sr -> electron/s flux conversion)
+            'aperture': {
+                'name': 'Aperture',
+                'quantity': 20 << u.cm
+            },
+        },
+        # get_sample_time() -- computing observation time margins in ingest code
+        # get_num_samples() -- fake_products.py (synthetic ramp generation)
+        # derived readout_parameters below -- used in
+        # - fake_products.py
+        # - gain_factors.py (n_readout_channels only)
+        # - QRC (number of active pixels only)
         'readout': {
             't_samp': {
                 'name': 'Array Sample time',
@@ -48,119 +112,107 @@ except ImportError:
             },
             'n_samp': {
                 'name': 'Number of ramp samples per exposure',
-                'value': 73,
+                'value': 75,
                 'unit': None,
             },
-            'nonlinear_flag_threshold': {
-                'name': 'Readout threshold for nonlinear flag',
-                'quantity': 30000. << u.electron
-            }
+            'n_readout_channels': {
+                'name': 'Number of video channels that reads out each H2RG',
+                'value': 32,
+                'unit': None,
+            },
+            'Nvisit_row': {
+                'name': 'Number of visits to each reference row.',
+                'value': 4,
+                'unit': None,
+            },
+            'Nvisit_col': {
+                'name': 'Number of visits to each reference column',
+                'value': 1,
+                'unit': None,
+            },
+            'Mphan': {
+                'name': 'Number of phantom pixel reads',
+                'value': 4,
+                'unit': None,
+            },
+            'wchannel': {
+                'name': 'Number of columns of physical pixels per readout channel.',
+                'value': 64,
+                'unit': None,
+            },
+            'jref': {
+                'name': 'Number of reference rows on the H2RG',
+                'value': 8,
+                'unit': None,
+            },
+            'kref': {
+                'name': 'Number of reference columns on the H2RG',
+                'value': 8,
+                'unit': None,
+            },
+            'Jactive': {
+                'name': 'Number of active pixel rows in the detector',
+                'value': 2040,
+                'unit': None,
+            },
+            'Kactive': {
+                'name': 'Number of active pixel columns in the detector',
+                'value': 2040,
+                'unit': None,
+            },
+            'Nskip': {
+                'name': 'Number of rows to skip',
+                'value': 32,
+                'unit': None,
+            },
         },
         'detector': {
+            # get_cds_read_noise() -- fake_products.py (synthetic noise injection)
             'read_noise_cds': {
                 'name': 'CDS Read Noise',
                 'value': [17.2, 16.5, 17.2, 10.8, 13.9, 11.6],
                 'unit': 'electron',
             },
+            # get_detector_efficiency() -- update_photometric_calibration.py
+            # (end-to-end throughput term in the MJy/sr -> electron/s flux
+            # conversion)
+            'eta_total': {
+                'name': 'Array-mean end-to-end efficiency',
+                'value': [0.81, 0.83, 0.77, 0.81, 0.57, 0.53],
+                'unit': None,
+            },
+        },
+        'filter': {
+            # get_filter_resolving_power() -- update_photometric_calibration.py
+            # (resolving power term in the MJy/sr -> electron/s flux conversion)
+            #
+            # derived lvf_params below -- used
+            #     when populating detector dimension table in Butler
+            #     in fake spectral wcs lookup data (R only)
+            'R': {
+                'name': 'Spectral Resolution',
+                'value': [41.2, 41.7, 41.1, 34.6, 117.1, 132.8],
+                'unit': None,
+            },
+            'lambda_min': {
+                'name': 'Lowest active area wavelength',
+                'value': [0.7455, 1.1033, 1.6301, 2.4027, 3.8113, 4.4115]
+            },
+            'lambda_max': {
+                'name': 'Highest active area wavelength',
+                'value': [1.1167, 1.6499, 2.4346, 3.8473, 4.4300, 5.0096]
+            }
         },
     }
+    # fmt: on
 
-    # Readout parameters
-    readout_params = SimpleNamespace(
-        t_samp=1.5349 << u.s,
-        n_samp=73,
-        n_readout_channels=32,
-        Nvisit_row=4,
-        Nvisit_col=1,
-        Mphan=4,
-        wchannel=64,
-        jref=8,
-        kref=8,
-        Jactive=2040,
-        Kactive=2040,
-        Nskip=32)
+    # Readout parameters, derived from _param_dict["readout"] above (single
+    # source of truth -- see _as_namespace()).
+    readout_params = _as_namespace(_param_dict["readout"])
 
-    # LVF model parameters
-    lvf_params = {
-        1: {'X_C': -136.98,
-            'X_smile': 1.225,
-            'X_oversize': 0.0,
-            'A_x': 36.72,
-            'A_y': 36.72,
-            'lambda_str': 0.75,
-            'lambda_end': 1.11,
-            'lambda_min': 0.7455,
-            'delta_lambda_min': 0.0026,
-            'lambda_max': 1.1167,
-            'delta_lambda_max': 0.0036,
-            'R': 41.2,
-            'deltaR': 0.1},
-        2: {'X_C': -136.98,
-            'X_smile': 1.225,
-            'X_oversize': 0.0,
-            'A_x': 36.72,
-            'A_y': 36.72,
-            'lambda_str': 1.11,
-            'lambda_end': 1.64,
-            'lambda_min': 1.1033,
-            'delta_lambda_min': 0.0038,
-            'lambda_max': 1.6499,
-            'delta_lambda_max': 0.0053,
-            'R': 41.7,
-            'deltaR': 0.1},
-        3: {'X_C': -136.98,
-            'X_smile': 1.225,
-            'X_oversize': 0.0,
-            'A_x': 36.72,
-            'A_y': 36.72,
-            'lambda_str': 1.64,
-            'lambda_end': 2.42,
-            'lambda_min': 1.6301,
-            'delta_lambda_min': 0.0102,
-            'lambda_max': 2.4346,
-            'delta_lambda_max': 0.0011,
-            'R': 41.1,
-            'deltaR': 0.1},
-        4: {'X_C': -136.98,
-            'X_smile': 1.225,
-            'X_oversize': 0.0,
-            'A_x': 36.72,
-            'A_y': 36.72,
-            'lambda_str': 2.42,
-            'lambda_end': 3.82,
-            'lambda_min': 2.4027,
-            'delta_lambda_min': 0.0013,
-            'lambda_max': 3.8473,
-            'delta_lambda_max': 0.0268,
-            'R': 34.6,
-            'deltaR': 0.1},
-        5: {'X_C': -136.98,
-            'X_smile': 1.225,
-            'X_oversize': 0.0,
-            'A_x': 36.72,
-            'A_y': 36.72,
-            'lambda_str': 3.82,
-            'lambda_end': 4.42,
-            'lambda_min': 3.8113,
-            'delta_lambda_min': 0.0056,
-            'lambda_max': 4.43,
-            'delta_lambda_max': 0.0066,
-            'R': 117.1,
-            'deltaR': 0.1},
-        6: {'X_C': -136.98,
-            'X_smile': 1.225,
-            'X_oversize': 0.0,
-            'A_x': 36.72,
-            'A_y': 36.72,
-            'lambda_str': 4.42,
-            'lambda_end': 5.0,
-            'lambda_min': 4.4115,
-            'delta_lambda_min': 0.0058,
-            'lambda_max': 5.0096,
-            'delta_lambda_max': 0.0062,
-            'R': 132.8,
-            'deltaR': 0.07}
-    }
+    # LVF model parameters, derived from _param_dict["filter"] above (single
+    # source of truth -- see _get_array_values()).
+    lvf_params = {i: _get_array_values(_param_dict, array_id=i, group="filter") for i in range(1, 7)}
 
 
 def get_sample_time() -> u.Quantity:
@@ -229,18 +281,6 @@ def get_num_samples() -> int:
     return _param_dict["readout"]["n_samp"]["value"]
 
 
-def get_nonlinear_flag_threshold():
-    """Return the number of accumulated electrons that triggers the nonlinearity flag.
-
-    Returns
-    -------
-    nonlinear_flag_threshold : Quantity
-        The electron count threshold for nonlinearity flagging.
-
-    """
-    return _param_dict["readout"]["nonlinear_flag_threshold"]["quantity"]
-
-
 def get_cds_read_noise(detector: int):
     """Return array-mean H2RG/amplifier noise in CDS mode.
 
@@ -261,6 +301,55 @@ def get_cds_read_noise(detector: int):
 def get_lvf_values(array_id):
     """Return LVF values for specific array."""
     return lvf_params[array_id]
+
+
+def get_aperture() -> u.Quantity:
+    """Return the nominal instrument aperture diameter.
+
+    Used by update_photometric_calibration.py for the effective aperture
+    area in the MJy/sr -> electron/s flux conversion.
+
+    Returns
+    -------
+    aperture : `astropy.units.Quantity`
+        The aperture diameter.
+
+    """
+    return _param_dict["nominal_instrument_models"]["aperture"]["quantity"]
+
+
+def get_detector_efficiency() -> list:
+    """Return array-mean end-to-end efficiency for each detector array.
+
+    Used by update_photometric_calibration.py for the throughput term in
+    the MJy/sr -> electron/s flux conversion.
+
+    Returns
+    -------
+    eta_total : list of float
+        Efficiency (mirror x dichroic x LVF x detector QE), one value per
+        detector array, ordered 1-6.
+
+    """
+    return _param_dict["detector"]["eta_total"]["value"]
+
+
+def get_filter_resolving_power() -> list:
+    """Return LVF spectral resolving power for each detector array.
+
+    Used by update_photometric_calibration.py for the resolving-power term
+    in the MJy/sr -> electron/s flux conversion (same values as
+    get_lvf_values(array_id)['R'], as a flat per-array list instead of
+    per-array dicts).
+
+    Returns
+    -------
+    resolving_power : list of float
+        Resolving power (lambda / delta lambda), one value per detector
+        array, ordered 1-6.
+
+    """
+    return _param_dict["filter"]["R"]["value"]
 
 
 def format_unit(unit: Union[u.Unit, str]):

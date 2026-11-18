@@ -26,7 +26,6 @@ from .sps_flags import *
 from .spx_image import *
 from .survey_identifier import *
 from .spx_flags import *
-from .spx_param import *
 from .spx_stats import *
 from .spx_version import *
 from .sur import *

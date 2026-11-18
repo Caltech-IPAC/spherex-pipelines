@@ -322,6 +322,7 @@ class TestL3aTask():
         ("good", {"est_he_airglow": False, "filter_by_ids": False, "override_epsf": False, "fit_sso": True},
          "ssocat"),
     ], indirect=["common_inputs", "optional_connection"])
+    @pytest.mark.optional_deps  # needs SPHEREx_InstrumentSimulator, via TabularWavelengthModel
     def test_opt_cnxn_run(self, common_inputs: dict, config_overrides: dict, optional_connection: object):
         """Test that subtasks are called with expected inputs depending on
         config.
@@ -366,6 +367,7 @@ class TestL3aTask():
         (False, "good", "empty"),  # custom runQuantum; zero-row ssocat -> skipped
         (False, "good", "none"),  # custom runQuantum; no ssocat -> skipped
         ], indirect=["common_inputs"])
+    @pytest.mark.optional_deps  # needs SPHEREx_InstrumentSimulator, via TabularWavelengthModel
     def test_runQuantum(self, temp_repo: Butler, minimal_l3a_task: L3aTask, combinedOutput: bool,
                         common_inputs: dict, sso_result: str):
         """Test runQuantum method."""

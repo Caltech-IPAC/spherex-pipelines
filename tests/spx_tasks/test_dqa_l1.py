@@ -140,6 +140,47 @@ class TestL1DQA(unittest.TestCase):
         obs = output.odir_obs.observations["2025W37_2A_0486_2"]
         self.assertEqual(obs.images[1].status, "good")
 
+    def test_missing_data_pixel_check(self):
+        """Test case where MISSING_DATA flagged pixels exceed the threshold."""
+        spximg = get_sample_level1_img(self.rp)
+        fake_flags_metadata(spximg, self.rp)
+        # Flag a large region of pixels as MISSING_DATA
+        spximg.flags[:-100, :-100] |= Flag.MISSING_DATA
+
+        # Run the task and check DQA result
+        output = self.task.run(spximg)
+        self.assertEqual(output.spximg_out.header["L1DQAFLG"], "Fail")
+
+        # Check MISSING_DATA percentage
+        missing_data_pass, missing_data_percentage = self.task.check_missing_data_percent(spximg)
+        self.assertFalse(missing_data_pass, "MISSING_DATA percentage check should fail.")
+        self.assertGreater(missing_data_percentage, self.config.missing_data_percentage_threshold)
+
+        # ODIR should still be generated and have a 'good' status
+        self.assertIsNotNone(output.odir_obs)
+        obs = output.odir_obs.observations["2025W37_2A_0486_2"]
+        self.assertEqual(obs.images[1].status, "good")
+
+    def test_missing_data_check_below_threshold(self):
+        """Test case where MISSING_DATA flagged pixels are below the threshold."""
+        spximg = get_sample_level1_img(self.rp)
+        fake_flags_metadata(spximg, self.rp)
+        # Flag a small region of pixels as MISSING_DATA
+        spximg.flags[0:10, 0:10] |= Flag.MISSING_DATA
+
+        missing_data_pass, missing_data_percentage = self.task.check_missing_data_percent(spximg)
+        self.assertTrue(missing_data_pass, "MISSING_DATA percentage check should pass.")
+        self.assertLess(missing_data_percentage, self.config.missing_data_percentage_threshold)
+
+        # Run the full task to check the output
+        output = self.task.run(spximg)
+        self.assertEqual(output.spximg_out.header["L1DQAFLG"], "Pass")
+
+        # ODIR should be good
+        self.assertIsNotNone(output.odir_obs)
+        obs = output.odir_obs.observations["2025W37_2A_0486_2"]
+        self.assertEqual(obs.images[1].status, "good")
+
 
 if __name__ == "__main__":
     unittest.main()

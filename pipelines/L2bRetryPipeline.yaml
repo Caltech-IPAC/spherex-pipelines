@@ -14,7 +14,7 @@ tasks:
       connections.he_template: "he_template"
       connections.aurora_template: "aurora_template"
       connections.shuttle_glow_template: "shuttle_glow_template"
-      connections.zodi_scaling: "zodi_scaling"
+      connections.zodi_scaling_v2: "zodi_scaling_v2"
       connections.spximg_out: "level2"
       connections.dqa_l2: "dqa_l2"
       connections.idqr_obs: "idqr_obs"

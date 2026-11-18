@@ -3,6 +3,7 @@ import logging
 import unittest
 
 # Related third party imports
+import pytest
 import numpy as np
 from pathlib import Path
 from astropy.table import Table
@@ -136,6 +137,7 @@ class TestQueryReferenceCatalog(unittest.TestCase):
                              f"\nsave_derived_inputs:{self.config.save_derived_inputs}"
                              f"\nextra_cols:\n{self.config.extra_cols}")
 
+    @pytest.mark.optional_deps  # task.run() -> get_magnitudes() -> _get_bandpass(), needs the simulator
     def test_QueryReferenceCatalog(self):
         """Test successful run of QueryReferenceCatalogTask."""
         # Apply config overrides for this test
@@ -163,6 +165,7 @@ class TestQueryReferenceCatalog(unittest.TestCase):
         self.assertEqual(len(catalog), 3)  # Expecting three valid sources (fourth is far away)
         self._assert_user_meta(catalog, run_name=self.refcat_run_name, version="SPHEREx_RefCat_v0.73")
 
+    @pytest.mark.optional_deps  # task.run() -> get_magnitudes() -> _get_bandpass(), needs the simulator
     def test_save_derived_inputs(self):
         """Test running query reference catalog
         with/without saving derived column inputs enabled.
@@ -270,6 +273,7 @@ class TestQueryReferenceCatalog(unittest.TestCase):
                 self.assertIn("ra", output.catalog.colnames)
                 self.assertIn("dec", output.catalog.colnames)
 
+    @pytest.mark.optional_deps  # task.run() -> get_magnitudes() -> _get_bandpass(), needs the simulator
     def test_allow_empty_catalog(self):
         """Test that the switch to allow empty catalogs works."""
         # Move all sources away from WCS center to trigger empty catalogs

@@ -399,6 +399,7 @@ class TestTractorUtils():
         ({"psf_type": "psf", "shape": [4, 4]}, 2.0, 4),  # size 4, closest power of 2 is 4
         ({"psf_type": "epsf", "shape": [9, 9]}, 4.5, 16)  # size 9, next highest power of 2 is 16
     ], indirect=["psf_obj"])
+    @pytest.mark.optional_deps  # psf_obj builds fake_PSF()/fake_epsf(), which need the simulator
     def test_SPHERExTractorPSF(self, psf_obj: None | PSFZoneData | ImagePSF, radius: float, ft_size: int):
         """Test SPHERExTractorPSF class methods."""
         psf = PSFZoneDataTractor(psf=psf_obj, detector=1) if isinstance(psf_obj, PSFZoneData) \
@@ -414,6 +415,7 @@ class TestTractorUtils():
         ({"psf_type": "psf"}, "PSFZoneData", None),
         ({"psf_type": "epsf"}, "EPSF", None),
     ], indirect=["psf_obj"])
+    @pytest.mark.optional_deps  # psf_obj builds fake_PSF()/fake_epsf(), which need the simulator
     def test_tractor_psf_children(self, psf_obj: PSFZoneData | ImagePSF,
                                   init_class: Literal["PSFZoneData", "ImagePSF"], match: str):
         """Test EPSFTractor and PSFZoneDataTractor classes."""

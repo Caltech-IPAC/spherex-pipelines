@@ -17,6 +17,9 @@ from spx_tasks.estimate_diffuse_background import add_he_airglow
 from spx_tests import add_gradient, get_sample_spx_img
 from spx_utils import fit_airglow_he, attach_airglow_fit_to_header
 
+# Needs SPHEREx_InstrumentSimulator, via TabularWavelengthModel.
+pytestmark = pytest.mark.optional_deps
+
 
 def make_sources(crowded: bool, shape: tuple[int, int]) -> QTable:
     """Create Gaussian objects to simulate sky.

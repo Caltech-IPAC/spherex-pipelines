@@ -797,6 +797,7 @@ def get_sample_level1b_img(seed_number: int | None = 42,
     hdr["DATE-BEG"] = "2024-06-19T11:59:47.502"  # ISO date corresponding to MJD-BEG
     hdr["TINT"] = 112.5  # total exposure time in seconds
     hdr["TELAPSE"] = 115.5  # total elapsed time
+    hdr["TSAMP"] = 1.5349  # frame time in seconds
 
     # Sample overflow threshold for reference and active pixels.
     hdr["KOVR_R"] = 1000  # reference

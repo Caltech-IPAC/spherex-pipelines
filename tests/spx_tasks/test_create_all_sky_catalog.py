@@ -1,4 +1,5 @@
 # Standard library imports
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -12,7 +13,6 @@ from astropy.table import Table, meta, vstack
 from astropy.utils.exceptions import AstropyWarning
 from lsst.pex.config.config import FieldValidationError
 from lsst.pipe.base import Struct, QuantumContext
-import astropy.units as u
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -21,16 +21,14 @@ import pytest
 # Local application/library specific imports
 from spx_butler.defaults import fake_products
 from spx_data import SPHERExImage
-from spx_tasks import (CreateAllSkyCatalogConfig, CreateAllSkyCatalogTask,
-                       PerformForcedPhotometryTask,
+from spx_tasks import (CreateAllSkyCatalogConfig, CreateAllSkyCatalogTask, PerformForcedPhotometryTask,
                        PerformForcedPhotometryConfig)
-from spx_tasks.create_all_sky_catalog import (hips6_to_hips5,
-                                              compute_nyquist_metric,
-                                              compute_nyquist_diagnostics,
-                                              add_meta_yaml,
-                                              META_YAML_TYPE_TAG)
+from spx_tasks.create_all_sky_catalog import (
+    hips6_to_hips5, compute_nyquist_metric, compute_nyquist_diagnostics, add_meta_yaml,
+    META_YAML_TYPE_TAG, _channel_dtype)
 from spx_data.spx_version import SSDC_PIPELINES_VERSION
 from spx_tests import get_sample_global_bkgd, get_sample_pix_map
+from spx_data.spectral_channel import LVFChannelDefinitionV2
 
 test_root = Path(__file__).parent.parent
 
@@ -217,98 +215,6 @@ def check_refcat_meta_in_parquet(parquet_path: Path):
     assert val, "'refcat_version' is present but empty."
 
 
-def _fake_nyquist_params(use_quantities=False):
-    lmin = np.array([1.0, 2.0, 3.0])
-    lmean = np.array([1.5, 2.5, 3.5])
-    lmax = np.array([2.0, 3.0, 4.0])
-    r = np.array([10.0, 10.0, 10.0])
-
-    if use_quantities:
-        lmin = lmin * u.micron
-        lmean = lmean * u.micron
-        lmax = lmax * u.micron
-
-    return {
-        "spectral_channel": {
-            "lmin": {"quantity": lmin},
-            "lmean": {"quantity": lmean},
-            "lmax": {"quantity": lmax},
-            "R": {"quantity": r},
-        }
-    }
-
-def test_compute_nyquist_diagnostics_current_thresholds():
-    params = _fake_nyquist_params(use_quantities=False)
-
-    wavelengths = np.array([
-        1.10, 1.20,  # spread = 0.10; channel_size = 1.5 / 10 = 0.15; spread_fraction = 0.667
-        2.10, 2.12,  # spread = 0.02; channel_size = 2.5 / 10 = 0.25; spread_fraction = 0.08
-        3.10,        # one measurement only
-    ])
-
-    diag = compute_nyquist_diagnostics(wavelengths, params)
-
-    assert diag["frac_bins_with_1plus"] == pytest.approx(3 / 3)
-    assert diag["frac_bins_with_2plus"] == pytest.approx(2 / 3)
-    assert diag["frac_bins_with_spread_005"] == pytest.approx(2 / 3)
-    assert diag["frac_bins_with_spread_015"] == pytest.approx(1 / 3)
-    assert diag["frac_bins_with_spread_033"] == pytest.approx(1 / 3)
-    assert diag["frac_bins_with_spread_050"] == pytest.approx(1 / 3)
-
-    assert "frac_bins_with_spread_001" not in diag
-    assert "frac_bins_with_spread_010" not in diag
-
-
-@pytest.mark.parametrize("use_quantities", [False, True])
-def test_compute_nyquist_metric_counts_channels_with_two_measurements(use_quantities):
-    params = _fake_nyquist_params(use_quantities=use_quantities)
-
-    wavelengths = np.array([
-        1.10, 1.11,  # channel 0 has 2 measurements
-        2.20,        # channel 1 has 1 measurement
-        3.20,        # channel 2 has 1 measurement
-    ])
-
-    result = compute_nyquist_metric(wavelengths, params)
-
-    assert result == pytest.approx(1 / 3)
-
-
-def test_compute_nyquist_metric_ignores_out_of_range_wavelengths():
-    params = _fake_nyquist_params(use_quantities=False)
-
-    wavelengths = np.array([
-        0.5,         # below first lmin, ignored
-        1.10, 1.20, # channel 0 has 2 measurements
-        4.0,         # exactly at final lmax, ignored because upper edge is exclusive
-        4.5,         # above final lmax, ignored
-    ])
-
-    result = compute_nyquist_metric(wavelengths, params)
-
-    assert result == pytest.approx(1 / 3)
-
-
-def test_compute_nyquist_metric_no_longer_requires_wavelength_spread():
-    params = _fake_nyquist_params(use_quantities=False)
-
-    wavelengths = np.array([
-        1.10, 1.1001,  # very small spread, but still 2 measurements in channel 0
-    ])
-
-    result = compute_nyquist_metric(wavelengths, params)
-
-    assert result == pytest.approx(1 / 3)
-
-
-@pytest.mark.parametrize("wavelengths", [[], [1.5]])
-def test_compute_nyquist_metric_requires_at_least_two_measurements(wavelengths):
-    params = _fake_nyquist_params(use_quantities=False)
-
-    result = compute_nyquist_metric(wavelengths, params)
-
-    assert result == 0.0
-
 @pytest.mark.parametrize(
     "phot_meas, enable_diagnostics, expected_extra_cols",
     [
@@ -337,12 +243,6 @@ def test_nyquist_diagnostic_columns_toggle(phot_meas, enable_diagnostics, expect
 
     for col in expected_extra_cols:
         assert col in actual_columns
-
-    old_cols = {
-        "nyquist_spread_001",
-        "nyquist_spread_010",
-    }
-    assert actual_columns.isdisjoint(old_cols)
 
 
 class MockDeferredSPHERExImage():
@@ -436,7 +336,126 @@ def list_items(request) -> list[str]:
         list_items.remove("flux_err_tractor")
     return list_items
 
+@pytest.fixture()
+def nyquist_inputs(request )-> tuple[np.ndarray, int]:
+    """Fixture to initialize spectral channel inputs for Nyquist metric
+    computation.
+
+    Parameters
+    ----------
+    request : `pytest.FixtureRequest`
+        Contains test request context via `param` attribute with `str` value.
+        If "full", the fixture returns a full-resolution spectral channel
+        numbers; if "half", the fixture returns a half-resolution spectral
+        channel numbers.
+
+    Returns
+    -------
+    chan_nums_glob : `numpy.ndarray`
+        Per-measurement array of global spectral channel numbers at the
+        requested resolution.
+    n_chan_glob : `int`
+        Total number of global spectral channels at the requested resolution.
+    spec_stats : `astropy.table.Table`
+        Table of full-resolution spectral channel statistics.
+    base_chan_def : `spx_data.spectral_channel.LVFChannelDefinitionV2`
+        Base channel definition for the LVF.
+    """
+    base_chan_def = LVFChannelDefinitionV2.from_reference(n_subchannels=2)
+    if request.param == "full":
+        chan_def = base_chan_def.at_resolution(1)
+    elif request.param == "half":
+        chan_def = base_chan_def.at_resolution(2)
+    else:
+        raise ValueError("Invalid parameter value for 'nyquist_inputs' fixture.")
+
+    x_data = np.linspace(0, 2040, 1200) - 0.5
+    y_data = np.linspace(0, 2040, 1200) - 0.5
+    det_data = np.tile(np.arange(1, 7), 200)
+
+    n_chan_glob = chan_def.n_channels_per_array * 6
+    chan_nums_glob = chan_def.get_global_channel_numbers(
+        array_ids=det_data, x=x_data, y=y_data, dtype=np.uint8)
+    spec_stats = base_chan_def.spectral_stats
+
+    return chan_nums_glob, n_chan_glob, spec_stats, base_chan_def
+
 # Test cases =================================================================
+@pytest.mark.parametrize("nyquist_inputs, exp_comp, out_of_bounds, empty",
+                         [["half", 1.0, False, False],  # all channels have 1+ meas
+                          ["half", 0.5, False, False],  # half the channels have 1+ meas
+                          ["half", 0.0, True, False],  # no active resolution channels have 1+ meas
+                          ["half", 0.0, False, True]],  # no measurements at all
+                         indirect=["nyquist_inputs"])
+def test_compute_nyquist_metric(nyquist_inputs: tuple[np.ndarray, int], exp_comp: float,
+                                out_of_bounds: bool, empty: bool):
+    """Test that `compute_nyquist_metric` calculation."""
+    n_half_chan_glob = nyquist_inputs[1]
+    seen = np.full(n_half_chan_glob, False, dtype=bool)
+    if out_of_bounds:
+        meas_half_channels = np.array([-1, n_half_chan_glob + 1], dtype=np.int32)
+    if empty:
+        meas_half_channels = np.array([], dtype=np.int32)
+    if not out_of_bounds and not empty:
+        meas_half_channels = np.linspace(1, n_half_chan_glob, int(n_half_chan_glob * exp_comp),
+                                         dtype=np.int32)
+
+    completeness = compute_nyquist_metric(meas_half_channels, seen)
+    assert completeness == exp_comp, \
+            f"Expected {exp_comp} for meas_half_channels={meas_half_channels}, got {completeness}."
+
+
+@pytest.mark.parametrize("nyquist_inputs, match, empty, out_of_bounds", [
+    ("half", r"only supported for full-resolution global channels", False, False),
+    ("full", None, False, False),
+    ("full", None, True, False),
+    ("full", None, False, True),
+], indirect=["nyquist_inputs"])
+def test_compute_nyquist_diagnostics(nyquist_inputs: tuple[np.ndarray, int], match: str | None,
+                                     empty: bool, out_of_bounds: bool):
+    """Test that `compute_nyquist_diagnostics` returns the expected diagnostics."""
+    # Per-measurement channel numbers/wavelengths and spectral channel stats
+    meas_chan_nums = nyquist_inputs[0]
+    n_chan_glob = nyquist_inputs[1]
+    spec_stats = nyquist_inputs[2]
+    wls = np.linspace(0.75, 5.0, len(meas_chan_nums))
+    if empty:
+        meas_chan_nums = np.array([], dtype=np.int32)
+        wls = np.array([], dtype=np.float32)
+    if out_of_bounds:
+        meas_chan_nums = np.array([-1, nyquist_inputs[1] + 1], dtype=np.int32)
+        wls = np.array([0.0, 6.0], dtype=np.float32)
+    chan_sizes = spec_stats["BANDWIDTH"].value
+
+    # Buffer arrays
+    counts = np.zeros(n_chan_glob, dtype=np.int32)
+    spread = np.full(n_chan_glob, np.nan, dtype=np.float32)
+    spread_fraction = np.full(n_chan_glob, np.nan, dtype=np.float32)
+    max_w = np.full(n_chan_glob, -np.inf)
+    min_w = np.full(n_chan_glob, np.inf)
+
+    ctx = pytest.raises(ValueError, match=re.escape(match)) if match else nullcontext()
+    with ctx:
+        diag_dict = compute_nyquist_diagnostics(nyquist_inputs[3], wls, meas_chan_nums, n_chan_glob,
+                                                chan_sizes, counts, spread, spread_fraction, max_w, min_w)
+
+    if not match:
+        if empty or out_of_bounds:
+            assert diag_dict["frac_bins_with_1plus"] == 0.0
+        else:
+            assert np.sum(diag_dict["counts_per_channel"]) > 0
+            assert not all(np.isnan(diag_dict["spread_per_channel"]))
+            assert not all(np.isnan(diag_dict["spread_fraction_per_channel"]))
+
+@pytest.mark.parametrize("n_global_channels, exp_dtype",
+                         [(102, np.uint8),  # full-resolution
+                          (408, np.uint16)])  # quarter-resolution
+def test_channel_dtype(n_global_channels: int, exp_dtype: np.dtype):
+    act_dtype = _channel_dtype(n_global_channels)
+    assert act_dtype == exp_dtype, \
+        f"Expected dtype {exp_dtype} for n_global_channels={n_global_channels}, got {act_dtype}."
+
+
 class TestCreateAllSkyCatalogTask():
     """Test Create All Sky Catalog Task."""
 

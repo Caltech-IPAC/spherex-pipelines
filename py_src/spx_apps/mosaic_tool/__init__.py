@@ -1,4 +1,4 @@
-__version__ = "v4.2"
+__version__ = "v5"
 
 from .config import MosaicConfig
 from .mosaic_builder import (

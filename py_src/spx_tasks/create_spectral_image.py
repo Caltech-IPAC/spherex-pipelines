@@ -194,11 +194,18 @@ class CreateSpectralImageTask(pipeBase.PipelineTask):
                     he_template.header[HE_TEMP_PAR_KWS["wl_top_2"]],
                 ],
             }
-            # Get best-fit parameters
-            fit_params = fit_airglow_he(spximg_out, band, he_template, spectral_wcs, params_airglow_helium,
-                                        use_variance=True, fit_xslope=True, verbose=False)
-            # Attach fit pars to image metadata
-            attach_airglow_fit_to_header(spximg_out.header, fit_params)
+            # Get best-fit parameters. A failure here shouldn't stop the
+            # pipeline; log it and continue without the airglow fit.
+            try:
+                fit_params = fit_airglow_he(spximg_out, band, he_template, spectral_wcs,
+                                            params_airglow_helium, use_variance=True,
+                                            fit_xslope=True, verbose=False)
+                # Attach fit pars to image metadata
+                attach_airglow_fit_to_header(spximg_out.header, fit_params)
+            except Exception as e:
+                msg = f"He airglow fit failed: {e}"
+                self.log.error(msg)
+                spximg_out.header.add_history(f"[WARNING] {msg}")
 
         # Defaults
         aurora_corr = 0.0
@@ -215,17 +222,29 @@ class CreateSpectralImageTask(pipeBase.PipelineTask):
         def _finite_or_zero(x) -> float:
             return 0.0 if not np.isfinite(x) else float(x)
 
+        # Correlation failures shouldn't stop the pipeline; log and
+        # fall back to the aurora_corr/shuttle_glow_corr defaults set above.
         if aurora_template is not None:
             if band != 1:
                 raise ValueError("Aurora template only applies to detector 1.")
-            aurora_corr = _finite_or_zero(correlate_image(spximg, aurora_template))
-            aurora_cont = aurora_corr > self.config.threshold
+            try:
+                aurora_corr = _finite_or_zero(correlate_image(spximg, aurora_template))
+                aurora_cont = aurora_corr > self.config.threshold
+            except Exception as e:
+                msg = f"Aurora template correlation failed: {e}"
+                self.log.error(msg)
+                spximg_out.header.add_history(f"[WARNING] {msg}")
 
         elif shuttle_glow_template is not None:
             if band != 5:
                 raise ValueError("Shuttle glow template only applies to detector 5.")
-            shuttle_glow_corr = _finite_or_zero(correlate_image(spximg, shuttle_glow_template))
-            shuttle_glow_cont = shuttle_glow_corr > self.config.threshold
+            try:
+                shuttle_glow_corr = _finite_or_zero(correlate_image(spximg, shuttle_glow_template))
+                shuttle_glow_cont = shuttle_glow_corr > self.config.threshold
+            except Exception as e:
+                msg = f"Shuttle glow template correlation failed: {e}"
+                self.log.error(msg)
+                spximg_out.header.add_history(f"[WARNING] {msg}")
 
         spximg_out.header["HIERARCH AURORA_CORR"] = (
             round(aurora_corr, 3), "Correl coeff with aurora template"

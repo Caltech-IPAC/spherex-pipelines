@@ -12,6 +12,10 @@ from spx_butler.defaults import fake_products
 from spx_data.epsf import EPSFModels
 from spx_data.spx_param import get_npix_x_active, get_npix_y_active
 
+# The psf_hdu fixture builds fake_PSF()/fake_epsf(), which need
+# SPHEREx_InstrumentSimulator (spx_butler/defaults/fake_products.py).
+pytestmark = pytest.mark.optional_deps
+
 
 # Fixtures ====================================================================
 @pytest.fixture

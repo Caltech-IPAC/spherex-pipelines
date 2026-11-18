@@ -26,10 +26,11 @@ from pathlib import Path
 
 # Local application/library specific imports
 from spx_data import SPHERExImage
+from spx_data.spx_param import (get_aperture, get_pix_scale,
+                                get_detector_efficiency, get_filter_resolving_power)
 from spx_utils.utils import get_data_file
 from spx_utils.catalog_info import binned_catalog_descriptions
 from spx_utils.primary_calibrator_info import primary_calibrator_names
-from spherex_parameters import load_spherex_parameters
 from spx_utils.coarse_astro_utils import get_initial_linear_wcs, get_initial_wcs_with_sip
 from spx_utils.update_photo_calib_utils import CalspecPredict
 
@@ -43,9 +44,6 @@ try:
 except ImportError:
     hasSPHERExSimulator = False
 # ==============================================================================
-
-
-_param_dict: dict = load_spherex_parameters(append_quantity=True)
 
 
 @dataclass
@@ -409,14 +407,11 @@ def flux_engineering_units_local(obstab: Table,
     obstab["flux_eng_err"] = np.zeros(len(obstab)) << (u.electron / u.s)
     obstab["omega_pix"] = np.zeros(len(obstab)) << u.sr
 
-    _ap = _param_dict["nominal_instrument_models"]["aperture"]["quantity"]
+    _ap = get_aperture()
     _area = np.pi * (_ap.to_value(u.m) / 2.0) ** 2
-    _ncm = _param_dict["nominal_camera_model"]
-    _pix_sr = (_ncm["pix_scale"]["quantity"] ** 2).to_value(u.sr)
-    _det = _param_dict["detector"]
-    eta_total = np.array(_det["eta_total"]["value"])
-    _fil = _param_dict["filter"]
-    R = np.array(_fil["R"]["value"])
+    _pix_sr = (get_pix_scale() ** 2).to_value(u.sr)
+    eta_total = np.array(get_detector_efficiency())
+    R = np.array(get_filter_resolving_power())
     _factor = 1.0e-20 / c.h.si.value * (u.electron / u.second) / (u.MJy / u.sr)
 
     cal_values = ArrayCalValues()
@@ -437,9 +432,9 @@ def flux_engineering_units_local(obstab: Table,
 
     obstab["omega_pix"][ii] = Omega[(obstab["X"][ii]).astype("int16"), (obstab["Y"][ii]).astype("int16")]
 
-    _ap = _param_dict["nominal_instrument_models"]["aperture"]["quantity"]
+    _ap = get_aperture()
     _area = np.pi * (_ap.to_value(u.m) / 2.0) ** 2
-    _pix_sr = (_ncm["pix_scale"]["quantity"] ** 2).to_value(u.sr)
+    _pix_sr = (get_pix_scale() ** 2).to_value(u.sr)
     # TODO CAL from image header (temporary short cut)
     cal_value = cal_values.cal_values[detector_id]
     logging.info(f"Array {detector_id} CAL value: {cal_value}")

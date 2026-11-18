@@ -65,10 +65,9 @@ class TestL2bTask(unittest.TestCase):
         self.srccat["spherex_class"] = [1, 1]
 
         # Mock zodi scaling table
-        self.zodi_scaling = Table()
-        self.zodi_scaling["wavelength_um"] = [0.5, 1.0, 1.5]
-        self.zodi_scaling["ZodiScale"] = [1.0, 1.0, 1.0]
-        self.zodi_scaling["ZodiOffset_nWm2sr"] = [0.0, 0.0, 0.0]
+        self.zodi_scaling_v2 = Table()
+        self.zodi_scaling_v2["wavelength_um"] = [0.5, 1.0, 1.5]
+        self.zodi_scaling_v2["ZodiScale"] = [1.0, 1.0, 1.0]
 
         # Mock PSFZoneData
         self.psf_avg = MagicMock(spec=PSFZoneData)
@@ -130,7 +129,7 @@ class TestL2bTask(unittest.TestCase):
             srccat=self.srccat,
             psf_avg=self.psf_avg,
             epsf=self.epsf,
-            zodi_scaling=self.zodi_scaling,
+            zodi_scaling_v2=self.zodi_scaling_v2,
             spectral_wcs=self.spectral_wcs,
             ssocat=self.ssocat,
             he_template=self.he_template,
@@ -169,7 +168,7 @@ class TestL2bTask(unittest.TestCase):
         self.task.detect_outlier_pixels.run.assert_called_once_with(self.spximg)
         self.task.get_zodi_model.run.assert_called_once_with(
             self.spximg,
-            self.zodi_scaling,
+            self.zodi_scaling_v2,
             self.spectral_wcs,
         )
 
@@ -221,7 +220,7 @@ class TestL2bTask(unittest.TestCase):
             xtalk_class2=self.xtalk_class2,
             psf_avg=self.psf_avg,
             epsf=None,
-            zodi_scaling=self.zodi_scaling,
+            zodi_scaling_v2=self.zodi_scaling_v2,
             spectral_wcs=self.spectral_wcs,
             he_template=self.he_template,
             aurora_template=self.aurora_template,

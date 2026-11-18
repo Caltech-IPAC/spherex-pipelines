@@ -145,6 +145,11 @@ def fit_background(data: np.ndarray,
         the points used in the final fit. This is returned by
         `FittingWithOutlierRemoval`.
 
+    Raises
+    ------
+    ValueError
+        If `mask_bkg` has fewer pixels than the model has free parameters.
+
     Notes
     -----
     - The background uncertainty is estimated using the standard deviation
@@ -159,11 +164,28 @@ def fit_background(data: np.ndarray,
     y = yy[mask_bkg]
     z = data[mask_bkg]
 
-    # Estimate background uncertainty from sigma-clipped statistics
-    zunc = z * 0 + sigma_clipped_stats(z)[2]
+    # Exclude non-finite pixels. Leaving them in is fatal: `z * 0` below is
+    # NaN (not 0) wherever z is NaN, so even a single bad pixel poisons the
+    # per-pixel weights passed to the linear fitter and crashes it.
+    valid = np.isfinite(z)
+    if not np.all(valid):
+        x, y, z = x[valid], y[valid], z[valid]
 
     # Define initial polynomial model
     p_init = models.Polynomial2D(degree=2)
+
+    # An underfilled mask_bkg (when too much of it flagged out) leaves
+    # too few points to solve for all model parameters. astropy's fitter
+    # doesn't fail cleanly in that case, check explicitly and fail with
+    # a clear message instead.
+    n_params = len(p_init.parameters)
+    if z.size < n_params:
+        raise ValueError(
+            f"{z.size} valid pixel(s) for background fit."
+        )
+
+    # Estimate background uncertainty from sigma-clipped statistics
+    zunc = z * 0 + sigma_clipped_stats(z)[2]
 
     # Set up fitter with sigma-clipping
     fitter = fitting.FittingWithOutlierRemoval(
@@ -349,8 +371,17 @@ def compute_linear_scaling_coefficient(imageA, imageB, variance=None, mask=None,
         try:
             k_vec, residuals, rank, s = np.linalg.lstsq(M_w, y_w, rcond=None)
             k0, k1 = k_vec
-        except np.linalg.LinAlgError:
-            # Handle singular matrix case
+        except np.linalg.LinAlgError as e:
+            if i == 0:
+                # No k0/k1/chi2/rms from a prior iteration to fall back on
+                # (e.g. all-zero/non-finite variance made the weighted
+                # design matrix degenerate); raise instead of letting the
+                # return statement below crash with an UnboundLocalError.
+                raise ValueError(
+                    "Linear scaling fit failed on the first iteration "
+                    "(check for zero or non-finite variance values)"
+                ) from e
+            # Handle singular matrix case; keep the previous iteration's fit.
             print("Warning: Least squares solution failed due to LinAlgError.")
             break
 
@@ -476,9 +507,6 @@ def fit_airglow_he(spximg: SPHERExImage,
         )
         airglow_ampl, airglow_xslope = k0, 0.0
 
-    print(f"[DEBUG] mask_good.sum()={mask_good.sum()}")
-    print(f"[DEBUG] mask_clipped.sum()={mask_clipped.sum()}")
-
     n_clipped = int(mask_clipped.sum())
     if n_clipped > 0:
         chi2mean = chi2 / n_clipped
@@ -486,7 +514,6 @@ def fit_airglow_he(spximg: SPHERExImage,
         chi2mean = 0.0
 
     mask_top = (wmap > wl_top[0]) & (wmap < wl_top[1]) & mask_clipped
-    print(f"[DEBUG] mask_top.sum()={mask_top.sum()}")
 
     data_tmp = data_for_fit.copy()
     data_tmp[mask_airglow] = data_tmp[mask_airglow] - he_template[mask_airglow] * (
@@ -834,12 +861,16 @@ def template_correlate(data, template, maxnanfraction=0.6, remove_median=True):
     z = data.flatten().astype(float)
     t = template.flatten().astype(float)
 
+    # Bail out before computing nanmedian below: subtracting a scalar
+    # doesn't change which elements are NaN, so checking first is
+    # equivalent and avoids an all-NaN nanmedian (and its RuntimeWarning)
+    # when too much of the data is unusable.
+    if np.count_nonzero(np.isnan(z)) > maxnanfraction * z.size:
+        return 0.0
+
     if remove_median:
         z = z - np.nanmedian(z)
         t = t - np.nanmedian(t)
-
-    if np.count_nonzero(np.isnan(z)) > maxnanfraction * z.size:
-        return 0.0
 
     igood = np.isfinite(z) & np.isfinite(t) & (t > 0.0)
     if not np.any(igood):
@@ -905,6 +936,12 @@ def correlate_image(
 
     # spximg.zodi already contains the corrected zodi model
     dat -= spximg.zodi.zodi_data
+
+    # If flag masking left no valid pixels at all, avoid an all-NaN
+    # nanmedian block-reduce (and its RuntimeWarning) below; the result
+    # would be rejected by template_correlate's maxnanfraction check anyway.
+    if not np.any(np.isfinite(dat)):
+        return 0.0
 
     data = block_reduce(dat, block_size=downsamp, func=np.nanmedian)
 

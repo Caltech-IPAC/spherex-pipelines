@@ -13,6 +13,9 @@ from spx_tasks import QueryCustomCatalogTask, QueryCustomCatalogConfig
 from spx_butler.defaults.fake_products import fake_selection_mask
 from spx_utils.refcat_utils import EmptySourceCatalogError
 
+# Needs SPHEREx_InstrumentSimulator, via TabularWavelengthModel.
+pytestmark = pytest.mark.optional_deps
+
 
 # Helper functions ============================================================
 def make_simple_tan_wcs(ra_deg: float, dec_deg: float) -> WCS:

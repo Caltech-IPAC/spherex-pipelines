@@ -401,7 +401,7 @@ def test_run_executes_pipeline_in_order(monkeypatch):
         srccat="SRCCAT",
         psf_avg="PSF",
         epsf="EPSF",
-        zodi_scaling="ZODI_SCALING",
+        zodi_scaling_v2="ZODI_SCALING",
         spectral_wcs="SPECWCS",
         ssocat="SSOCAT",
         xtalk_class1="XTALK1",

@@ -39,6 +39,10 @@ def run_photometry(temp_butler_root, query_constraint: str, log_file=None, verbo
             "--input", input_coll,
             "--output-run", l3_output_run,
             "--save-qgraph", qgraph_path,
+            # Required for run-qbb below: without it the graph carries no
+            # datastore records and the quantum-backed butler has to guess
+            # artifact paths from the datastore template.
+            "--qgraph-datastore-records",
         ])
         if query_constraint:
             logging.info(query_constraint)

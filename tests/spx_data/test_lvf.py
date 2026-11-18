@@ -1,8 +1,13 @@
 from spx_data import get_wavelength_mesh
 import tempfile
 import numpy as np
+import pytest
 from astropy.io import fits
 import os
+
+# get_wavelength_mesh() builds a TabularWavelengthModel, which needs
+# SPHEREx_InstrumentSimulator (spx_data/wavelength_model.py:_get_lvf).
+pytestmark = pytest.mark.optional_deps
 
 
 def test_wavelength_mesh():

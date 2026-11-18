@@ -9,6 +9,7 @@ cmd:
   - ingest-calibrations
   - estimate-flat-field
   - run-l2a
+  - recompute-zodi
   - update-exposure-region
   - create-tagged-primary-calibrators
   - report-contiguous-obs

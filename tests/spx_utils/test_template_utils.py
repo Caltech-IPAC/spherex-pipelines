@@ -362,6 +362,58 @@ def _make_spximg_with_crval(data: np.ndarray, flags: np.ndarray,
     return spximg
 
 
+def test_fit_background_ignores_nan_pixels_within_mask_bkg():
+    """Regression test for a bug where `zunc = z * 0 + sigma_clipped_stats(z)[2]`
+    silently produced NaN weights wherever `z` was NaN (since `nan * 0 == nan`,
+    not 0). Even a single NaN pixel inside `mask_bkg` corrupted the weighted
+    design matrix passed to astropy's LinearLSQFitter and crashed the fit.
+    """
+    rng = np.random.default_rng(42)
+    ny, nx = 150, 100
+    xx, yy = np.meshgrid(np.arange(nx, dtype=np.float64), np.arange(ny, dtype=np.float64))
+
+    p_true = Polynomial2D(degree=2, c0_0=2.0, c1_0=0.05, c0_1=0.03,
+                          c2_0=0.001, c1_1=0.0005, c0_2=0.0008)
+    data = (p_true(xx, yy) + rng.normal(0, 0.01, size=(ny, nx))).astype(np.float64)
+
+    mask_bkg = np.ones((ny, nx), dtype=bool)
+
+    # A single NaN pixel (~0.0067% of the image) reproduces the bug.
+    nan_row, nan_col = ny // 2, nx // 2
+    data[nan_row, nan_col] = np.nan
+    nan_fraction = 1 / data.size
+    assert nan_fraction < 0.0001  # well under the 0.01 percent that triggered it
+
+    p_fit, _ = tu.fit_background(data, xx, yy, mask_bkg)
+
+    for name in p_fit.param_names:
+        fitted_value = getattr(p_fit, name).value
+        assert np.isfinite(fitted_value), f"{name} is not finite: {fitted_value}"
+        assert np.isclose(fitted_value, getattr(p_true, name).value, atol=0.05)
+
+
+def test_fit_background_raises_clear_error_when_mask_bkg_too_small():
+    """Regression test: a `mask_bkg` selecting too few pixels (e.g. because
+    the background annulus is too narrow, or fully flagged out for this
+    exposure) used to crash deep inside astropy's LinearLSQFitter with an
+    unrelated-looking "could not broadcast (5,) into (6,)" shape-mismatch
+    error instead of a clear, actionable message.
+    """
+    ny, nx = 60, 50
+    xx, yy = np.meshgrid(np.arange(nx, dtype=np.float64), np.arange(ny, dtype=np.float64))
+    data = np.ones((ny, nx), dtype=np.float64)
+
+    mask_bkg_empty = np.zeros((ny, nx), dtype=bool)
+    with pytest.raises(ValueError, match="0 valid pixel"):
+        tu.fit_background(data, xx, yy, mask_bkg_empty)
+
+    # Polynomial2D(degree=2) has 6 free parameters; 3 points is not enough.
+    mask_bkg_too_few = np.zeros((ny, nx), dtype=bool)
+    mask_bkg_too_few[:3, 0] = True
+    with pytest.raises(ValueError, match="3 valid pixel"):
+        tu.fit_background(data, xx, yy, mask_bkg_too_few)
+
+
 def test_correlate_image_low_galactic_lat_returns_nan(monkeypatch):
     # Patch block_reduce used by correlate_image
     monkeypatch.setattr(tu, "block_reduce", _nanmedian_block_reduce)

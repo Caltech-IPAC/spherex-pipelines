@@ -2,20 +2,29 @@
 import unittest
 
 # Related third party imports
+import pytest
 from astropy.table import Table
 import astropy.units as u
 import numpy as np
 
 # Local application/library specific imports
 from spx_data import SPHERExImage
-from spx_tasks import UpdatePhotometricCalibrationConfig, UpdatePhotometricCalibrationTask
 from spx_butler.defaults.fake_products import initial_distortion
+
+# spx_tasks.update_photometric_calibration cannot be imported without
+# SPHEREx_SkySimulator: it annotates function parameters with simulator classes.
+# Keep the import inside setUp so that it only runs when this test is actually
+# selected.
+pytestmark = pytest.mark.optional_deps
 
 
 class TestUpdatePhotometricCalibrationTask(unittest.TestCase):
 
     def setUp(self):
         """Set up necessary data for the test using data."""
+        from spx_tasks import (UpdatePhotometricCalibrationConfig,
+                               UpdatePhotometricCalibrationTask)
+
         self.calspec_sources = Table(
             {'name': ['10lac', '109vir', '16cygb', '1732526', '1740346', '1743045',
                       '1757132', '18sco', '1802271', '1805292'],

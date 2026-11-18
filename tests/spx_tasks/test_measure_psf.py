@@ -74,6 +74,7 @@ class TestMeasurePSFTask():
 
     @pytest.mark.parametrize("psf_calib, write_epsf_bintable", [("psf", False), ("epsf", True)],
                              indirect=["psf_calib"])
+    @pytest.mark.optional_deps  # psf_calib builds fake_PSF(), which needs the simulator
     def test_psf_extensions(self, psf_calib: PSFZoneData | SPHERExImage, write_epsf_bintable: bool):
         # Set up config and run task
         config = MeasurePSFConfig()
@@ -112,6 +113,7 @@ class TestMeasurePSFTask():
         ("epsf", False, "but psf_avg input is None"),
         ("psf", True, "but epsf input is None")],
         indirect=["psf_calib"])
+    @pytest.mark.optional_deps  # psf_calib builds fake_PSF(), which needs the simulator
     def test_opt_cnxn(self, psf_calib: PSFZoneData | SPHERExImage, write_epsf_bintable: bool, match: str):
         # Set up config and task
         config = MeasurePSFConfig()
@@ -130,6 +132,7 @@ class TestMeasurePSFTask():
         ("epsf", True, True),
         ("psf", False, True)],
         indirect=["psf_calib"])
+    @pytest.mark.optional_deps  # psf_calib builds fake_PSF(), which needs the simulator
     def test_hdr_products(self, psf_calib: PSFZoneData | SPHERExImage, write_epsf_bintable: bool,
                           do_psf_omega: bool):
         # Set up config and run task
@@ -158,6 +161,7 @@ class TestMeasurePSFTask():
         ("epsf", True, "not yet supported for effective PSF"),
         ("psf", False, None)],
         indirect=["psf_calib"])
+    @pytest.mark.optional_deps  # psf_calib builds fake_PSF(), which needs the simulator
     def test_plotting(self, psf_calib: PSFZoneData | SPHERExImage, write_epsf_bintable: bool, match: str):
         tmpdir = tempfile.TemporaryDirectory()
         plot_path = Path(tmpdir.name) / "test_plots"

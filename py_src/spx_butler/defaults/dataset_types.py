@@ -67,12 +67,14 @@ class DatasetTypes:
     allsky_cat = "allsky_cat"  # primary all-sky catalog, per HEALPix
     allsky_cat_combined = "allsky_cat_combined"  # primary all-sky catalog, combined across HEALPix
     refcat_allsky = "refcat_allsky"  # custom input reference catalog, not confined to a single HEALPix
-    zodi_scaling = "zodi_scaling"  # 1D zodi scaling
     cosmo_mask = "cosmo_mask"  # table of HiPS8 tiles in cosmology selection mask
     hi_density_mask = "hi_density_mask"  # table of HiPS8 tiles in high-density selection mask
     l3_flux_corrections = "l3_flux_corrections"  # per-detector ratio maps (new/old) to apply to L3 fluxes
     special_ids = "special_ids"  # array of source IDs to photometer at the window
     phot_meas_sso = "phot_meas_sso"  # photometry measurement table for Solar System Objects
     phot_exceptions = "phot_exceptions"  # high proper-motion photometry targets
+    zodi_scaling = "zodi_scaling"  # 1D zodi scaling with diffuse background offset
+    zodi_scaling_v2 = "zodi_scaling_v2"  # 1D zodi scaling
+
 
 spherex_dataset_types: DatasetTypes = DatasetTypes()

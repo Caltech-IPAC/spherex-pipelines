@@ -313,8 +313,8 @@ class L2bRetryConnections(
         isCalibration=True,
         minimum=0,
     )
-    zodi_scaling = cT.PrerequisiteInput(
-        name="zodi_scaling",
+    zodi_scaling_v2 = cT.PrerequisiteInput(
+        name="zodi_scaling_v2",
         doc="Detector-dependent 1D zodi scaling table in ECSV format.",
         storageClass="AstropyTable",
         dimensions=("instrument", "detector"),
@@ -600,7 +600,7 @@ class L2bRetryTask(pipeBase.PipelineTask):
         dark: SPHERExImage,
         sip: Sip,
         srccat: Table,
-        zodi_scaling: Table,
+        zodi_scaling_v2: Table,
         spectral_wcs: HDUList,
         psf_avg: PSFZoneData | None = None,
         epsf: SPHERExImage | None = None,
@@ -642,7 +642,7 @@ class L2bRetryTask(pipeBase.PipelineTask):
         result = self.detect_outlier_pixels.run(spximg)
         spximg = result.spximg_out
 
-        result = self.get_zodi_model.run(spximg, zodi_scaling, spectral_wcs)
+        result = self.get_zodi_model.run(spximg, zodi_scaling_v2, spectral_wcs)
         spximg = result.spximg_out
 
         result = self.measure_psf.run(spximg=spximg, srccat=srccat, psf_avg=psf_avg, epsf=epsf)

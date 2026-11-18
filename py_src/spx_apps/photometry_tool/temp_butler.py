@@ -424,14 +424,30 @@ def collect_inputs_for_temp_butler(
                                        instrument=instrument,
                                        dataset_type=lvf_dataset_type_name)
 
-    # Unique calibration product references
+# Unique calibration product references
     calibration_collections = os.getenv("SPXPHOTO_CALIBRATION_COLL", "IRSA-qr2-tools")
-    calibration_types = [dsTypes.solid_angle_pixel_map]
-    calibration_types.append(dsTypes.spectral_wcs)
+
+    # Per-detector calibrations consumed alongside the level2 images; safe to
+    # restrict to the detectors the user asked for.
+    calibration_types = [
+        dsTypes.solid_angle_pixel_map,
+        dsTypes.spectral_wcs,
+        dsTypes.epsf,          # perform_forced_photometry.override_epsf: true
+        dsTypes.he_template,   # estimate_diffuse_background.est_he_airglow: true
+    ]
     unique_calibration_refs = get_unique_calibration_refs(butler,
                                                           calibration_collections,
                                                           calibration_types,
                                                           detectors=detectors)
+
+    # CreateAllSkyCatalog declares l3_flux_corrections with minimum=6, i.e. it
+    # needs the full detector set even when the job is restricted to a subset.
+    # Query without the detector constraint.
+    unique_calibration_refs += get_unique_calibration_refs(butler,
+                                                           calibration_collections,
+                                                           [dsTypes.l3_flux_corrections],
+                                                           detectors=None)
+    unique_calibration_refs = get_unique_dataset_refs([unique_calibration_refs])
 
     # Create temporary butler directory, which will also act as export directory
     timestamp = datetime.datetime.now().strftime("%y%m%dT%H%M%S")

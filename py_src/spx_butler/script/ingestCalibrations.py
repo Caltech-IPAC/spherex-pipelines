@@ -98,7 +98,7 @@ def ingestCalibrations(repo,
             (dt.shuttle_glow_template, "SPHERExImage"),
             (dt.xtalk_class1, "Xtalk"),
             (dt.xtalk_class2, "Xtalk"),
-            (dt.zodi_scaling, "ZodiScaling"),
+            (dt.zodi_scaling_v2, "ZodiScaling"),
             (dt.l3_flux_corrections, "SPHERExImage")
         )
         # Add additional dimensions
@@ -225,7 +225,8 @@ def ingestCalibrations(repo,
 
             # Zodi scaling template
             zodi_scaling = fake_products.fake_zodi_scaling()
-            butler.put(zodi_scaling, dt.zodi_scaling, dataId=dataid, run=run)
+            butler.put(zodi_scaling, dt.zodi_scaling_v2, dataId=dataid, run=run)
+
 
             # He I Airglow, Aurora, and Shuttleglow Templates
             if detector in (1, 2):

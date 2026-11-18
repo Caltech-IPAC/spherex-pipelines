@@ -117,6 +117,41 @@ def run_l2a(*args, **kwargs):
     script.runL2a(*args, **kwargs)
 
 
+@click.command(short_help="Recompute the zodi layer of level 2 images.", cls=ButlerCommand)
+@repo_argument(required=True,
+               help="REPO is the URI or path to the gen3 repository.")
+@collections_argument(required=True,
+                      help="COLLECTIONS is one or more expressions that identify "
+                           "the collections to search for the input images.")
+@run_option(required=True)
+@in_type_option(default="level2")
+@out_type_option(default="level2")
+@click.option("--calib-collections", required=False, default=None,
+              help="Comma-separated collections to search for the zodi_scaling and "
+                   "spectral_wcs calibrations (default: the input COLLECTIONS).")
+@sps_plan_option(default=None)
+@detector_option(default=None)
+@where_option()
+@limit_option()
+@config_file_option(required=False,
+                    help="Path to a config file overrides file.")
+@dump_config_option(required=False)
+@instrument_option()
+@click.option("--skip-errors/--no-skip-errors", default=False,
+              help="Log and skip exposures that fail instead of aborting "
+                   "(default: disabled).")
+@click.option("--skip-existing/--no-skip-existing", default=True,
+              help="Skip exposures already present in the output run, so a "
+                   "re-run resumes where the previous one stopped "
+                   "(default: enabled).")
+def recompute_zodi(repo, collections, output_run, calib_collections, **kwargs):
+    """Recompute the zodi layer with Get Zodi Model."""
+    if calib_collections is not None:
+        calib_collections = [c.strip() for c in calib_collections.split(",") if c.strip()]
+    script.recomputeZodi(repo, collections, output_run,
+                         calib_collections=calib_collections, **kwargs)
+
+
 @click.command(short_help="Update exposure region.", cls=ButlerCommand)
 @repo_argument(required=True,
                help="REPO is the URI or path to the gen3 repository. "

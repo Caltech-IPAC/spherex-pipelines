@@ -768,11 +768,11 @@ def _find_l2_files(temp_butler_root: str) -> dict[int, list[str]]:
         If no L2 files are found.
 
     """
-    l2_base_dir = os.path.join(temp_butler_root, 'level2')
+    l2_base_dir = temp_butler_root
 
     # L2 file pattern (array in directory name):
     # level2/.../1/level2_...D1_....fits
-    l2_pattern = '**/{array}/*.fits'
+    l2_pattern = '**/level2/**/{array}/*.fits'
 
     logging.info("Finding L2 files...")
     l2_files_by_array = _find_files_by_array(l2_base_dir, l2_pattern, "L2 files")
@@ -816,7 +816,7 @@ def _get_channel_definition(
         try:
             spectral_channels_files = []
             for pattern in ("*.fits", "*.fits.gz"):
-                fits_pattern = os.path.join(temp_butler_root, "spectral_channels/**", pattern)
+                fits_pattern = os.path.join(temp_butler_root, "**/spectral_channels/**", pattern)
                 files = sorted(glob(fits_pattern, recursive=True))
                 spectral_channels_files.extend(files)
             logging.info(f"Total spectral_channels files found: {len(spectral_channels_files)}")
@@ -831,9 +831,9 @@ def _get_channel_definition(
             logging.info("Using reference spectral channel definitions.")
             channel_def = get_reference_spectral_channel_defs()
     else:
-        wavelength_fits_dir = os.path.join(temp_butler_root, 'spectral_wcs')
-        # Wavelength file pattern: spectral_wcs/.../1/spectral_wcs_D1_....fits
-        wl_pattern = '**/{array}/*_D{array}_*.fits'
+        wavelength_fits_dir = temp_butler_root
+        # Wavelength file pattern: **/spectral_wcs/.../1/spectral_wcs_D1_....fits
+        wl_pattern = '**/spectral_wcs/**/{array}/*_D{array}_*.fits'
 
         # Find and load wavelength calibration files
         logging.info("Finding wavelength calibration files...")
@@ -1220,8 +1220,8 @@ def build_interpolated_mosaic(
     logging.info(f"Target wavelength {target_wavelength} μm -> Array {array_id}")
 
     # Setup paths
-    l2_base_dir = os.path.join(temp_butler_root, 'level2')
-    l2_pattern = '**/{array}/*.fits'
+    l2_base_dir = temp_butler_root
+    l2_pattern = '**/level2/**/{array}/*.fits'
 
     # Find L2 files
     logging.info("Finding L2 files...")

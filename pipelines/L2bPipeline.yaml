@@ -10,7 +10,7 @@ tasks:
       connections.sip: "sip"
       connections.srccat: "srccat"
       connections.spectral_wcs: "spectral_wcs"
-      connections.zodi_scaling: "zodi_scaling"
+      connections.zodi_scaling_v2: "zodi_scaling_v2"
       connections.he_template: "he_template"
       connections.aurora_template: "aurora_template"
       connections.shuttle_glow_template: "shuttle_glow_template"
