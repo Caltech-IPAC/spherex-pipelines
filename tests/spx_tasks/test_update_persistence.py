@@ -82,7 +82,10 @@ def test_UpdatePersistence():
     assert not np.any(persist_flags[~active_mask]), \
         "PERSIST flags found outside active area"
 
-    # Should be NO non-zero persistence current outside active area
+    # Active area mask shape of true values should match persistence image shape
     persist_current = output_1.persistence_image.data
-    assert np.all(persist_current[~active_mask] == 0.0), \
-        "Non-zero persistence current found outside active area"
+    expected_active_rows = np.sum(np.any(active_mask, axis=1))
+    expected_active_cols = np.sum(np.any(active_mask, axis=0))
+
+    assert persist_current.shape == (expected_active_rows, expected_active_cols), \
+        "Active area does not match expected shape in outputted persistence image."

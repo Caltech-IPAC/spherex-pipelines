@@ -23,7 +23,7 @@ def plot_mult_stacks(stack, stack5, stack50, stack100,
     yAxisTicks = xAxisTicks  # Same axis ticks
 
     fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(14, 10))
-    fig.set_tight_layout(True)
+    fig.set_layout_engine("tight")
     divider = make_axes_locatable(ax[0, 0])  # Prep to add an axis
     cax = divider.append_axes('right', size='2.0%', pad=0.35)  # Make a color bar axis
     im = ax[0, 0].pcolormesh(stack5[halfStampSizeUp - np.int64(

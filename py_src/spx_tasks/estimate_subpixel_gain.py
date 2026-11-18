@@ -15,6 +15,8 @@ from spx_data import SPHERExImage
 
 
 class EstimateSubpixelGainConfig(Config):
+    """Configuration for EstimateSubpixelGain task."""
+
     param_int = Field(
         doc="An example of int configuration parameter."
         "An example of a two-line doc.",
@@ -59,6 +61,7 @@ class EstimateSubpixelGainTask(Task):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "estimate-subpixel-gain"

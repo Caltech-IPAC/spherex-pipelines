@@ -38,6 +38,7 @@ class PersistenceParametersFormatter(FileFormatter):
         `~spx_data.PersistenceParameters` | `None`
             Either data as `PersistenceParameters` object read from fits file,
             or `None` if the file could not be opened.
+
         """
         try:
             data = PersistenceParameters(fits.open(path))
@@ -62,6 +63,7 @@ class PersistenceParametersFormatter(FileFormatter):
         ------
         Exception
             The file could not be written.
+
         """
         if not isinstance(inMemoryDataset, PersistenceParameters):
             raise NotImplementedError(
@@ -100,6 +102,7 @@ class PersistenceStateFormatter(FileFormatter):
         `~spx_data.PersistenceState` | `None`
             Either data as `PersistenceState` object read from fits file,
             or `None` if the file could not be opened.
+
         """
         try:
             data = PersistenceState(fits.open(path))
@@ -119,6 +122,7 @@ class PersistenceStateFormatter(FileFormatter):
         ------
         Exception
             The file could not be written.
+
         """
         if not isinstance(inMemoryDataset, PersistenceState):
             raise NotImplementedError(

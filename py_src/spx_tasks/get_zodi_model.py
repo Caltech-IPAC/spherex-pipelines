@@ -3,7 +3,11 @@ __all__ = ["GetZodiModelConfig", "GetZodiModelTask", "hasSPHERExSimulator"]
 # Standard library imports
 import copy
 import numpy as np
+from astropy import constants as const
+from astropy.io.fits import HDUList
+from astropy.table import Table
 from astropy.time import Time
+import astropy.units as u
 from astropy.coordinates import SkyCoord
 from scipy.interpolate import RectBivariateSpline
 
@@ -27,6 +31,29 @@ from spx_tasks import add_history
 # ==============================================================================
 
 
+def _build_zodi_correction_maps(zodi_scaling, spectral_wcs):
+    wl = np.asarray(zodi_scaling["wavelength_um"], dtype=float)
+    scale_1d = np.asarray(zodi_scaling["ZodiScale"], dtype=float)
+    offset_1d = np.asarray(zodi_scaling["ZodiOffset_nWm2sr"], dtype=float)
+
+    cwave_um = np.asarray(spectral_wcs["CWAVE"].data, dtype=float)
+
+    scale_2d = np.interp(cwave_um, wl, scale_1d)
+    offset_2d_nw = np.interp(cwave_um, wl, offset_1d)
+
+    # Convert nuI_nu [nW m^-2 sr^-1] -> I_nu [MJy/sr]
+    wavelength = cwave_um * u.um
+    offset = offset_2d_nw * u.nW / (u.m**2 * u.sr)
+
+    offset_2d_mjy = (
+        (offset * wavelength / const.c)
+        .to(u.MJy / u.sr)
+        .value
+    )
+
+    return scale_2d, offset_2d_mjy
+
+
 class GetZodiModelConnections(pipeBase.PipelineTaskConnections,
                               dimensions=("instrument", "exposure"),
                               defaultTemplates={}):
@@ -35,6 +62,21 @@ class GetZodiModelConnections(pipeBase.PipelineTaskConnections,
         doc="Input image is output from previous module.",
         storageClass="SPHERExImage",
         dimensions=("instrument", "exposure"),
+    )
+    zodi_scaling = cT.PrerequisiteInput(
+        name="zodi_scaling",
+        doc="Detector-dependent 1D zodi scaling table in ECSV format.",
+        storageClass="AstropyTable",
+        dimensions=("instrument", "detector"),
+        isCalibration=True,
+    )
+
+    spectral_wcs = cT.PrerequisiteInput(
+        name="spectral_wcs",
+        doc="Spectral calibration product containing CWAVE image.",
+        storageClass="AstropyImage",  # replace with your repo's actual storageClass if different
+        dimensions=("instrument", "detector"),
+        isCalibration=True,
     )
     spximg_out = cT.Output(
         name="spximg_out",  # default dataset type for output
@@ -46,6 +88,8 @@ class GetZodiModelConnections(pipeBase.PipelineTaskConnections,
 
 class GetZodiModelConfig(pipeBase.PipelineTaskConfig,
                          pipelineConnections=GetZodiModelConnections):
+    """Configuration for GetZodiModel task."""
+
     zodi_subsample = Field(
         "Pixel grid spacing for sampling Zodi model.",
         dtype=int,
@@ -79,6 +123,7 @@ class GetZodiModelTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "get-zodi-model"
@@ -91,7 +136,12 @@ class GetZodiModelTask(pipeBase.PipelineTask):
         super().__init__(**kwargs)
 
     @add_history()
-    def run(self, spximg: SPHERExImage) -> pipeBase.Struct:
+    def run(
+        self,
+        spximg: SPHERExImage,
+        zodi_scaling: Table,
+        spectral_wcs: HDUList,
+        ) -> pipeBase.Struct:
         """Return zodi model based on exposure meta-data.
 
         Parameters
@@ -108,6 +158,7 @@ class GetZodiModelTask(pipeBase.PipelineTask):
             This image contains the input image with a ``zodi`` layer
             from the diffused zodiacal model with the same shape as the image
             layer.
+
         """
         # Algorithm Implementation
         # > Extract relevant meta-data
@@ -170,12 +221,19 @@ class GetZodiModelTask(pipeBase.PipelineTask):
 
         zl_map = zodi_interpolator(np.arange(nx), np.arange(ny))
 
-        zodi_model_name = type(zodi_model).__name__
+        zodi_model_name = "KEL98_WAVESCL_V1"
+
+        # Get zodi correction
+        scale_2d, offset_2d_mjy = _build_zodi_correction_maps(zodi_scaling, spectral_wcs)
+        # Scale plus offset applied to zodi
+        zl_map_corr = zl_map * scale_2d + offset_2d_mjy
 
         # Create an Output object
         # Use shallow copy when feasible
         spximg_out = copy.copy(spximg)
-        spximg_out.zodi = Zodi(zl_map, zodi_model_name)  # default unit is "MJy / sr"
+
+        # Attach zodi layer
+        spximg_out.zodi = Zodi(zl_map_corr, zodi_model_name) # default unit is "MJy / sr"
 
         if spximg_out.zodi is None:
             raise ValueError("Zodi layer was not added to L2 image.")

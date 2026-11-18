@@ -1,5 +1,7 @@
-# pipetask run -b <butler_repo>/butler.yaml -p ../spherex-pipelines/pipelines/ComputeSolarSystemObjects.yaml
-# -d "instrument='simu' AND detector=2" -i level2a -o ssocat --register-dataset-types
+# Execute this command for D1,2,3 of each planning period. Outputs are associated per observation.
+# pipetask run  -b <butler_repo>/butler.yaml -p ../spherex-pipelines/pipelines/ComputeSolarSystemObjects.yaml
+# -d instrument='spx' and (detector=1 or detector=2 or detector=3) and spsplan=202523103
+# -i L2a-v19-2025W23_1C -o SSO-2025W23_1C --register-dataset-types
 description: ComputeSolarSystemObjects
 tasks:
   compute_solar_system_objects:

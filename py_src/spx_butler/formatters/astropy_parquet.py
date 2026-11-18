@@ -42,6 +42,7 @@ def shallow_arrow_to_astropy(arrow_table: pa.Table) -> Table:
     -------
     table : `astropy.Table`
         Converted astropy table.
+
     """
     from astropy.table import Table
 
@@ -58,6 +59,7 @@ def shallow_arrow_to_astropy(arrow_table: pa.Table) -> Table:
 
 class AstropyParquetFormatter(ParquetFormatter):
     """Formatter to read/write astropy table to/from parquet file."""
+
     extension = ".parq"
     supportExtensions = frozenset({".parquet", ".parq"})
 
@@ -66,8 +68,12 @@ class AstropyParquetFormatter(ParquetFormatter):
 
         Parameters
         ----------
+        path : `str`
+            Path to the parquet file.
         component : Optional[str], optional
             Currently not used, by default None.
+        expected_size : `int`, optional
+            Expected file size in bytes, by default -1 (not checked).
 
         Returns
         -------
@@ -80,6 +86,7 @@ class AstropyParquetFormatter(ParquetFormatter):
             Raised if a ``component`` is passed.
         ValueError
             Raised if a column name is not found in the table schema.
+
         """
         if component is not None:
             raise NotImplementedError("'component' not implemented.")

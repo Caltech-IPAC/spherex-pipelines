@@ -41,6 +41,8 @@ class ConverttoEngineeringUnitsConnections(pipeBase.PipelineTaskConnections,
 
 class ConverttoEngineeringUnitsConfig(pipeBase.PipelineTaskConfig,
                                       pipelineConnections=ConverttoEngineeringUnitsConnections):
+    """Configuration for ConverttoEngineeringUnits task."""
+
     pass
 
 
@@ -65,6 +67,7 @@ class ConverttoEngineeringUnitsTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "convert-to-engineering-units"
@@ -99,6 +102,7 @@ class ConverttoEngineeringUnitsTask(pipeBase.PipelineTask):
 
         spximg.data : `SPHERExImage.data`
             Decompressed slopes [ADU] from image.
+
         """
         rp = ReadoutParameters.from_metadata(spximg.meta)
 
@@ -146,6 +150,7 @@ class ConverttoEngineeringUnitsTask(pipeBase.PipelineTask):
         Notes
         -----
         Input gain factors are in units of e-/ADU.
+
         """
         spximg_out = self.adu_to_eps(spximg, gain_factors)
 

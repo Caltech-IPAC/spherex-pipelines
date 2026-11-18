@@ -10,7 +10,7 @@ TZodi = TypeVar("TZodi", bound="Zodi")
 
 
 class Zodi:
-    """Modelled zodi light"""
+    """Modelled zodi light."""
 
     def __init__(self, zodi_data, zodi_model_name, unit=u.Unit("MJy / sr")):
         if hasattr(zodi_data, "value"):
@@ -23,8 +23,18 @@ class Zodi:
 
     def to_hdu(self, name: str) -> fits.ImageHDU:
         hdr = fits.Header()
-        hdr["ZODIMDL"] = (self.zodi_model_name, "Zodi model name")
+        hdr["ZODIMDL"] = (
+            self.zodi_model_name,
+            "Kelsall+1998 zodi model with wavelength scaling",
+        )
         hdr["BUNIT"] = format_unit(self.unit), "Unit of pixel value"
+        hdr.add_comment(
+            "Implements wavelength-dependent scaling of the Kelsall et al. (1998)"
+        )
+        hdr.add_comment(
+            "zodiacal light model."
+        )
+        hdr.add_comment("See SPHEREx Explanatory Supplement for full details.")
         return fits.ImageHDU(data=self.zodi_data.astype(np.float32, copy=False), header=hdr, name=name)
 
     @classmethod

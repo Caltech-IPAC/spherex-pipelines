@@ -26,7 +26,9 @@ class PointingSolution(BaseModel):
         The declination angle in degrees.
     position_angle : `~astropy.coordinates.Angle`
         The position angle in degrees.
+
     """
+
     model_config = ConfigDict(validate_default=True, arbitrary_types_allowed=True)
     right_ascension: AstropyAngleType
     declination: AstropyAngleType
@@ -50,9 +52,10 @@ class PointingSolution(BaseModel):
             The same value if it is valid.
 
         Warns
-        ------
+        -----
         UserWarning
             Raised if the value is outside the valid range (-90, 90).
+
         """
         if not u.Quantity("-90 deg") <= v <= u.Quantity("90 deg"):
             warn(f"\"{field}\" value {v.deg} is outside valid range (-90, 90).", UserWarning)
@@ -76,9 +79,10 @@ class PointingSolution(BaseModel):
             The same value if it is valid.
 
         Warns
-        ------
+        -----
         UserWarning
             Raised if the value is outside the valid range (0, 360).
+
         """
         if not u.Quantity("-360 deg") <= v <= u.Quantity("360 deg"):
             warn(f"\"{field}\" value {v.deg} is outside valid range (0, 360).", UserWarning)
@@ -92,6 +96,7 @@ class DataQualityIndicators(BaseModel):
     ----------
     median_psf_size : `float`
         The median point spread function size.
+
     """
 
     median_psf_size: float
@@ -108,6 +113,7 @@ class IdqrImage(BaseModel):
         The pointing solution for the image.
     data_quality_indicators : `DataQualityIndicators`
         The data quality indicators for the image.
+
     """
 
     status: str
@@ -115,9 +121,9 @@ class IdqrImage(BaseModel):
     data_quality_indicators: DataQualityIndicators | None = None
 
     @field_validator("pointing_solution", "data_quality_indicators")
+    @classmethod
     def check_status(cls, v: dict, values: dict):
-        """
-        Checks the status before validating fields.
+        """Check the status before validating fields.
 
         If the status is "bad", the function returns the value, which can be
         `None`. If the status is not "bad", it raises an error if the value is
@@ -139,9 +145,10 @@ class IdqrImage(BaseModel):
             The same value if the conditions are met.
 
         Warns
-        ------
+        -----
         UserWarning
             Raised if the value is `None` when status is not "bad".
+
         """
         if "status" in values.data and values.data["status"] == "bad":
             return v
@@ -150,8 +157,7 @@ class IdqrImage(BaseModel):
         return v
 
     def dict(self, **kwargs) -> dict:
-        """
-        Overridden Pydantic `dict` method to exclude "pointing_solution" and
+        """Overridden Pydantic `dict` method to exclude "pointing_solution" and
         "data_quality_indicators" when status is "bad".
 
         Returns
@@ -159,6 +165,7 @@ class IdqrImage(BaseModel):
         `dict`
             A dictionary representation of the model instance with possibly
             excluded "pointing_solution" and "data_quality_indicators".
+
         """
         base_dict = super().dict(**kwargs)
         if self.status == "bad":
@@ -167,8 +174,7 @@ class IdqrImage(BaseModel):
         return base_dict
 
     def json(self, **kwargs) -> str:
-        """
-        Overridden Pydantic `json` method to exclude "pointing_solution" and
+        """Overridden Pydantic `json` method to exclude "pointing_solution" and
         "data_quality_indicators" when status is "bad".
 
         Returns
@@ -176,6 +182,7 @@ class IdqrImage(BaseModel):
         `str`
             A JSON string representation of the model instance with possibly
             excluded "pointing_solution" and "data_quality_indicators".
+
         """
         return json.dumps(self.dict(), **kwargs)
 
@@ -189,7 +196,9 @@ class Timestamp(BaseModel):
         The start time of the observation.
     end : `~astropy.time.Time`
         The end time of the observation.
+
     """
+
     model_config = ConfigDict(validate_default=True, arbitrary_types_allowed=True)
     start: str
     end: str
@@ -221,6 +230,7 @@ class IdqrObservation(BaseModel):
         The timestamp for the observation.
     images : `dict[int, IdqrImage]`
         The images related to the observation.
+
     """
 
     survey_plan_indicator: bool
@@ -237,6 +247,7 @@ class IDQR(BaseModel):
     ----------
     observations : `dict[str, IdqrObservation]`
         The observations data.
+
     """
 
     observations: dict[str, IdqrObservation]

@@ -26,7 +26,7 @@ AstropyAngleType = Annotated[Angle,
 
 
 def time_validate(value) -> Time:
-    """Custom field using astropy coordinates."""
+    """Validate and convert value to astropy Time object."""
     # handle "xxxx mjd" format
     if isinstance(value, str) and "mjd" in value:
         return Time(value.split()[0], format="mjd")

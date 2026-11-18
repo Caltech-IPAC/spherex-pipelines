@@ -1,0 +1,21 @@
+name: test_package
+
+on:
+    - push
+
+jobs:
+    test_package:
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                os: [ubuntu-latest]
+                python-version: ["3.13"]
+
+        steps:
+            - uses: actions/checkout@v6
+
+            - uses: astral-sh/ruff-action@v3
+              with:
+                  src: >-
+                    py_src
+                    tests

@@ -6,6 +6,7 @@ import psutil
 
 
 def get_current_rss(desc):
+    """Return a string describing the current RSS memory usage for this process."""
     process = psutil.Process(os.getpid())
     rss = process.memory_info().rss  # bytes
     rss_mib = rss / (1024**2)  # convert to MiB

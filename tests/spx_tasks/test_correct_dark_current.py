@@ -19,7 +19,7 @@ def get_sample_img() -> SPHERExImage:
 
 
 def generate_dark(spx_img: SPHERExImage) -> SPHERExImage:
-    """Creates dark current image to use for testing.
+    """Create dark current image to use for testing.
 
     Parameters
     ----------
@@ -35,6 +35,7 @@ def generate_dark(spx_img: SPHERExImage) -> SPHERExImage:
     -----
     Tests and validates the generated data for:
     - ``dc_img`` has uncertainty populated.
+
     """
     # Generate sample data
     size = spx_img.data.shape
@@ -54,6 +55,7 @@ def test_CorrectDarkCurrent():
     - `numpy.subtract` and `ccddata.subtract` have same result.
     - ``output`` does have uncertainty after subtraction.
     - ``output`` and ``spx_img`` have same uncertainty after subtraction.
+
     """
     # Setup and run the correct dark current task
     config = CorrectDarkCurrentConfig()

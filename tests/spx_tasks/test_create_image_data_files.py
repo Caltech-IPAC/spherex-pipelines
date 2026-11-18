@@ -25,46 +25,59 @@ def get_sample_img() -> SPHERExImage:
 
 
 def _make_diagonal_nonfunc(rp: ReadoutParameters, det_id: int) -> NonfuncData:
-    """
-    Build a NonfuncData whose masks have shape:
+    """Build a NonfuncData whose masks have shape:
         rows = Jactive + jref
         cols = Kactive + kref
     and COMBINED has a single 1-pixel diagonal across *all* rows
-    (including physical reference rows). Other types are zeros.
+    including physical reference rows. Other types are zeros.
+
     Convention: 1=bad, 0=good.
     """
     J = rp.Jactive + rp.jref
     W = rp.Kactive + rp.kref
 
-    # Nonfunc extensions
     combined = np.zeros((J, W), dtype=np.uint8)
-    darkcurr = np.zeros_like(combined)
-    highdrift = np.zeros_like(combined)
-    speccal = np.zeros_like(combined)
-    transient = np.zeros_like(combined)
-    overflow = np.zeros_like(combined)
 
-    # Single diagonal across *all* rows, so physical ref rows contain the diagonal
+    category_planes = {
+        "DARKCURR": np.zeros_like(combined),
+        "HIGHDRIFT": np.zeros_like(combined),
+        "SPECCAL": np.zeros_like(combined),
+        "TRANSIENT": np.zeros_like(combined),
+        "OVERFLOW": np.zeros_like(combined),
+        "OPTEFF": np.zeros_like(combined),
+        "OOS": np.zeros_like(combined),
+    }
+
+    # Single diagonal across all rows, so physical ref rows contain the diagonal.
     d = min(J, W)
     idx = np.arange(d)
-    combined[idx, idx] = 1
-    # Put the same diagonal into one category (so union == combined)
-    speccal[idx, idx] = 1
 
-    # Primary header with detector id + convention
+    combined[idx, idx] = 1
+
+    # Put the same diagonal into one category so union == COMBINED.
+    category_planes["SPECCAL"][idx, idx] = 1
+
     phdr = fits.Header()
     phdr["DETECTOR"] = det_id
     phdr["BPCONV"] = (1, "Bad-pixel convention: 1=bad, 0=good")
 
-    hdul = fits.HDUList([
+    hdus = [
         fits.PrimaryHDU(header=phdr),
-        fits.ImageHDU(data=combined, header=fits.Header({"EXTNAME": "COMBINED"})),
-        fits.ImageHDU(data=darkcurr, header=fits.Header({"EXTNAME": "DARKCURR"})),
-        fits.ImageHDU(data=highdrift, header=fits.Header({"EXTNAME": "HIGHDRIFT"})),
-        fits.ImageHDU(data=speccal, header=fits.Header({"EXTNAME": "SPECCAL"})),
-        fits.ImageHDU(data=transient, header=fits.Header({"EXTNAME": "TRANSIENT"})),
-        fits.ImageHDU(data=overflow, header=fits.Header({"EXTNAME": "OVERFLOW"})),
-    ])
+        fits.ImageHDU(
+            data=combined,
+            header=fits.Header({"EXTNAME": "COMBINED"}),
+        ),
+    ]
+
+    for extname, data in category_planes.items():
+        hdus.append(
+            fits.ImageHDU(
+                data=data,
+                header=fits.Header({"EXTNAME": extname}),
+            )
+        )
+
+    hdul = fits.HDUList(hdus)
     return NonfuncData(hdul, detector=det_id)
 
 
@@ -163,7 +176,7 @@ def test_CreateImageDataFiles():
     assert spximg_in.data.shape == spximg.data.shape
     # Image data in engineering units (e/s)
     assert output.spximg_out.unit == (u.electron / u.s), (
-        f'Wrong image unit: {output.spximg_out.unit = }')
+        f'Wrong image unit: {output.spximg_out.unit}')
     # WCS
     assert spximg.wcs is not None
     # Flag bitmap

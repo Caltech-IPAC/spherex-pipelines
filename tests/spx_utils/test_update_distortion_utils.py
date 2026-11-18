@@ -119,13 +119,13 @@ class TestWCSFunctions(unittest.TestCase):
 
 
 class TestCalculateSolidAngle(unittest.TestCase):
-    """Calculates the solid angle per pixel"""
+    """Calculate the solid angle per pixel."""
 
     def setUp(self):
         self.wcs = create_test_wcs()
 
     def test_solid_angle_calculation(self):
-        """Tests calculation of solid angles"""
+        """Test calculation of solid angles."""
         solid_angle = calculate_solid_angle(self.wcs, array_id=1, plot=False)
         self.assertIsInstance(solid_angle, np.ndarray)
 
@@ -184,7 +184,8 @@ class TestUpdateWCSWithSIP(unittest.TestCase):
 
     def test_update_wcs_with_sip(self):
         """Check that each matrix is properly constructed
-           and assigned to the WCS SIP attribute."""
+        and assigned to the WCS SIP attribute.
+        """
         updated_wcs = update_wcs_with_sip(self.poly_x, self.poly_y, self.poly_xp, self.poly_yp, self.wcs)
 
         # Check that the WCS SIP is not None

@@ -6,7 +6,6 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import io
-import os
 
 # Related third party imports
 import numpy as np
@@ -40,6 +39,7 @@ def add_measurement_count_col(tbl: Table):
     ----------
     tbl : `astropy.table.Table`
         Input table with array-valued columns (e.g., flux, lambda).
+
     """
     if "flux" not in tbl.colnames:
         raise ValueError("Expected 'flux' column in table to count measurements.")
@@ -63,7 +63,8 @@ def _ns_of(root):
 
 def patch_field_xml_bytes(xml_bytes, id_="obs_publisher_did"):
     """Patch the FIELD by auto-detecting width from its
-    TD column and return new XML bytes."""
+    TD column and return new XML bytes.
+    """
     tree = ET.ElementTree(ET.fromstring(xml_bytes))
     root = tree.getroot()
     ns = _ns_of(root)
@@ -86,20 +87,20 @@ def patch_field_xml_bytes(xml_bytes, id_="obs_publisher_did"):
     # find all TR rows under TABLEDATA
     xpath_tr = f".//{{{ns}}}TR" if ns else ".//TR"
     width = None
+    fallback_width = None
     for tr in root.findall(xpath_tr):
         tds = tr.findall(f"{{{ns}}}TD") if ns else tr.findall("TD")
         if col_index < len(tds):
-            text = (tds[col_index].text or "").strip()
-            # find only the first two ivo://
-            matches = []
-            for m in re.finditer(r"ivo://", text):
-                matches.append(m.start())
-                if len(matches) == 2:
-                    break
-            if len(matches) == 2:
-                # Get the width between two ivo://
+            text = (tds[col_index].text or "")
+            matches = [m.start() for m in re.finditer(r"ivo://", text)]
+            if len(matches) >= 2:
                 width = matches[1] - matches[0]
                 break
+            elif len(matches) == 1 and fallback_width is None:
+                # single entry: the whole (unstripped) cell is one stride
+                fallback_width = len(text)
+    if width is None:
+        width = fallback_width
 
     if width is None:
         raise ValueError(f"Could not determine width from <TD> values in column {col_index}.")
@@ -116,14 +117,18 @@ def patch_field_xml_bytes(xml_bytes, id_="obs_publisher_did"):
     tree.write(buf, encoding="utf-8", xml_declaration=True)
     return buf.getvalue()
 
-
-def write_and_patch_votable(votab, votab_path: Path, id_="obs_publisher_did"):
+def write_and_patch_votable(votab,
+                            votab_path: Path, ids: list[str] = ["obs_publisher_did", "data_collection"]):
+    """Write a VOTable to file, patching the specified field's arraysize."""
     # Step 1: Write VOTable to memory buffer
     buf = io.BytesIO()
     votable.writeto(votab, buf, tabledata_format="tabledata")
 
     # Step 2: Patch XML and get new bytes
-    patched_xml = patch_field_xml_bytes(buf.getvalue(), id_=id_)
+    # For array valued columns
+    patched_xml = buf.getvalue()
+    for id_ in ids:
+        patched_xml = patch_field_xml_bytes(patched_xml, id_=id_)
 
     # Step 3: Write patched XML to the actual file path
     with open(votab_path, "wb") as f:
@@ -138,9 +143,10 @@ def sort_by_wavelength(input_cat: Table):
     ----------
     input_cat : `astropy.table.Table`
         Table of combined all sky catalog measurements.
+
     """
-    array_cols = ["x_image", "y_image", "mjd", "lambda", "lambda_width", "flux", "flux_err", "flux_bkg",
-                  "local_bkg_flg", "flags", "fit_ql", "deep_flg", "lvf_id", "det_id"]
+    array_cols = ["x_image", "y_image", "mjd", "lambda", "lambda_width", "flux", "flux_err",  "flux_bkg",
+                  "flux_err_tractor", "flags", "fit_ql", "deep_flg", "lvf_id", "det_id"]
     for idx, row in enumerate(input_cat):
         # Make table for individual spectrum/source
         spec_tab = Table()
@@ -159,10 +165,11 @@ def add_field_metadata(votable, info_str):
 
     Parameters
     ----------
-    table : `astropy.io.votable.VOTableFile`
+    votable : `astropy.io.votable.VOTableFile`
         Multi-spectrum VOTable.
-    info_str: `str`
+    info_str : `str`
         String containing information regarding source coverage.
+
     """
     field_overrides = {
         "nyquist_comp": {
@@ -175,7 +182,6 @@ def add_field_metadata(votable, info_str):
         "y_image": {"ucd": "pos;instr.pixel"},
         "mjd": {"ucd": "time.epoch"},
         "flux_bkg": {"ucd": "instr.skyLevel;phot.flux.sb"},
-        "local_bkg_flg": {"ucd": "meta.code"},
         "fit_ql": {"ucd": "meta.code.qual"},
         "lvf_id": {"ucd": "meta.id;obs"},
         "det_id": {"ucd": "meta.id;instr.det"},
@@ -184,6 +190,10 @@ def add_field_metadata(votable, info_str):
             "ucd": "src.morph.param"
         },
         "obs_publisher_did": {"ucd": "meta.ref.ivoid"},
+        "data_collection": {
+            "ucd": "meta.version;obs",
+            "description": "Abbreviated form of the obs_collection containing the data for the measurement",
+        },
         "ab_ratio": {
             "description": "Major/minor axis ratio",
             "ucd": "src.morph.param;phys.size.axisRatio"
@@ -224,10 +234,14 @@ def add_field_metadata(votable, info_str):
             "utype": "spec:Spectrum.Data.SpectralAxis.Accuracy.BinSize",
         },
         "flux": {
-            "ucd": "phot.flux",
+            "ucd": "phot.flux;meta.main",
             "utype": "spec:Spectrum.Data.FluxAxis.Value",
         },
         "flux_err": {
+            "ucd": "stat.error;phot.flux;meta.main",
+            "utype": "spec:Spectrum.Data.FluxAxis.Accuracy.StatError",
+        },
+        "flux_err_tractor": {
             "ucd": "stat.error;phot.flux",
             "utype": "spec:Spectrum.Data.FluxAxis.Accuracy.StatError",
         },
@@ -280,8 +294,8 @@ def add_field_metadata(votable, info_str):
 
 
 def spec_arr_data_group(table: TableElement, ID: str, spec_ref: str, flux_ref: str, spec_acc_ref: str = None,
-                        flux_acc_ref: str = None) -> Group:
-    """Creates an XML GROUP element with unified content descriptor type
+                        flux_acc_ref: str = None, flux_tractor_acc_ref: str = None) -> Group:
+    """Create an XML GROUP element with unified content descriptor type
     '"ipac:Spectrum.ArrayData"'.
 
     Parameters
@@ -302,7 +316,11 @@ def spec_arr_data_group(table: TableElement, ID: str, spec_ref: str, flux_ref: s
         spectral measurement accuracy in the table.
     flux_acc_ref : `str` (default is None)
         ID to reference an `astropy.io.votable.tree.Field` element representing
-        flux measurement accuracy in the table.
+        flux measurement accuracy in the table, boosted to account for an
+        empirically-determined additional flux-dependent source of variance.
+    flux_tractor_acc_ref : `str` (default is None)
+        ID to reference an `astropy.io.votable.tree.Field` element representing
+        the original Tractor-computed flux error variance in the table.
 
     Returns
     -------
@@ -312,6 +330,9 @@ def spec_arr_data_group(table: TableElement, ID: str, spec_ref: str, flux_ref: s
     """
     arr_data_group = Group(table=table, ID=ID, utype="ipac:Spectrum.ArrayData")
 
+    # Append the spectral axis GROUP before the flux axis GROUP so
+    # the photometry GROUP presents the SpectralAxis GROUP first, then the
+    # FluxAxis GROUP.
     # Add child spectral axis GROUP element
     spec_group = Group(table=table, utype="spec:Spectrum.Data.SpectralAxis")
     spec_group.entries.append(FieldRef(table=table, ref=spec_ref))
@@ -332,12 +353,18 @@ def spec_arr_data_group(table: TableElement, ID: str, spec_ref: str, flux_ref: s
         flux_acc_group.entries.append(FieldRef(table=table, ref=flux_acc_ref))
         flux_group.entries.append(flux_acc_group)
 
+    if flux_acc_ref is not None:
+        flux_acc_group = Group(table=table, utype="spec:Spectrum.Data.FluxAxis.Accuracy")
+        flux_acc_group.entries.append(FieldRef(table=table, ref=flux_tractor_acc_ref))
+        flux_group.entries.append(flux_acc_group)
+
     arr_data_group.entries.append(flux_group)
 
     return arr_data_group
 
 
-def add_publisher_did_col(tbl: Table, collection_name: str):
+def add_publisher_did_col(tbl: Table):
+    """Add a publisher DID column to the table based on LVF IDs."""
     def publisher_did(v: np.int64) -> str:
         lvf_id_int = int(v)
         d = lvf_id_int % 10
@@ -347,13 +374,16 @@ def add_publisher_did_col(tbl: Table, collection_name: str):
 
     lvf_id_col = tbl["lvf_id"]
     deep_flag_col = tbl["deep_flg"]
-    prefix = f"ivo://irsa.ipac/{collection_name}"
+    data_collection_col = tbl["data_collection"]
 
     obs_publisher_col = []
     for i in range(len(lvf_id_col)):
         lvf_id_strs = publisher_did_vec(lvf_id_col[i])  # array of strings
 
         n_entries = len(lvf_id_strs)
+
+        # per-measurement prefix: ivo://irsa.ipac/{data_collection}
+        prefix = np.char.add("ivo://irsa.ipac/", np.asarray(data_collection_col[i]).astype(str))
 
         # pre-suffix array: "?" or "_deep?"
         pre_suffix = np.full(n_entries, "?", dtype="U10")
@@ -381,15 +411,34 @@ def add_publisher_did_col(tbl: Table, collection_name: str):
     )
 
 
+def add_data_collection_col(tbl: Table):
+    """Pack the data_collection list column into a fixed-width byte string
+    per source, mirroring the obs_publisher_did encoding.
+    """
+    packed_col = []
+    for row in tbl["data_collection"]:
+        packed = "".join(v + " " for v in row)  # "6.4+psffix11 6.4+psffix11 .."
+        packed_col.append(packed.encode("ascii"))
+
+    tbl.remove_column("data_collection")
+    tbl.add_column(
+        Column(
+            data=packed_col,
+            name="data_collection",
+            description="Abbreviated form of the obs_collection containing the data for the measurement",
+            unit=None,
+        ),
+        copy=False,
+    )
+
+
+
 def convert_to_votable(catalog_path: pathlib.Path, votab_path: pathlib.Path,
                        schema: Literal["tool", "allsky"],
                        add_publisher_did: bool = True,
-                       publisher_collection: str =
-                       "spherex_" + os.getenv("SPXPHOTO_INPUT_COLL",
-                                              "IRSA-qr2-visible").split("-")[1],
                        target_table=None):
-    """Converts the data in a combined all-sky catalog to VOTable format and
-    writes it to an XML file.
+    """Convert the data in a combined all-sky catalog to VOTable format and
+    write it to an XML file.
 
     Parameters
     ----------
@@ -404,10 +453,8 @@ def convert_to_votable(catalog_path: pathlib.Path, votab_path: pathlib.Path,
         'external_survey', 'external_source_id', and 'spherex_class'.
     add_publisher_did : `bool`
         If True, adds 'obs_publisher_did' field, corresponding to each lvf id.
-    publisher_collection : `str`
-        Collection name for allsky measurements in 'obs_publisher_did'.
-        Collection name for deep field measurements is constructed by adding
-        '_deep' to `publisher_collection`.
+    target_table : `astropy.table.Table`, optional
+        Target table with elliptical source parameters to join.
 
     """
     # === Read catalog and convert to VOTable format ===
@@ -419,7 +466,7 @@ def convert_to_votable(catalog_path: pathlib.Path, votab_path: pathlib.Path,
     sort_by_wavelength(allsky_cat_combined)
 
     add_measurement_count_col(allsky_cat_combined)
-
+    # print(allsky_cat_combined.meta["data_collection"])
     if target_table is not None:
         # Columns to bring from target_table
         cols_to_add = ["sersic", "ab_ratio", "phi", "shape_r"]
@@ -445,30 +492,55 @@ def convert_to_votable(catalog_path: pathlib.Path, votab_path: pathlib.Path,
     #     S<N> (byte string)  ->  char
     # Basic format/columns
 
-    include_cols = ["ra", "dec", "n_meas", "nyquist_comp", "ext_flg", "x_image", "y_image", "mjd", "lambda",
-                    "lambda_width", "flux", "flux_err", "flux_bkg",
-                    "local_bkg_flg", "flags", "fit_ql", "deep_flg",
-                    "lvf_id", "det_id", "sersic", "ab_ratio", "phi", "shape_r"]
+    # Non-array (scalar) columns come first, then the array-valued
+    # columns, controlling FIELD declaration order in the VOTable. The schema-
+    # specific scalar ID columns (e.g. source_id, name) are folded into the
+    # scalar ordering rather than appended separately. The array columns are
+    # ordered to match the photometry GROUP presentation order (SpectralAxis
+    # fields, then FluxAxis fields, then the remainder) so the FIELD
+    # declarations and the GROUP read in the same order.
+    array_cols = ["lambda", "lambda_width",
+                  "flux", "flux_err", "flux_err_tractor",
+                  "mjd", "data_collection", "deep_flg", "det_id", "flags",
+                  "fit_ql", "flux_bkg", "x_image", "y_image", "lvf_id"]
     # All-sky catalog
     if schema == "allsky":
-        tool_cols = ["source_id", "external_survey", "external_source_id",
-                     "spherex_class"]
-        include_cols = tool_cols + include_cols[:]
+        # Scalar columns first, in the requested order.
+        scalar_cols = ["source_id", "external_survey", "external_source_id",
+                       "spherex_class", "ra", "dec", "n_meas", "nyquist_comp",
+                       "ext_flg", "shape_r", "sersic", "ab_ratio", "phi"]
+        include_cols = scalar_cols + array_cols
 
         allsky_cat_combined_joined["external_source_id"] = \
             allsky_cat_combined_joined["external_source_id"].astype(
             "S")
     # Spectrophotometry tool
     elif schema == "tool":
-        allsky_cols = ["source_id", "name"]
-        include_cols = allsky_cols + include_cols[:]
+        # Scalar columns first, in the requested order
+        # (source_id, name(->label), ra, dec, n_meas, nyquist_comp, ext_flg,
+        # shape_r, sersic, ab_ratio, phi).
+        scalar_cols = ["source_id", "name", "ra", "dec", "n_meas",
+                       "nyquist_comp", "ext_flg", "shape_r", "sersic",
+                       "ab_ratio", "phi"]
+        include_cols = scalar_cols + array_cols
 
         allsky_cat_combined_joined["name"] = allsky_cat_combined_joined["name"].astype("S")
-
     allsky_cat_combined_joined = allsky_cat_combined_joined[include_cols]
 
     if add_publisher_did:
-        add_publisher_did_col(allsky_cat_combined_joined, publisher_collection)
+        add_publisher_did_col(allsky_cat_combined_joined)
+
+
+    add_data_collection_col(allsky_cat_combined_joined)
+
+    # Reorder the table after add_publisher_did_col/add_data_collection_col
+    # run so that all scalar columns (in their requested order) come first and
+    # the array-valued columns (including obs_publisher_did) follow.
+    array_order = [c for c in array_cols] + (["obs_publisher_did"] if add_publisher_did else [])
+    scalar_order = [c for c in allsky_cat_combined_joined.colnames
+                    if c not in array_order]
+    allsky_cat_combined_joined = allsky_cat_combined_joined[scalar_order + array_order]
+
     votab = votable.from_table(allsky_cat_combined_joined)
     # === Refine and populate XML elements ===
     # Add in VOTable-specific field metadata
@@ -492,33 +564,32 @@ def convert_to_votable(catalog_path: pathlib.Path, votab_path: pathlib.Path,
     # Add photometry GROUP element
     phot_group = spec_arr_data_group(table=multi_spec_tab, ID="photometry", spec_ref="lambda",
                                      flux_ref="flux", spec_acc_ref="lambda_width",
-                                     flux_acc_ref="flux_err")
+                                     flux_acc_ref="flux_err", flux_tractor_acc_ref="flux_err_tractor")
 
-    # Add FIELDref elements for photometry GROUP
-    array_fields = ["ra", "dec", "x_image", "y_image", "mjd", "flux_bkg", "local_bkg_flg",
-                    "flags", "fit_ql", "deep_flg",
-                    "det_id", "lvf_id"]
-    # if add_publisher_did:
-    #     array_fields.append("obs_publisher_did")
+    # Add the remaining FIELDref elements for the photometry GROUP in
+    # the requested presentation order (drives Firefly column order). These
+    # follow the SpectralAxis and FluxAxis sub-GROUPs.
+    array_fields = ["mjd", "data_collection", "deep_flg", "det_id", "flags",
+                    "fit_ql", "flux_bkg", "x_image", "y_image", "ra", "dec",
+                    "lvf_id"]
+    # obs_publisher_did goes last, only when present
+    if add_publisher_did:
+        array_fields = array_fields + ["obs_publisher_did"]
     for idx, col in enumerate(array_fields):
         phot_group.entries.append(FieldRef(table=multi_spec_tab, ref=col))
-    # Add obs_publisher_did last if needed
-    if add_publisher_did:
-        phot_group.entries.append(FieldRef(table=multi_spec_tab, ref="obs_publisher_did"))
-
     multi_spec_tab.groups.append(phot_group)
 
+    patch_ids = ["data_collection"]
     # Write file with obs_publisher_did
     if add_publisher_did:
-        write_and_patch_votable(votab, Path(str(votab_path)))
-    else:
-        votable.writeto(table=votab, file=str(votab_path), tabledata_format="tabledata")
+        patch_ids.append("obs_publisher_did")
+    write_and_patch_votable(votab, Path(str(votab_path)), patch_ids)
     logger.info(f"VOTable file created at {str(votab_path)}.")
 
 
 def add_extra_resource(votab_path: pathlib.Path, extra_resource: pathlib.Path,
                        fake_search_err: Optional[Literal["votab", "closing"]] = None):
-    """Inserts IRSA-provided XML content after the first 'VOTABLE' element
+    """Insert IRSA-provided XML content after the first 'VOTABLE' element
     in the photometry tool output VOTable file.
 
     Parameters
@@ -529,6 +600,7 @@ def add_extra_resource(votab_path: pathlib.Path, extra_resource: pathlib.Path,
         Path to IRSA-provided file containing service descriptor.
     fake_search_err : {'votab', 'closing'}, optional
         Fakes a search error to test exception handling.
+
     """
     with open(votab_path, "r", encoding="utf-8") as file:
         photometry_xml = file.read()
@@ -562,7 +634,7 @@ def make_votable(catalog_path: pathlib.Path, votab_path: pathlib.Path,
                  schema: Literal["tool", "allsky"] = "tool", extra_resource: pathlib.Path = None,
                  add_publisher_did: bool = True,
                  fake_search_err: Optional[Literal["votab", "closing"]] = None, target_table=None):
-    """Makes a VOTable converted from combined all sky catalog data.
+    """Make a VOTable converted from combined all sky catalog data.
 
     Parameters
     ----------
@@ -579,8 +651,13 @@ def make_votable(catalog_path: pathlib.Path, votab_path: pathlib.Path,
     extra_resource : `pathlib.Path`, optional
         Path to IRSA-provided file containing service descriptor. Default is
         None.
+    add_publisher_did : `bool`, optional
+        If True, adds 'obs_publisher_did' field. Default is True.
     fake_search_err : {'votab', 'closing'}, optional
         Fakes a search error to test exception handling. Default is None.
+    target_table : `astropy.table.Table`, optional
+        Target table with elliptical source parameters to join.
+
     """
     convert_to_votable(catalog_path, votab_path, schema,
                        add_publisher_did=add_publisher_did, target_table=target_table)
@@ -602,6 +679,7 @@ def make_votable(catalog_path: pathlib.Path, votab_path: pathlib.Path,
 @click.option("--fake_search_err", help="Fake a search error when incorporating the service descriptor "
               "(for testing exception handling only)", default=None, type=click.Choice(["votab", "closing"]))
 def votable_cli(catalog_path, votab_path, schema, extra_resource, fake_search_err):
+    """Run the VOTable conversion CLI command."""
     make_votable(catalog_path, votab_path, schema, extra_resource, fake_search_err)
 
 

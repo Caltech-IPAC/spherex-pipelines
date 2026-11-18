@@ -6,6 +6,8 @@ from lsst.daf.butler import CollectionType
 
 @dataclass(frozen=True)
 class Collection:
+    """Dataclass representing a Butler collection with its metadata."""
+
     name: str
     collection_type: CollectionType
     description: str
@@ -13,6 +15,7 @@ class Collection:
 
 class Collections():
     """Predefined collections used in SSDC pipelines."""
+
     refcat = Collection("refcats",
                         CollectionType.CHAINED,
                         "Reference Catalogs")

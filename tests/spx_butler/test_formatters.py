@@ -129,6 +129,13 @@ FORMATTERS = [
         "get_pyobject": sample_data.get_sample_read_noise_map
     },
     {
+        "formatter_class": SPHERExImageFormatter,
+        "dataset_type": "test_spx_persistence_img",
+        "storage_class": "PersistenceImage",
+        "storage_pytype": SPHERExImage,
+        "get_pyobject": sample_data.get_sample_persistence_img
+    },
+    {
         "formatter_class": PersistenceStateFormatter,
         "dataset_type": "test_persist_state",
         "storage_class": "PersistenceState",
@@ -542,7 +549,9 @@ class FormattersTests(unittest.TestCase):
         assert velocity == 'vel1', "Retrieved Velocity does not match."
 
     def test_pefdata_formatter(self):
-        """Test the JsonFormatter for PEF with a sample list of dictionaries."""
+        """Test the JsonFormatter for PEF with a sample list of
+        dictionaries.
+        """
         # Insert fake item
         self.butler.put(planned_obs, "test_pef_data", dataId=DATA_ID, run="test")
         # Get fake item
@@ -555,45 +564,37 @@ class FormattersTests(unittest.TestCase):
     @pytest.mark.filterwarnings("ignore::ResourceWarning")
     def test_nonfunc_formatter(self):
         """Round-trip NonfuncData via NonfuncDataFormatter and verify content."""
-        # Build sample object
         nonfunc_in = sample_data.get_fake_nonfunc_v2_map()
         self.assertIsInstance(nonfunc_in, NonfuncData)
 
-        # Persist
         self.butler.put(nonfunc_in, "test_nonfunc", dataId=DATA_ID, run="test")
 
-        # Retrieve
         nonfunc_out = self.butler.get("test_nonfunc", dataId=DATA_ID, collections="test")
         self.assertIsInstance(nonfunc_out, NonfuncData, "Retrieved type is not NonfuncData")
 
-        # Verify required EXTNAMEs exist (mirrors NonfuncData.required_extensions)
-        required_exts = {
-            "COMBINED", "DARKCURR", "HIGHDRIFT", "SPECCAL", "TRANSIENT", "OVERFLOW"
+        required_exts = set(NonfuncData.required_extensions)
+        out_extnames = {
+            h.header.get("EXTNAME")
+            for h in nonfunc_out.hdulist
+            if h.header.get("EXTNAME") is not None
         }
-        out_extnames = {h.header.get("EXTNAME") for h in nonfunc_out.hdulist if hasattr(h, "header")}
+
         missing = required_exts - out_extnames
         self.assertFalse(missing, f"Missing required EXTNAMEs: {missing}")
 
-        # Verify data equality per extension present in both
-        # (Primary HDU generally has no .data; skip those without data arrays)
-        for h_in in nonfunc_in.hdulist:
-            extname = h_in.header.get("EXTNAME")
-            if extname is None:
-                continue
-            # Find matching ext in out
-            matches = [h for h in nonfunc_out.hdulist if h.header.get("EXTNAME") == extname]
-            self.assertTrue(matches, f"Missing EXTNAME '{extname}' in output HDUList")
-            h_out = matches[0]
+        for extname in NonfuncData.required_extensions:
+            h_in = nonfunc_in.hdulist[extname]
+            h_out = nonfunc_out.hdulist[extname]
 
-            # Compare headers (exact string match is fine here—same writer/reader)
-            self.assertTrue(h_in.header == h_out.header, f"Header changed for EXTNAME '{extname}'")
+            self.assertTrue(
+                h_in.header == h_out.header,
+                f"Header changed for EXTNAME '{extname}'",
+            )
 
-            # Compare data (mask-only maps are integer/bool arrays; use array_equal)
-            if h_in.data is not None:
-                self.assertTrue(
-                    np.array_equal(h_in.data, h_out.data),
-                    f"Data changed for EXTNAME '{extname}'"
-                )
+            self.assertTrue(
+                np.array_equal(h_in.data, h_out.data),
+                f"Data changed for EXTNAME '{extname}'",
+            )
 
 
 if __name__ == '__main__':

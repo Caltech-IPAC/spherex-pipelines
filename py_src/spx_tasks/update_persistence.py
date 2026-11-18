@@ -7,7 +7,7 @@ import copy
 from astropy.time import Time, TimeDelta
 import astropy.units as u
 from dataclasses import dataclass
-from lsst.pex.config import Field, ListField, DictField
+from lsst.pex.config import ConfigurableField, Field, ListField, DictField
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 import numpy as np
@@ -17,6 +17,7 @@ from spx_data import (SPHERExImage, Flag, PersistenceState)
 from spx_tests import sample_data
 from spx_tasks import add_history
 from spx_utils import log_dqa_result, l1_utils
+from .remove_reference_pixels import RemoveReferencePixelsTask
 
 # ==============================================================================
 
@@ -39,13 +40,19 @@ class UpdatePersistenceConnections(pipeBase.PipelineTaskConnections,
     persistence_image = cT.Output(
         name="persistence_image",
         doc="Persistence image.",
-        storageClass="SPHERExImage",
+        storageClass="PersistenceImage",
         dimensions=("instrument", "exposure"),
     )
 
 
 class UpdatePersistenceConfig(pipeBase.PipelineTaskConfig,
                               pipelineConnections=UpdatePersistenceConnections):
+    """Configuration for UpdatePersistence task."""
+
+    remove_reference_pixels = ConfigurableField(
+        doc="Remove Reference Pixels",
+        target=RemoveReferencePixelsTask
+    )
 
     i_pthresh = Field(
         "Threshold above which persistence current affects slope. Detector dependent.",
@@ -187,6 +194,7 @@ def dqa_check_persistence_flux(spximg: SPHERExImage, max_fraction=0.2) -> dict:
     -------
     result_dict : `dict`
         Dictionary suitable for Level2DQA with 'result' and 'description'.
+
     """
     total_pixels = spximg.data.size
     persist_mask = (spximg.flags & Flag.PERSIST) > 0
@@ -241,6 +249,7 @@ class PersistenceModelState:
         Previous exposure end time in MJD.
     prev2_end_time: `float`
         Exposure before previous exposure end time in MJD.
+
     """
 
     a_n: np.ndarray[float]
@@ -253,6 +262,8 @@ class PersistenceModelState:
 
 
 class PersistenceModel:
+    """Model for calculating persistence current decay coefficients."""
+
     def __init__(self,
                  c_n: np.ndarray,
                  tau_n: np.ndarray,
@@ -260,14 +271,14 @@ class PersistenceModel:
                  i_reset: np.double,
                  model_state: PersistenceModelState,
                  config: UpdatePersistenceConfig):
-        """Persistence model to calculate coefficients.
+        """Persist model to calculate coefficients.
 
         Parameters
         ----------
-        c_n : ~numpy.ndarray
+        c_n : `~numpy.ndarray`
             Unitless coefficient of decay time;
             array length is number of terms in model.
-        tau_n : ~numpy.ndarray
+        tau_n : `~numpy.ndarray`
             Time constant in seconds; array length is number of terms in model.
         i_thresh : `np.double`
             Current above which persistence affects dominate.
@@ -275,8 +286,10 @@ class PersistenceModel:
             Current below which persistence is considered negligible.
         model_state : `PersistenceModelState`
             Initial state of persistence model.
-        """
+        config : `UpdatePersistenceConfig`
+            Configuration parameters for persistence update.
 
+        """
         self.c_n = c_n
         self.tau_n = tau_n
         self.i_thresh = i_thresh
@@ -288,7 +301,7 @@ class PersistenceModel:
                                     spximg: SPHERExImage,
                                     t_slew_2_1: float,
                                     t_int: float) -> tuple[np.ndarray, np.ndarray | None]:
-        """Computes the estimated persistence current in an image,
+        """Compute the estimated persistence current in an image,
            and updates the persistence model state.
 
         Parameters
@@ -309,6 +322,7 @@ class PersistenceModel:
         Notes
         -----
         Assumes exposures are called to this function "in-order".
+
         """
         # No previous exposure.
         if self._state.num_prev == 0:
@@ -353,7 +367,7 @@ class PersistenceModel:
             return persist_current, persist_flg
 
     def get_model_state(self) -> PersistenceModelState:
-        """Returns the persistence model state."""
+        """Return the persistence model state."""
         return self._state
 
     def _overwrite_b_n(self, b_prev1, b_prev1_et_bloom, array_id) -> np.ndarray:
@@ -364,6 +378,7 @@ class PersistenceModel:
         -------
         overwritten_flux : ~numpy.ndarray
             Overwritten flux based on prior flags.
+
         """
         # overwrite flux
         b_prev1_overwrite: np.ndarray = copy.copy(b_prev1)
@@ -431,6 +446,7 @@ class PersistenceModel:
         -------
         b_prev1 : np.ndarray
             Array of Bn values (same shape as `flux`).
+
         """
         values = flux if use_flux else flux * t_int
         values = np.asarray(values, dtype=np.float64)
@@ -475,7 +491,7 @@ class PersistenceModel:
                              spximg: SPHERExImage,
                              t_slew_2_1: float,
                              t_int: float) -> np.ndarray:
-        """Computes the coefficient A_n for the current exposure.
+        """Compute the coefficient A_n for the current exposure.
 
         Parameters
         ----------
@@ -490,8 +506,8 @@ class PersistenceModel:
         -------
         a_n : `~numpy.ndarray`
             The persistence model coefficients for the current exposure, per pixel.
+
         """
-        print(f"compute coefficient using t_int = {t_int}")
         # Get previous flux.
         flux_prev1: np.ndarray = copy.copy(self._state.spximg_prev[0])
 
@@ -531,7 +547,7 @@ class PersistenceModel:
                                               mjd_end_e: Time,
                                               mjd_end_c: Time,
                                               t_int: float) -> np.ndarray:
-        """Computes the estimated persistence current for an exposure.
+        """Compute the estimated persistence current for an exposure.
 
         Parameters
         ----------
@@ -552,6 +568,7 @@ class PersistenceModel:
         -------
         persist_current : ~numpy.ndarray
             Estimted persistence current.
+
         """
         # Calculate the ideal decay time
         t_k = (mjd_end_e - mjd_end_c).sec - (t_int / 2)
@@ -569,7 +586,7 @@ class PersistenceModel:
         return persist_current
 
     def update_prev1_end_time(self, spximg: SPHERExImage) -> None:
-        """Updates the previous state exposure end time; needed for slew time."""
+        """Update the previous state exposure end time; needed for slew time."""
         self._state.prev1_end_time = spximg.getExposureEndTime().mjd
 
 
@@ -594,6 +611,7 @@ class UpdatePersistenceTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "update-persistence"
@@ -604,13 +622,14 @@ class UpdatePersistenceTask(pipeBase.PipelineTask):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.makeSubtask("remove_reference_pixels")
 
     @add_history()
     def run(self,
             spximg: SPHERExImage,
             persistence_state: PersistenceState | None = None
             ) -> pipeBase.Struct:
-        """
+        """Compute updated persistence state and persistence signal.
 
         Parameters
         ----------
@@ -622,6 +641,7 @@ class UpdatePersistenceTask(pipeBase.PipelineTask):
         Returns
         -------
         output : `~lsst.pipe.base.Struct`
+
         """
         # If persistence state not provided, init to empty (no connections).
         # Will be handled in custom quantum graph.
@@ -706,11 +726,13 @@ class UpdatePersistenceTask(pipeBase.PipelineTask):
         # output = Output(spximg_out, persist_current, persist_flgs, persistence_state)
 
         # Persistence Image w/ persistence current as data.
-        persistence_image = SPHERExImage(data=persist_current.astype(np.float32),
-                                         flags=spximg_out.flags,
-                                         meta=spximg_out.meta,
-                                         unit="electron / s")
-        # NOTE TODO Cutout active area at end.
+        persistence_image = SPHERExImage(
+            data=persist_current.astype(np.float32),
+            flags=spximg_out.flags.copy(),
+            meta=copy.deepcopy(spximg_out.meta),
+            unit="electron / s",
+        )
+
         # spectral wcs will most likely not be correct after cutout.
         # implement slicing for spectral wcs (separate task).
         persistence_image.flag_defs = spximg_out.flag_defs
@@ -724,9 +746,13 @@ class UpdatePersistenceTask(pipeBase.PipelineTask):
         _ = dqa_check_persistence_flux(spximg_out, self.config.i_pthresh)
         # Add statistic to header
         npix_flagged_persist = np.sum((spximg_out.flags & Flag.PERSIST) > 0)
-        print(f'npix_flagged_persist = {npix_flagged_persist}')
         spximg_out.header["HIERARCH L2 N_PERSIST"] = (npix_flagged_persist,
                                                       "number of pixels flagged persist")
+
+        # Remove Reference Pixels from Persistence Image
+        task: RemoveReferencePixelsTask = getattr(self, "remove_reference_pixels")
+        result = task.run(persistence_image)
+        persistence_image = result.spximg_out
 
         return pipeBase.Struct(spximg_out=spximg_out,
                                persistence_state_out=persistence_state_out,

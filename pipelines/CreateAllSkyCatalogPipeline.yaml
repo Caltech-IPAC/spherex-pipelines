@@ -5,4 +5,5 @@ tasks:
     config:
       connections.meas_table_list: "phot_meas"
       connections.refcat: "refcat"
+      connections.l3_flux_corrections: "l3_flux_corrections"
       connections.allsky_cat: "allsky_cat"

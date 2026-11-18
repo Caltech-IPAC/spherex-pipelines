@@ -65,10 +65,11 @@ class TestSourceBloomAndCosmicRayHaloFlagging(unittest.TestCase):
         self.config.bsh.setDefaults()
 
     def test_halo_multiplication(self):
-        """
-        This test creates a scenario where a snowball center (Pixel B)
-        is located inside the halo of another snowball (Pixel A) that
-        is detected in an earlier loop.
+        """Test scenario where a snowball center is inside another's halo.
+
+        Create a scenario where a snowball center (Pixel B) is located inside
+        the halo of another snowball (Pixel A) that is detected in an earlier
+        loop.
         """
         # Instantiate and run the task
         task = SourceBloomAndCosmicRayHaloFlaggingTask(config=self.config)

@@ -17,7 +17,6 @@ sband_raw = """2017/01/01 00:08:15.826,adstate,0,wait
 2017/01/01 00:08:17.828,ra_ts_v8_t,0,0"""
 
 
-# Helper function to parse the raw data
 def sband_data_to_table(data):
     lines = data.strip().split("\n")
     timestamps, mnemonics, values1, values2 = [], [], [], []
@@ -38,25 +37,37 @@ def sband_data_to_table(data):
 class TestAggregateGDS(unittest.TestCase):
 
     def setUp(self):
-        # Parse the raw GDS data into a table
         self.data_table = sband_data_to_table(sband_raw)
 
-        # Define numerical and flag keywords
         self.numerical_keywords = ["admsunvx", "adst1sang", "adcsttms", "adraterrx"]
         self.flag_keywords = ["adstate", "adgydq"]
 
-        # Define sband_mnemonics for flags
+        # Include numerical mnemonics too, since compute_aggregates looks up
+        # Description/Type from sband_mnemonics
         self.sband_mnemonics = Table(
             [
-                ["adstate", "adgydq"],
-                ["attitude state", "gyro data"],
-                ["0/Wait 1/Detumble 2/AcqSun 3/Point", "0/Good 1/Bad"],
-                ["D3", "D2"]  # Add the Type column
+                ["adstate", "adgydq", "admsunvx", "adst1sang", "adcsttms", "adraterrx"],
+                [
+                    "attitude state",
+                    "gyro data",
+                    "sun vector x",
+                    "star sensor angle",
+                    "coarse sun sensor time",
+                    "attitude error x",
+                ],
+                [
+                    "0/Wait 1/Detumble 2/AcqSun 3/Point",
+                    "0/Good 1/Bad",
+                    "",
+                    "",
+                    "",
+                    "",
+                ],
+                ["D3", "D2", "F8", "F8", "F8", "F8"],
             ],
             names=["Mnemonic", "Description", "Value/State", "Type"]
         )
 
-        # Initialize AggregateGDS
         self.aggregate_gds = AggregateGDS(
             data_table=self.data_table,
             numerical_keywords=self.numerical_keywords,
@@ -64,49 +75,61 @@ class TestAggregateGDS(unittest.TestCase):
         )
 
     def test_compute_aggregates(self):
-        # Test numerical aggregates
         aggregated_table = self.aggregate_gds.compute_aggregates(self.sband_mnemonics)
 
-        # Check table structure
         self.assertEqual(
             aggregated_table.colnames,
-            ["Keyword", "Description", "First", "Last", "Min", "Max", "Mean", "Median", "Type"]
+            [
+                "Keyword", "Description", "First", "Last",
+                "Min", "Max", "Mean", "Median", "Std",
+                "Variability", "Type"
+            ]
         )
 
-        # Verify the values for one numerical keyword
         keyword_row = aggregated_table[aggregated_table["Keyword"] == "adst1sang"]
-        self.assertEqual(keyword_row["First"][0], 0.0)
-        self.assertEqual(keyword_row["Last"][0], 0.0)
+        self.assertEqual(len(keyword_row), 1)
+
+        # First/Last are strings in the current implementation
+        self.assertEqual(keyword_row["First"][0], "0.0")
+        self.assertEqual(keyword_row["Last"][0], "0.0")
+
         self.assertEqual(keyword_row["Min"][0], 0.0)
         self.assertEqual(keyword_row["Max"][0], 0.0)
         self.assertEqual(keyword_row["Mean"][0], 0.0)
         self.assertEqual(keyword_row["Median"][0], 0.0)
+        self.assertEqual(keyword_row["Std"][0], 0.0)
+        self.assertEqual(keyword_row["Variability"][0], "CONSTANT")
+        self.assertEqual(keyword_row["Description"][0], "star sensor angle")
+        self.assertEqual(keyword_row["Type"][0], "F8")
 
     def test_compute_flag_aggregates(self):
-        # Test flag aggregates
         aggregated_flags = self.aggregate_gds.compute_flag_aggregates(self.sband_mnemonics)
 
-        # Check table structure
         self.assertEqual(
             aggregated_flags.colnames,
-            ["Keyword", "Description", "First", "Last", "Mid", "FlagOptions", "Type", "Bitmap"]
+            [
+                "Keyword", "Description", "First", "Last", "Mid",
+                "FlagOptions", "Type", "Bitmap", "Variability"
+            ]
         )
 
-        # Verify flag options for "adstate"
         adstate_row = aggregated_flags[aggregated_flags["Keyword"] == "adstate"]
+        self.assertEqual(len(adstate_row), 1)
         self.assertEqual(adstate_row["First"][0], "wait")
         self.assertEqual(adstate_row["Last"][0], "wait")
         self.assertEqual(adstate_row["Mid"][0], "wait")
         self.assertIn("0/wait", adstate_row["FlagOptions"][0])
         self.assertIn("3/point", adstate_row["FlagOptions"][0])
+        self.assertEqual(adstate_row["Variability"][0], "CONSTANT")
 
-        # Verify flag options for "adgydq"
         adgydq_row = aggregated_flags[aggregated_flags["Keyword"] == "adgydq"]
+        self.assertEqual(len(adgydq_row), 1)
         self.assertEqual(adgydq_row["First"][0], "bad")
         self.assertEqual(adgydq_row["Last"][0], "bad")
         self.assertEqual(adgydq_row["Mid"][0], "bad")
         self.assertIn("0/good", adgydq_row["FlagOptions"][0])
         self.assertIn("1/bad", adgydq_row["FlagOptions"][0])
+        self.assertEqual(adgydq_row["Variability"][0], "CONSTANT")
 
 
 if __name__ == "__main__":

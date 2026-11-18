@@ -21,6 +21,7 @@ def active_row_col(rp: ReadoutParameters) -> tuple[int, int]:
     -------
     row_idx, col_idx : `tuple[int, int]`
         Middle row and column of photosensitive/h2rg pixels.
+
     """
     # Origin at bottom LHS.
     row_actv = rp.jref // 2 * (rp.nref + 1)
@@ -49,6 +50,7 @@ def active_area_range(spximg: SPHERExImage, include_refs: bool = False) -> tuple
     -------
     `tuple[slice, slice]`
         Range of rows and columns of active (active + nrefs reads) pixels.
+
     """
     rp = ReadoutParameters.from_metadata(spximg.meta)
 
@@ -90,9 +92,12 @@ def with_extra_refs(rp: ReadoutParameters, calib_data: np.ndarray) -> np.ndarray
     with active and reference pixels (2048x2048); these data are applied
     to the *l1 image*. This function provides handling of extra reference
     row reads by propagating the needed rows in the expected order.
-    """
 
-    extra_refs = np.zeros(((rp.nref-1)*rp.jref, rp.Kactive + rp.kref), dtype=np.int32)
+    """
+    extra_refs = np.empty(
+        ((rp.nref - 1) * rp.jref, rp.Kactive + rp.kref),
+        dtype=calib_data.dtype,
+    )
     irx = 0
     for n in range(rp.nref - 1):
         for row in range(rp.jref):

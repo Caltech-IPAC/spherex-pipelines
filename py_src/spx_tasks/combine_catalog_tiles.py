@@ -33,6 +33,8 @@ class CombineCatalogTilesConnections(pipeBase.PipelineTaskConnections,
 
 class CombineCatalogTilesConfig(pipeBase.PipelineTaskConfig,
                                 pipelineConnections=CombineCatalogTilesConnections):
+    """Configuration for CombineCatalogTiles task."""
+
     pass
 
 
@@ -55,6 +57,7 @@ class CombineCatalogTilesTask(pipeBase.PipelineTask):
     -----
     - Use config to customize algorithm parameters.
     - Pass module inputs as arguments of the ``run`` method.
+
     """
 
     _DefaultName = "combine-catalog-tiles"
@@ -67,7 +70,7 @@ class CombineCatalogTilesTask(pipeBase.PipelineTask):
         super().__init__(**kwargs)
 
     def run(self, allsky_cat_list: list[DeferredDatasetHandle]) -> pipeBase.Struct:
-        """Returns a condensed table of all source measurements for a set of
+        """Return a condensed table of all source measurements for a set of
         HEALPix tiles.
 
         Parameters
@@ -84,6 +87,7 @@ class CombineCatalogTilesTask(pipeBase.PipelineTask):
                 Contains a condensed `pyarrow.Table` with sources from distinct
                 HEALPix tiles. Each row represents a single source, with array
                 columns for multiple measurements.
+
         """
         num_cats = len(allsky_cat_list)
         self.log.debug(f"Number of input all-sky catalogs: {num_cats}")

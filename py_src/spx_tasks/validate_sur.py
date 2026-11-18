@@ -40,6 +40,8 @@ class ValidateSURConnections(pipeBase.PipelineTaskConnections,
 
 class ValidateSURConfig(pipeBase.PipelineTaskConfig,
                         pipelineConnections=ValidateSURConnections):
+    """Configuration for ValidateSUR task."""
+
     pass
 
 
@@ -110,18 +112,18 @@ def get_full_sample_cols(col_sect: int, rp: ReadoutParameters) -> tuple[slice, s
 
 def l0_fullsample_area(spximg: SPHERExImage, row_start: int, col_sect: int,
                        rp: ReadoutParameters) -> np.ndarray:
-    """Gets full sample area flags.
+    """Get full sample area flags.
 
     Parameters
     ----------
-    data : ~numpy.ndarray
-        L0 image data.
+    spximg : `~spx_data.SPHERExImage`
+        L0 SPHEREx image.
     row_start : `int`
         Row starting number for raw data window.
     col_sect : `int`
         Column section for raw data window.
     rp : `~spx_data.ReadoutParameters`
-        Readout paramter values.
+        Readout parameter values.
 
     Returns
     -------
@@ -132,6 +134,7 @@ def l0_fullsample_area(spximg: SPHERExImage, row_start: int, col_sect: int,
     -----
     - Starting row number for fully sampled area: 5 - 2037.
     - Column section number for fully sampled area: 0 - 63.
+
     """
     phans, refs, actvs = get_full_sample_cols(col_sect=col_sect, rp=rp)
 
@@ -188,6 +191,7 @@ def clip_outliers(data: np.ndarray, num_clipping_passes: int, sigma: float) -> n
     -------
     clipped_data : ~numpy.ndarray
         The clipped data with outliers masked.
+
     """
     # Perform sigma clipping
     clipped_data = sigma_clip(data,
@@ -221,8 +225,8 @@ def diagnostic_image(sur_frames: np.ndarray,
     -------
     diagnostic_img : ~numpy.ndarray
         Diagnostic image L0'.
-    """
 
+    """
     # Calculate N-1 photocurrent measurements distribution.
     # Measure photocurrents only when SUR sum accumulation begins.
     readouts_diff = np.diff(sur_frames[surdly:], axis=0)
@@ -264,6 +268,7 @@ def handle_blank_planes(data: np.ndarray, blank_value: int) -> np.ndarray:
     -------
     np.ndarray
         The data cube with missing planes replaced.
+
     """
     # Identify planes where all values are equal to the BLANK value
     blank_plane = np.all(data == blank_value, axis=(1, 2))
@@ -295,6 +300,7 @@ class ValidateSURTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "validate-sur"
@@ -316,11 +322,14 @@ class ValidateSURTask(pipeBase.PipelineTask):
 
         Parameters
         ----------
-        spximg
+        spximg : `~spx_data.SPHERExImage`
             Input SPHEREx image with full set of SUR readouts.
-        num_clipping_passes
-        sigma_clipping
-        framet
+        num_clipping_passes : `int`, optional
+            Number of sigma clipping passes. Default is 1.
+        sigma_clipping : `int`, optional
+            Sigma threshold for clipping. Default is 3.
+        framet : `float`, optional
+            Frame time in seconds. Default is 1.5349.
 
         Returns
         -------
@@ -328,6 +337,7 @@ class ValidateSURTask(pipeBase.PipelineTask):
             An `~lsst.pipe.base.Struct` object as a `~spx_data.SPHERExImage` where
             the data layer is the sur-diagnostic image, L0'. The diagnostic layer is the
             diagnostic ratio, and the variance set as sigma squared.
+
         """
         sur = spximg.sur
 

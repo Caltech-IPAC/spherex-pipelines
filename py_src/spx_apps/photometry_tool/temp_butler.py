@@ -12,6 +12,7 @@ from lsst.resources import ResourcePath
 from spx_butler import ra_dec_to_unit_vector
 from spx_butler.defaults import DatasetTypes as dsTypes
 from spx_butler.instrument import SPHERExInstrument, SimulatorInstrument
+from spx_data import SPSFlag
 from spx_utils.tempfile_utils import get_temp_path
 from .exceptions import EmptyLVFQueryResultError
 
@@ -21,8 +22,8 @@ DIMENSION_YAML = "dimensions.yaml"  # YAML file for dimension configuration
 
 
 def get_skypix_ids(butler: Butler, target_table: Table) -> str:
-    """
-    Convert RA/DEC positions to sky pixel IDs and return them as data query constraint.
+    """Convert RA/DEC to sky pixel IDs and return them as data query constraint.
+
     For SPHEREx, this corresponds to HEALPix nested pixel indices at level 6.
 
     Parameters
@@ -37,6 +38,7 @@ def get_skypix_ids(butler: Butler, target_table: Table) -> str:
     `str`
         Query constraint on sky pixel (hips6) ids that correspond to the
         sources in the target table.
+
     """
     commonSkyPix = butler.registry.dimensions.commonSkyPix
     pixelization = commonSkyPix.pixelization
@@ -60,7 +62,8 @@ def lvf_lookup(
         instrument="spx",
         level2_dataset_type="level2",
         collections="*",
-        verbose=False
+        verbose=False,
+        use_deep=False
 ) -> tuple[Table, list[list[DatasetRef]]]:
     """Get per-source coverage table and dataset references.
 
@@ -87,10 +90,17 @@ def lvf_lookup(
     -------
     result : tuple[~astropy.table.Table, list[list[~lsst.daf.butler.DatasetRef]]]
         Coverage table and lists of DatasetRef objects, one list per target.
+
     """
     # construct where clause
     base_where = f"instrument='{instrument}'"
     bind = None
+
+    # Exclude deep field observations
+    if not use_deep:
+        # Select all-sky observations only
+        flgval = SPSFlag.ALL_SKY
+        base_where += f" AND observation.sps_flag % {2*flgval} >= {flgval}"
 
     # add time constraints
     if time_interval is not None:
@@ -161,8 +171,10 @@ def get_unique_dataset_refs(dataset_refs: list[list[DatasetRef]]) -> list[Datase
 
 def get_unique_calibration_refs(butler: Butler,
                                 collections: str,
-                                use_simulator_bandpass: bool) -> list[DatasetRef]:
-    """Get unique dataset references for solid angle pixel map calibration products.
+                                calibration_types: list[str],
+                                detectors: Optional[list[int]] = None,
+                                instrument: Optional[str] = "spx") -> list[DatasetRef]:
+    """Get unique dataset references for calibration products.
 
     Parameters
     ----------
@@ -170,27 +182,39 @@ def get_unique_calibration_refs(butler: Butler,
         Instance of Butler, which contains all available LVF products and calibrations.
     collections :
         Calibration collection expr.
-    use_simulator_bandpass :
-        If True, spectral_wcs calibration is not used.
+    calibration_types :
+        List of calibration types to search.
+    detectors :
+        Detector IDs, default is ``None``.
+    instrument :
+        Instrument name. Default is "spx".
 
     Returns
     -------
     result :
         De-duplicated list of the calibration product dataset references.
+
     """
     calibration_refs: list[DatasetRef] = []
-    calibration_types = [dsTypes.solid_angle_pixel_map]
-    if not use_simulator_bandpass:
-        calibration_types.append(dsTypes.spectral_wcs)
+
+    where = ""
+    if detectors is not None:
+        where += f"instrument='{instrument}'"
+        detectors_str = ", ".join(str(d) for d in detectors)
+        where += f" AND detector in ({detectors_str})"
 
     # for each calibration dataset type, pull *all* matching refs in one go
     for dtype in calibration_types:
-        refs = butler.query_datasets(
-            dataset_type=dtype,
-            collections=collections.split(","),
-            find_first=False  # do not stop at first collection that wins
-        )
-        calibration_refs.extend(refs)  # refs are already resolved
+        try:
+            refs = butler.query_datasets(
+                dataset_type=dtype,
+                collections=collections.split(","),
+                find_first=True,  # stop at first collection that wins
+                where=where
+            )
+            calibration_refs.extend(refs)  # refs are already resolved
+        except Exception:
+            logging.warning(f"Error while querying {dtype}, skipping")
 
     return get_unique_dataset_refs([calibration_refs])
 
@@ -215,6 +239,7 @@ def export_datasets(butler: Butler,
     transfer :
         Transfer method. Acceptable values are "symlink" and "direct", which
         do not create physical copies of the files. Default is "symlink".
+
     """
     export_directory_exists_and_empty = os.path.isdir(export_directory) and not os.listdir(export_directory)
     if not export_directory_exists_and_empty:
@@ -247,6 +272,7 @@ def create_temp_butler_registry(butler_root: str,
     -------
     result :
         Butler instance for this job temporary Butler.
+
     """
     butler_yaml = os.path.join(butler_root, BUTLER_YAML)
     if not os.path.exists(butler_yaml):
@@ -283,6 +309,7 @@ def get_unique_srccat_dataids(unique_lvf_dataset_refs: list[DatasetRef]) -> list
     -------
     result :
         A list of unique data ids corresponding the in input source catalogs
+
     """
     srccat_dataids = []
     keys_to_extract = ["instrument", "dichroicpair", "spsplan", "slewgroup"]
@@ -299,6 +326,7 @@ def ingest_srccat(temp_butler: Butler,
                   srccat_dataids: list[dict],
                   srccat_run="tgt"
                   ) -> Table:
+    """Ingest source catalogs into the temporary butler."""
     temp_butler.collections.register(
         srccat_run,
         CollectionType.RUN,
@@ -330,7 +358,7 @@ def collect_inputs_for_temp_butler(
         tmp_dir: str,
         time_interval: Optional[tuple[Time, Time]] = None,
         detectors: Optional[list[int]] = None,
-        use_simulator_bandpass: bool = False
+        use_deep: bool= False
 ) -> None:
     """Find and export all necessary inputs from a source Butler to run
     spectrophotometry.
@@ -351,15 +379,14 @@ def collect_inputs_for_temp_butler(
         Time interval, with ``None`` used for open end; default is ``None``.
     detectors :
         Detector IDs to filter on, default is ``None``.
-    use_simulator_bandpass :
-        If True, Perform Forced Photometry will use simulator wavelength model to
-        calculate wavelength and bandwidth for each measurement. Otherwise, it will use
-        spectral_wcs calibration file.
+    use_deep : bool
+        Flag on whether to include or exclude deep field images.
 
     Raises
     ------
     lsst.daf.butler.MissingDatasetTypeError
         Raised if the requested dataset type has not been registered.
+
     """
     instrument = os.getenv("SPXPHOTO_INSTRUMENT", "spx")
     if instrument not in ["spx", "simu"]:
@@ -380,7 +407,8 @@ def collect_inputs_for_temp_butler(
                                               detectors=detectors,
                                               instrument=instrument,
                                               level2_dataset_type=lvf_dataset_type_name,
-                                              collections=input_coll
+                                              collections=input_coll,
+                                              use_deep=use_deep
                                               )
     # Input sources with no LVF coverage
     src_tbl_no_matches = coverage_table[coverage_table["n_img"] < 1]
@@ -398,10 +426,12 @@ def collect_inputs_for_temp_butler(
 
     # Unique calibration product references
     calibration_collections = os.getenv("SPXPHOTO_CALIBRATION_COLL", "IRSA-qr2-tools")
-
+    calibration_types = [dsTypes.solid_angle_pixel_map]
+    calibration_types.append(dsTypes.spectral_wcs)
     unique_calibration_refs = get_unique_calibration_refs(butler,
                                                           calibration_collections,
-                                                          use_simulator_bandpass)
+                                                          calibration_types,
+                                                          detectors=detectors)
 
     # Create temporary butler directory, which will also act as export directory
     timestamp = datetime.datetime.now().strftime("%y%m%dT%H%M%S")
@@ -448,6 +478,7 @@ def populate_temp_butler_from_export(
     srccat_dataids : list[dict]
         A list of data IDs for the source catalogs to be ingested.
         Defaults to None to be compatible with mosaic tool.
+
     """
     instrument = os.getenv("SPXPHOTO_INSTRUMENT", "spx")
 

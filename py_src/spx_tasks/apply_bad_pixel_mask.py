@@ -30,6 +30,7 @@ def dqa_check_hot_cold_pixel_fraction(spximg: SPHERExImage, threshold: float = 1
     -------
     result_dict : `dict`
         Dictionary with DQA result and string description.
+
     """
     # Define what constitutes a "bad" pixel
     bad_mask = (spximg.flags & (Flag.NONFUNC | Flag.HOT | Flag.COLD)) > 0
@@ -69,6 +70,8 @@ class ApplyBadPixelMaskConnections(pipeBase.PipelineTaskConnections,
 
 class ApplyBadPixelMaskConfig(pipeBase.PipelineTaskConfig,
                               pipelineConnections=ApplyBadPixelMaskConnections):
+    """Configuration for ApplyBadPixelMask task."""
+
     neg_threshold = Field(
         "Negative cutoff threshold. Unphysical.",
         dtype=float,
@@ -104,6 +107,7 @@ class ApplyBadPixelMaskTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "apply-bad-pixel-mask"

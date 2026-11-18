@@ -6,7 +6,7 @@ __all__ = ["CreateVarianceMapConfig", "CreateVarianceMapTask", "calculate_poisso
 import numpy as np
 from astropy.units import Unit
 from astropy.nddata import VarianceUncertainty
-from lsst.pex.config import Field
+from lsst.pex.config import DictField, Field
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 import matplotlib.pyplot as plt
@@ -52,12 +52,26 @@ class CreateVarianceMapConnections(pipeBase.PipelineTaskConnections,
 
 class CreateVarianceMapConfig(pipeBase.PipelineTaskConfig,
                               pipelineConnections=CreateVarianceMapConnections):
+    """Configuration for CreateVarianceMap task."""
 
     n_lab = Field(
         doc="Lab measured n-reads",
         dtype=float,
         default=71.0)
 
+    frac_uncertainty_boost = DictField(
+        doc=("Additional fractional flux uncertainty to add in quadrature "
+             "to the variance map, detector specific."
+             "e.g. 0.03 gives variance += (0.03 * image)^2."),
+        keytype=int,
+        itemtype=float,
+        default={1: 0.03, 2: 0.03, 3: 0.03, 4: 0.03, 5: 0.03, 6: 0.03})
+
+    apply_variance_boost = Field(
+        doc="If True, apply additional fractional variance boost for bright sources.",
+        dtype=bool,
+        default=False,
+    )
 
 def calculate_poisson_term(n: int | np.ndarray) -> float | np.ndarray:
     """Calculate the Poisson term for a given value of n.
@@ -71,6 +85,7 @@ def calculate_poisson_term(n: int | np.ndarray) -> float | np.ndarray:
     -------
     result : `float` or `~numpy.ndarray`
         The Poisson term calculated for the given value(s) of ``n``.
+
     """
     if type(n) is int:
         if n <= 1:
@@ -102,6 +117,7 @@ class CreateVarianceMapTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "create-variance-map"
@@ -124,12 +140,14 @@ class CreateVarianceMapTask(pipeBase.PipelineTask):
 
         Parameters
         ----------
-        spximg
+        spximg : `~spx_data.SPHERExImage`
             Input SPHEREx image.
-        gain_factors
+        gain_factors : `~spx_data.GainFactors`
             Per detector gain factors.
-        read_noise
+        read_noise : `~spx_data.ReadNoiseParameters`
             Electronic noise map; in shape of active + ref pix.
+        plot : `bool`, optional
+            If True, generate diagnostic plots. Default is False.
 
         Returns
         -------
@@ -186,13 +204,30 @@ class CreateVarianceMapTask(pipeBase.PipelineTask):
         # The poisson term (shot noise) variance
         # is calculated from the total signal in electrons.
         # Signal in electrons = signal_rate (e/s) * integration_time (s)
+
         elec_var_scaled = read_noise_n * (t_intg**2) * (N_LAB / n_nominal)
-        variance = elec_var_scaled + poisson_term * spximg.data[actv_ref_area] * t_intg
+
+        # Start with electronic/read-noise variance everywhere,
+        # including reference pixels.
+        variance = elec_var_scaled.copy()
+
+        # Add Poisson/shot-noise term only for non-reference pixels.
+        # Reference pixels are not photosensitive,
+        # so they should not get a photon-noise term.
+        ref_mask = (spximg.flags[actv_ref_area] & Flag.REFERENCE) > 0
+        nonref_mask = ~ref_mask
+
+        variance[nonref_mask] += (
+            poisson_term * spximg.data[actv_ref_area][nonref_mask] * t_intg
+        )
+
         variance /= t_intg**2
 
         # Variance correction.
         # Separate handling for overflow and transient.
-        ovrflw_pix = np.where(spximg.flags[actv_ref_area] & Flag.OVERFLOW > 0)
+        ovrflw_pix = np.where(
+            ((spximg.flags[actv_ref_area] & Flag.OVERFLOW) > 0) & nonref_mask
+        )
 
         # CASE 2: Overflow. Poisson term dominates.
         # Get overflow thresholds in ADU for active pixels.
@@ -245,7 +280,7 @@ class CreateVarianceMapTask(pipeBase.PipelineTask):
         variance[valid_ovrflw_pix] /= t_ovrflw**2
 
         # CASE 2: Transients.
-        trnsnt_mask = (spximg.flags[actv_ref_area] & Flag.TRANSIENT) > 0
+        trnsnt_mask = ((spximg.flags[actv_ref_area] & Flag.TRANSIENT) > 0) & nonref_mask
         if np.any(trnsnt_mask):
             # Case 2a: Early transient (SUR_ERROR > 0)
             early_mask = trnsnt_mask & ((spximg.flags[actv_ref_area] & Flag.SUR_ERROR) > 0)
@@ -278,7 +313,24 @@ class CreateVarianceMapTask(pipeBase.PipelineTask):
 
         # Update bad pixel mask. SUR_ERROR is now handled under transients.
         variance[np.where((spximg.flags[actv_ref_area] & Flag.MISSING_DATA) > 0)] = np.nan
-        # Set phantom pixel range in variance to nan.
+
+        # Optional variance boost for bright-source flux uncertainty.
+        frac = self.config.frac_uncertainty_boost[det_id]
+        if frac < 0:
+            raise ValueError(
+                f"frac_uncertainty_boost must be non-negative, got {frac}"
+            )
+
+        # Add variance boost to account for
+        # excess scatter observed in bright-source fluxes.
+        # Assumes an additional fractional uncertainty on flux:
+        #   sigma_extra = f * image
+        # which contributes in quadrature to the variance:
+        #   variance += (f * image)^2
+        if self.config.apply_variance_boost:
+            if frac > 0:
+                image_actv_ref = spximg.data[actv_ref_area]
+                variance += (frac * image_actv_ref) ** 2
 
         # Set phantom pixel range in variance to nan.
         phans = np.empty((rp.Jactive + rp.jref * rp.nref, rp.Mphan * rp.nchannel))
@@ -295,10 +347,12 @@ class CreateVarianceMapTask(pipeBase.PipelineTask):
 
         return pipeBase.Struct(spximg_out=spximg)
 
+
     def analyze_reference_pixels(self, spximg: SPHERExImage, variance_l1, plot: bool,
-                                 tolerance: float = 0.60):
+                                tolerance: float = 0.5,
+                                median_atol: float = 1e-1):
         """Analyze the distribution of reference pixels
-           and verify statistical properties.
+        and verify statistical properties.
 
         Parameters
         ----------
@@ -310,10 +364,32 @@ class CreateVarianceMapTask(pipeBase.PipelineTask):
             Flag to display reference distribution.
         tolerance : `float`
             Tolerance to compare sqrt variance to reference std.
-            Default is 60%.
+            Default is 50%.
+        median_atol : `float`
+            Absolute tolerance for checking that reference-pixel median is near zero.
+            Default is 0.1.
+
         """
         # Extract reference pixels
-        ref_pixels = spximg.data[(spximg.flags == Flag.REFERENCE)]
+        ref_mask = (spximg.flags & Flag.REFERENCE) > 0
+
+        # Exclude bad/problematic reference pixels
+        bad_mask = (
+            ((spximg.flags & Flag.MISSING_DATA) > 0)
+            | ((spximg.flags & Flag.SUR_ERROR) > 0)
+            | ((spximg.flags & Flag.TRANSIENT) > 0)
+            | ((spximg.flags & Flag.OVERFLOW) > 0)
+        )
+
+        good_ref_mask = ref_mask & ~bad_mask
+
+        ref_pixels = spximg.data[good_ref_mask]
+        ref_variance = variance_l1[good_ref_mask]
+
+        if ref_pixels.size == 0:
+            self.log.warning("No good reference pixels available for reference-pixel analysis.")
+            return
+
         if plot is True:
             plot_reference_pixel_distribution(ref_pixels)
 
@@ -325,28 +401,39 @@ class CreateVarianceMapTask(pipeBase.PipelineTask):
         self.log.info(f"Reference pixels median: {ref_median:.4f}")
         self.log.info(f"Reference pixel std dev: {ref_std:.4f}")
 
-        # Check that mean of reference pixels is close to zero
-        # reference pixels do not produce photoelectric effect
-        if not np.isclose(ref_median, 0.0, atol=1e-1):
-            self.log.warning(f"Reference pixels median {ref_median:.4f} is not close to zero!")
+        # Check that median of reference pixels is close to zero.
+        # Reference pixels do not produce photoelectric signal.
+        if not np.isclose(ref_median, 0.0, atol=median_atol):
+            self.log.warning(
+                f"Reference pixels median {ref_median:.4f} is not close to zero "
+                f"(atol={median_atol:.4f})."
+            )
 
-        valid_mask = (
-            (spximg.flags & Flag.REFERENCE > 0)
-            | (spximg.flags & Flag.PHANTOM > 0)
-            | (spximg.flags & Flag.OVERFLOW > 0)
-            | (spximg.flags & Flag.TRANSIENT > 0)
-            | (spximg.flags & Flag.MISSING_DATA > 0)
-            | (spximg.flags & Flag.SUR_ERROR > 0)
-        )
-        expected_std = np.sqrt(np.nanmean(variance_l1[~valid_mask]))
+        mean_ref_variance = np.nanmean(ref_variance)
 
-        self.log.info(f"variance on active good pixels = {np.nanmean(variance_l1[~valid_mask])}")
-        self.log.info(f"sqrt(variance on active good pixels) = {expected_std}")
+        if not np.isfinite(mean_ref_variance) or mean_ref_variance <= 0:
+            self.log.warning(
+                f"Cannot compare reference-pixel std dev to variance: "
+                f"mean reference-pixel variance is {mean_ref_variance}."
+            )
+            return
 
-        # Compare std deviation with the expected sqrt variance
-        if not np.isclose(ref_std, expected_std, rtol=tolerance):
-            self.log.warning(f"Reference pixel std dev {ref_std:.4f} "
-                             f"does not match expected sqrt variance {expected_std:.4f}.")
+        expected_ref_std = np.sqrt(mean_ref_variance)
+
+        ratio = ref_std / expected_ref_std
+        frac_diff = np.abs(ref_std - expected_ref_std) / expected_ref_std
+
+        self.log.info(f"mean reference-pixel variance: {mean_ref_variance:.4f}")
+        self.log.info(f"sqrt(mean reference-pixel variance): {expected_ref_std:.4f}")
+        self.log.info(f"Reference std / expected std: {ratio:.3f}")
+        self.log.info(f"Reference fractional std difference: {frac_diff:.3f}")
+
+        if not np.isclose(ref_std, expected_ref_std, rtol=tolerance):
+            self.log.warning(
+                f"Reference pixel std dev {ref_std:.4f} does not match "
+                f"expected sqrt reference-pixel variance {expected_ref_std:.4f} "
+                f"(ratio={ratio:.3f}, frac_diff={frac_diff:.3f}, tolerance={tolerance:.2f})."
+            )
 
         self.log.info("Reference pixel analysis completed.")
 
@@ -358,6 +445,7 @@ def plot_reference_pixel_distribution(ref_pixels):
     ----------
     ref_pixels : `numpy.ndarray`
         Array of reference pixel values.
+
     """
     # Just for plotting
     # Remove NaN values

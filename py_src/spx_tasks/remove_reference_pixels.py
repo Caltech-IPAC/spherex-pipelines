@@ -35,6 +35,18 @@ class RemoveReferencePixelsConnections(pipeBase.PipelineTaskConnections,
 
 class RemoveReferencePixelsConfig(pipeBase.PipelineTaskConfig,
                                   pipelineConnections=RemoveReferencePixelsConnections):
+    """Configuration for RemoveReferencePixels task."""
+
+    exclude_l1_flag_headers = Field(
+        doc="Remove L1 flag headers from the output image.",
+        dtype=bool,
+        default=True,
+    )
+    exclude_uncertainty_flip = Field(
+        doc="Exclude flipping uncertainty layer in SPHERExImage.",
+        dtype=bool,
+        default=False,
+    )
     num_ref_pixels = Field(
         doc="Number of pixels along the edges to be removed.",
         dtype=int,
@@ -64,6 +76,20 @@ def remove_l1_flag_headers(header):
             pass
 
 
+def remove_phantom_reference_flag_defs(spximg):
+    """Remove PHANTOM and REFERENCE from flag_defs since those pixels are removed.
+
+    Parameters
+    ----------
+    spximg : `~spx_data.SPHERExImage`
+        Image with flag_defs to modify.
+
+    """
+    if spximg.flag_defs:
+        for flag_name in ["PHANTOM", "REFERENCE"]:
+            spximg.flag_defs.pop(flag_name, None)
+
+
 class RemoveReferencePixelsTask(pipeBase.PipelineTask):
     """Removes reference and phantom pixels from L1 image.
 
@@ -85,6 +111,7 @@ class RemoveReferencePixelsTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "remove-reference-pixels"
@@ -97,7 +124,7 @@ class RemoveReferencePixelsTask(pipeBase.PipelineTask):
         super().__init__(**kwargs)
 
     def run(self, spximg: SPHERExImage) -> pipeBase.Struct:
-        """Removes reference and phantom pixels from L1 image.
+        """Remove reference and phantom pixels from L1 image.
 
         Parameters
         ----------
@@ -113,6 +140,7 @@ class RemoveReferencePixelsTask(pipeBase.PipelineTask):
         Note
         ----
         Refer to instrument delivery in alfresco for details.
+
         """
         actv_area = l1_utils.active_area_range(spximg)
 
@@ -122,14 +150,23 @@ class RemoveReferencePixelsTask(pipeBase.PipelineTask):
         # Set or update 0-based active pixel coordinates
         set_active_pix_wcs(spximg_out.header)
 
-        # Remove L1 flag header entries
-        remove_l1_flag_headers(spximg_out.header)
+        # Remove L1 flag count header entries
+        if self.config.exclude_l1_flag_headers:
+            remove_l1_flag_headers(spximg_out.header)
+
+        # For backward compatibility
+        # Prior to R7, L1 flag count headers were also set in FLAGS header
+        remove_l1_flag_headers(spximg_out.flag_header)
+
+        # Remove PHANTOM and REFERENCE from flag_defs (no longer relevant)
+        remove_phantom_reference_flag_defs(spximg_out)
 
         if spximg_out.getArrayId() in [4, 5, 6]:
             spximg = copy.deepcopy(spximg_out)
             # Flip Data
             spximg_out.data = spximg.data[:, ::-1]
-            spximg_out.uncertainty = spximg.uncertainty[:, ::-1]
+            if not self.config.exclude_uncertainty_flip:
+                spximg_out.uncertainty = spximg.uncertainty[:, ::-1]
             spximg_out.flags = spximg.flags[:, ::-1]
 
         # add detector coordinate system

@@ -8,9 +8,7 @@ from matplotlib.path import Path
 
 
 def parse_polygon_to_array(poly_str):
-    """
-    Parses 'POLYGON ra1 dec1 ...' into a numpy array of shape (N, 2).
-    """
+    """Parse 'POLYGON ra1 dec1 ...' into a numpy array of shape (N, 2)."""
     content = poly_str.replace("POLYGON ", "")
     vals = [float(x) for x in content.split()]
     # Reshape into [[ra1, dec1], [ra2, dec2], ...]
@@ -18,7 +16,7 @@ def parse_polygon_to_array(poly_str):
 
 
 def parse_polygon(poly_str):
-    """Helper to parse 'POLYGON ra1 dec1 ...' into a SkyCoord object."""
+    """Parse 'POLYGON ra1 dec1 ...' into a SkyCoord object."""
     content = poly_str.replace("POLYGON ", "")
     vals = [float(x) for x in content.split()]
     ra = vals[::2]
@@ -35,8 +33,7 @@ def parse_polygon(poly_str):
 )
 @pytest.mark.parametrize("rotation_deg", [0, 90])
 def test_polygon_geometry(center_ra, center_dec, location_name, rotation_deg):
-    """
-    Validates polygon generation for:
+    """Validates polygon generation for:
     1. Center containment.
     2. Diagonal symmetry (checking the shape is roughly rectangular).
     3. Orientation based on rotation angle.
@@ -152,8 +149,7 @@ def test_buffer_expansion():
     ],
 )
 def test_contains_center(center_ra, center_dec):
-    """
-    Verifies that the generated polygon strictly contains the input center point.
+    """Verifies that the generated polygon strictly contains the input center point.
     Uses a local WCS projection to handle spherical geometry/wrapping correctly.
     """
     width = 0.5

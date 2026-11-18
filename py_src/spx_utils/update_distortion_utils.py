@@ -26,9 +26,10 @@ def sip_coefficients(wcs_init: WCS, poly_order: int):
         Polynomial order.
 
     Returns
-    --------
+    -------
     a_coeffs, b_coeffs, ap_coeffs, bp_coeffs : `tuple`
         Initial coefficients for SIP fitting procedure.
+
     """
     # Initialize arrays to hold coefficients, all set to zero
     a_coeffs = np.zeros((poly_order + 1, poly_order + 1))
@@ -94,14 +95,14 @@ def calculate_sip_coefficients(cat_xs_nosip: list,
 
     Parameters
     ----------
-    cat_xs_no_sip : `list`
+    cat_xs_nosip : `list`
         Catalog sources with no SIP, x-position.
-    cat_ys_no_sip : `list`
+    cat_ys_nosip : `list`
         Catalog sources with no SIP, y-position.
     det_xs : `list`
         Distorted detected sources, x-position.
     det_ys : `list`
-        Distorted deteced sources, y-position.
+        Distorted detected sources, y-position.
     wcs_init : `WCS`
         Initial WCS.
 
@@ -109,6 +110,7 @@ def calculate_sip_coefficients(cat_xs_nosip: list,
     -------
     poly_x, poly_y, poly_xp, poly_yp : `tuple`
         Fitted polynomial solution.
+
     """
     # p_init_x, p_init_y, p_init_xp, p_init_yp =
     # initialize_polynomial_from_sip(wcs_init, poly_order=3)
@@ -149,7 +151,7 @@ def update_wcs_with_sip(poly_x: models.Polynomial2D,
                         poly_xp: models.Polynomial2D,
                         poly_yp: models.Polynomial2D,
                         wcs: WCS):
-    """Updates a given WCS by setting its SIP (Simple Imaging Polynomial)
+    """Update a given WCS by setting its SIP (Simple Imaging Polynomial)
         coefficients based on provided polynomial models for both the
         forward and inverse transformations.
 
@@ -167,21 +169,22 @@ def update_wcs_with_sip(poly_x: models.Polynomial2D,
         The World Coordinate System object that will be updated with the new
         SIP coefficients.
 
-    Returns:
-    --------
+    Returns
+    -------
     `WCS`
         The updated WCS object with new SIP coefficients configured. The SIP
         attributes of the WCS object are modified to include the calculated
         coefficients from the module.
 
-    Notes:
-    ------
+    Notes
+    -----
     - The SIP coefficients are determined for orders up to 3 (configurable by
       the `a_order`, `b_order`, `ap_order`, `bp_order` variables).
     - The coefficients are directly extracted from the attributes of the Polynomial2D
       models and are set for the respective indices in the SIP coefficient matrices.
     - The function handles the creation and configuration of both forward (a, b)
       and inverse (ap, bp) distortion matrices.
+
     """
     import pprint
     pprint.pprint(wcs.to_header(relax=True))

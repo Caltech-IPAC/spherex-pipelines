@@ -34,8 +34,7 @@ from spx_utils import SourcePipelineClass
 
 
 def _measure_fwhm(data, oversample=10):
-    """
-    Measures the FWHM of a PSF image using a radial profile.
+    """Measures the FWHM of a PSF image using a radial profile.
     This is a more robust method than 2D Gaussian fitting.
     """
     try:
@@ -72,7 +71,7 @@ def _measure_fwhm(data, oversample=10):
 
 
 def _psf_grid(factor_up, stacksize):
-    """Creates the pixel grid kernel for deconvolution.
+    """Create the pixel grid kernel for deconvolution.
 
     """
     sourceSize = factor_up * 2 - 1
@@ -93,9 +92,8 @@ def _psf_grid(factor_up, stacksize):
 
 
 def _create_upsampled_cutout(img, x_pos, y_pos, upsample, cutout_size):
-    """Creates a cutout, upsamples it, and centers the star at the sub-pixel level.
+    """Create a cutout, upsamples it, and centers the star at the sub-pixel level.
     """
-
     # Create cutout at the nearest integer pixel.
     x_cut = round(x_pos)
     y_cut = round(y_pos)
@@ -126,8 +124,8 @@ def _create_upsampled_cutout(img, x_pos, y_pos, upsample, cutout_size):
     # Find the star's new position in the upsampled grid.
     center_cutout_up_y = (cutout_up.shape[0] - 1) / 2.0
     center_cutout_up_x = (cutout_up.shape[1] - 1) / 2.0
-    y_true_cutout_up = y_true_cutout * upsample + 0.5 * upsample
-    x_true_cutout_up = x_true_cutout * upsample + 0.5 * upsample
+    y_true_cutout_up = y_true_cutout * upsample + 0.5 * upsample - 0.5
+    x_true_cutout_up = x_true_cutout * upsample + 0.5 * upsample - 0.5
 
     # Calculate the final shift and apply it.
     dy_shift = center_cutout_up_y - y_true_cutout_up
@@ -149,6 +147,7 @@ class EstimatePSFConnections(pipeBase.PipelineTaskConnections,
                              dimensions={"instrument", "detector"},
                              defaultTemplates={}):
     """Connections definition for EstimatePSFTask."""
+
     imageHandles = cT.Input(
         name="intype",
         doc="Input calibrated exposures.",
@@ -198,6 +197,7 @@ class EstimatePSFConnections(pipeBase.PipelineTaskConnections,
 class EstimatePSFConfig(pipeBase.PipelineTaskConfig,
                         pipelineConnections=EstimatePSFConnections):
     """Configuration parameters for EstimatePSFTask."""
+
     bins_x = Field(doc="Number of PSF zones along the x-axis.",
                    dtype=int,
                    default=11)
@@ -246,8 +246,7 @@ class EstimatePSFConfig(pipeBase.PipelineTaskConfig,
 
 
 def _process_psf_bin(ibin, config, imageHandles, catalogHandles, spherex_image_shape, num_rld_iterations):
-    """
-    Worker function to process all stars within a single PSF bin.
+    """Worker function to process all stars within a single PSF bin.
     """
     ny, nx = spherex_image_shape
     bin_width_x, bin_width_y = nx / config.bins_x, ny / config.bins_y
@@ -321,6 +320,7 @@ def _process_psf_bin(ibin, config, imageHandles, catalogHandles, spherex_image_s
 
 class EstimatePSFTask(pipeBase.PipelineTask):
     """Task to estimate a binned, exposure-averaged PSF."""
+
     _DefaultName = "estimatePSF"
     ConfigClass = EstimatePSFConfig
     ConnectionsClass = EstimatePSFConnections
@@ -407,13 +407,13 @@ class EstimatePSFTask(pipeBase.PipelineTask):
         for ibin, stack, decon, fwhm_stack, fwhm_decon in results:
             if stack is not None and decon is not None:
                 # Crop the stacked PSF from 111x111 to 101x101
-                stack_center = (stack.shape[0] // 2, stack.shape[1] // 2)
+                stack_center = (stack.shape[1] // 2, stack.shape[0] // 2)
                 psf_stacks_all[ibin] = Cutout2D(stack,
                                                 position=stack_center,
                                                 size=final_psf_size,
                                                 mode='partial').data
                 # Crop the deconvolved PSF from 111x111 to 101x101
-                decon_center = (decon.shape[0] // 2, decon.shape[1] // 2)
+                decon_center = (decon.shape[1] // 2, decon.shape[0] // 2)
                 psf_decon_all[ibin] = Cutout2D(decon,
                                                position=decon_center,
                                                size=final_psf_size,

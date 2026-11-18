@@ -18,7 +18,9 @@ class Level1DQA(BaseModel):
     threshold_tests : `list`[`dict`]
         List of threshold test records. Each test record dictionary includes
         results (pass/fail) and a description.
+
     """
+
     metadata_summary: dict
     image_statistics: dict
     threshold_tests: list[dict]
@@ -27,21 +29,25 @@ class Level1DQA(BaseModel):
     @classmethod
     def check_image_statistics(cls, v: dict, field: str):
         """Validate the image statistics dictionary values.
+
         Parameters
         ----------
         v : `dict`
             Image statistics dictionary.
         field : `str`
             Name of class field.
+
         Returns
         -------
         v : `dict`
             The same value if it is valid.
+
         Raises
         ------
         ValueError
             Raised if image statistics dictionary is missing a required
             statistic.
+
         """
         required_stats = ["MEAN", "MEDIAN", "RMS"]
         for stat in required_stats:
@@ -57,7 +63,9 @@ class Level2DQA(BaseModel):
     ----------
     update_field_distortion : `dict`
         Test result and description for L2.18.
+
     """
+
     nonlinear_flag_flux_check: dict
     dqa_variance: dict
     persistence_flag_flux_check: dict
@@ -100,6 +108,7 @@ class Level2DQA(BaseModel):
         ValueError
             Raised if test record result is not Pass or Fail. Raised if test
             record description is not a string.
+
         """
         if v["result"] not in ["PASS", "FAIL"]:
             raise ValueError(f"{field} result {v['result']} is not Pass or Fail.")

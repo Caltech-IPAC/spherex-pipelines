@@ -1,6 +1,6 @@
 __all__ = ["ImageMetadata", "ImageMetadataStats", "set_metadata_provenance"]
 import importlib.metadata
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional, Literal
 
 import numpy as np
@@ -18,16 +18,16 @@ _meta3_history = ["[SSDC] Image Metadata 3 block content"] + _history
 
 
 class Provenance(BaseModel):
-    """
-
-    Attributes
+    """Attributes
     ----------
     date_created : `str`
         UTC date/time file was created.
     observation : `int`
         SSDC Observation ID.
     detector: `int`
+
     """
+
     date_created: str
     observation: int
     detector: int
@@ -104,6 +104,7 @@ class ImageMetadata(BaseModel):
         Provenance information.
     history : `list[str]`, optional
         History information.
+
     """
 
     start_time_days: int
@@ -146,6 +147,7 @@ class ImageMetadata(BaseModel):
                      "rob_temp_end", "fpa_temp_end", "ceb_temp_end", "aux_temp_end",
                      "avg_phanpix_slopes", "ken", "ksn", "kovr",
                      mode="before")
+    @classmethod
     def convert_to_array(cls, v):
         if isinstance(v, (list, np.ndarray)):
             return np.array(v)
@@ -169,6 +171,7 @@ class ImageMetadata(BaseModel):
         -------
         bin_width : `int`
             Compression bin width.
+
         """
         match pix_type:
             case 0:
@@ -218,6 +221,7 @@ class ImageMetadataStats(BaseModel):
     -----
     For flag statistics pixel_flag = {sur_error, overflow, transient}.
     8 items are counts[pixel_flag], for pixel_flag = 0, 1, ..., 7.
+
     """
 
     start_time_days: int
@@ -239,6 +243,7 @@ class ImageMetadataStats(BaseModel):
     @field_validator("regpix_flagstats", "refpix_flagstats", "phanpix_flagstats",
                      "nbits_stats", "blocklen_stats",
                      mode="before")
+    @classmethod
     def convert_to_array(cls, v):
         if isinstance(v, (list, np.ndarray)):
             return np.array(v)
@@ -254,11 +259,12 @@ def set_metadata_provenance(meta2: ImageMetadata | None,
                             meta3: ImageMetadataStats | None,
                             observation: int,
                             detector: int):
+    """Set provenance information on image metadata objects."""
     if meta2 is None and meta3 is None:
         return
 
     provenance = Provenance(
-        date_created=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+        date_created=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
         observation=observation,
         detector=detector
     )

@@ -14,6 +14,7 @@ import multiprocessing
 import click
 import numpy as np
 import astropy.units as u
+from pathlib import Path
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
 from lsst.daf.butler import Butler, MissingDatasetTypeError
@@ -26,14 +27,11 @@ from ..exceptions import EmptyLVFQueryResultError, PipetaskError, VOTableSearchE
 from ..votable import make_votable
 from spx_apps import photometry_tool
 
-from spx_tasks import PerformForcedPhotometryConfig
-
-
 from spx_apps.common_cli import runid_option, jobid_option, result_dir_option, \
     err_dir_option, tmp_dir_option, log_dir_option, make_runid_default, \
     setup_exit_handlers, extract_log_config_and_ids_from_argv, force_override_runid, \
     extract_err_dir_from_argv, log_start_time, safe_exit, generate_error_summary, \
-    parse_detectors, parse_time, fake_option
+    parse_detectors, parse_time, fake_option, use_deep_option, validate_writable
 
 # Global variables for timing
 _start_time = None
@@ -48,7 +46,7 @@ multiprocessing.set_start_method("spawn", force=True)
               help='Show the version and exit.')
 @click.pass_context
 def cli(ctx, version):
-    """Photometry tool"""
+    """Photometry tool."""
     if version:
 
         click.echo(f"Photometry Tool Version: {photometry_tool.__version__}")
@@ -56,8 +54,8 @@ def cli(ctx, version):
 
 
 def parse_point(ctx, param, value):
-    """
-    Parse multiple --point options into a list of dictionaries, preserving order.
+    """Parse multiple --point options into a list of dictionaries, preserving order.
+
     Parameters
     ----------
     ctx : click.Context
@@ -71,10 +69,12 @@ def parse_point(ctx, param, value):
     -------
     List[`dict`]
         List of dictionaries with point attributes and argument order.
+
     Raises
     ------
     click.BadParameter
         If the input format is invalid.
+
     """
     points = []
     for idx, v in enumerate(value):
@@ -98,8 +98,7 @@ def parse_point(ctx, param, value):
 
 
 def parse_elliptical(ctx, param, value):
-    """
-     Parse multiple --elliptical options into a list of dictionaries, preserving order.
+    """Parse --elliptical options into a list of dictionaries, preserving order.
 
     Parameters
     ----------
@@ -119,6 +118,7 @@ def parse_elliptical(ctx, param, value):
     ------
     click.BadParameter
         If the input format is invalid or contains duplicate names.
+
     """
     ellipses = []
     for idx, v in enumerate(value):
@@ -144,27 +144,8 @@ def parse_elliptical(ctx, param, value):
     return ellipses
 
 
-def validate_bkg_region(value: int) -> None:
-    """
-    Parameters
-    ----------
-    value :
-        Background region value
-
-    Raises
-    ------
-    click.BadParameter
-        If the input value is inconsistent with other photometry parameters.
-    """
-    try:
-        _ = PerformForcedPhotometryConfig(bkg_side_length=value)
-    except ValueError as ve:
-        raise click.BadParameter(f"{value}. {ve}", param_hint="--bkg-region")
-
-
 def generate_input_table(point, elliptical) -> Table:
-    """
-    Save input parameters to a consolidated input table, which
+    """Save input parameters to a consolidated input table, which
     can be used by the Forced Photometry module.
 
     Parameters
@@ -177,6 +158,7 @@ def generate_input_table(point, elliptical) -> Table:
     Returns
     -------
     result : astropy.table.Table
+
     """
     all_sources = (point or []) + (elliptical or [])
     if not all_sources:
@@ -242,6 +224,7 @@ def generate_input_table(point, elliptical) -> Table:
 @tmp_dir_option()
 @log_dir_option()
 @fake_option()
+@use_deep_option()
 @click.option("--point", multiple=True, callback=parse_point,
               help="Point-like target in format ra,dec[,name].\n"
               "[One of  --point OR --elliptical is required.]")
@@ -251,8 +234,6 @@ def generate_input_table(point, elliptical) -> Table:
 @click.option("--time", help="Time range as min,max (MJD). [optional]", default=None)
 @click.option("--detector", multiple=True, type=str,
               help="Detector label: D1, D2, D3, D4, D5, or D6\n[optional]")
-@click.option("--bkg-region", default=15, type=int,
-              help="Background region in pixels (default: 15)\n[optional]")
 @click.option("--fit-positions/--no-fit-positions", default=False,
               help="Allow positions to float in Tractor fit. (Not implemented.)\n"
               "[optional flag]")
@@ -266,15 +247,6 @@ def generate_input_table(point, elliptical) -> Table:
     )
 )
 @click.option(
-    '--use-simulator-bandpass/--no-use-simulator-bandpass',
-    default=False,
-    show_default=True,
-    help=(
-        "If True, simulator bandpass model is used to populate measurement wavelength"
-        " and bandwidth. Otherwise, spectral_wcs calibration product is used."
-    )
-)
-@click.option(
     '--add-image-ids/--no-add-image-ids',
     default=False,
     show_default=True,
@@ -282,9 +254,10 @@ def generate_input_table(point, elliptical) -> Table:
         "If True, image ids are included in the resulting VOTable. Defaults to False. "
     )
 )
-def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, bkg_region, fit_positions,
-                       err_dir: str, verbose: bool, log_dir: str, fake: str, use_simulator_bandpass: bool,
-                       runid: str, jobid: str, add_image_ids: bool):
+def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, fit_positions,
+                       err_dir: str, verbose: bool, log_dir: str, fake: str, runid: str, jobid: str,
+                       add_image_ids: bool, use_deep: bool):
+    """Perform forced photometry on specified point and elliptical targets."""
     log_file = None
     for handler in logging.getLogger().handlers:
         if isinstance(handler, logging.FileHandler):
@@ -319,8 +292,6 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
         if detectors:
             logging.info(f"Wavelength filter: detectors={detectors}")
 
-        logging.info(f"Background region size: {bkg_region} pixels")
-        validate_bkg_region(bkg_region)
         logging.info(f"Fit positions: {'enabled' if fit_positions else 'disabled'}")
         if fit_positions:
             raise click.BadParameter("position fitting is not implemented.",
@@ -351,7 +322,8 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
             with multiprocessing.Pool(processes=1) as pool:
                 collect_result = pool.apply_async(
                     collect_inputs_for_temp_butler,
-                    args=(butler_repo, target_table, tmp_dir, time, detectors, use_simulator_bandpass)
+                    args=(butler_repo, target_table
+                        , tmp_dir, time, detectors, use_deep)
                 )
                 # This will automatically propagate exceptions from the child process
                 collect_results = collect_result.get()
@@ -394,9 +366,8 @@ def perform_photometry(result_dir, tmp_dir, point, elliptical, time, detector, b
         # Run L3a and create primary catalog
         try:
             skypix_ids_constraint: str = get_skypix_ids(butler, target_table)
-            run_photometry(temp_butler_root, skypix_ids_constraint, bkg_region,
-                           log_file=log_file, verbose=verbose,
-                           use_simulator_bandpass=use_simulator_bandpass)
+            run_photometry(temp_butler_root, skypix_ids_constraint,
+                           log_file=log_file, verbose=verbose)
         except PipetaskError as pte:
             logging.error(f"{pte.short_desc}. Temp butler: {temp_butler_root}")
             if pte.err.stderr:
@@ -532,6 +503,7 @@ def main():
                 format='%(asctime)s %(levelname)s: %(message)s'
             )
         else:
+            log_dir = validate_writable(None, None, Path(log_dir))
             log_file = os.path.join(log_dir, f"{runid}_JOB_{jobid}_log.out")
 
             logging.basicConfig(

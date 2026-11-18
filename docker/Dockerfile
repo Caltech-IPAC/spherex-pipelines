@@ -27,7 +27,7 @@ COPY simulator /app/simulator
 COPY spherex-pipelines /app/spherex-pipelines
 
 # 5. Build and Install
-# Note: We use --no-cache-dir to keep the layer slightly smaller, 
+# Note: We use --no-cache-dir to keep the layer slightly smaller,
 # though it matters less in the builder stage.
 RUN cd /app/spherex-parameters && pip install --no-build-isolation --no-cache-dir . \
     && cd /app/simulator/py \
@@ -42,25 +42,22 @@ RUN conda clean -afy
 # ==========================================
 # STAGE 2: Final Runtime (Slim & Clean)
 # ==========================================
-FROM continuumio/miniconda3:latest as final
+# Note: Capitalized 'AS' to fix the Docker warning
+FROM mambaorg/micromamba:ubuntu22.04 AS final
 
-# 1. Install Runtime Libraries ONLY
-# We replace 'build-essential' and 'libpq-dev' with just the shared libraries needed to run.
-# 'libpq5' is the runtime library for PostgreSQL (required by psycopg2).
+# 1. Temporarily switch to root to install system packages
+USER root
+WORKDIR /app
+# 2. Install Runtime Libraries ONLY
 RUN apt-get update && apt-get install -y \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# 4. Copy the Pre-Built Conda Environment
+COPY  --from=builder /opt/conda/envs/spxpipe-L3 /opt/conda/envs/spxpipe-L3
 
-# 2. Copy the Pre-Built Conda Environment
-# This brings over Python, Numpy, and your installed packages
-COPY --from=builder /opt/conda/envs/spxpipe-L3 /opt/conda/envs/spxpipe-L3
-
-# 4. Setup Environment
-ENV PATH /opt/conda/envs/spxpipe-L3/bin:$PATH
-
+# 5. Setup Environment (Added '=' to fix the legacy key/value warning)
+ENV PATH=/opt/conda/envs/spxpipe-L3/bin:$PATH
 
 # 6. Final Setup
-# Ensure bash shells automatically activate the env (optional but helpful for debugging)
 RUN echo "source activate spxpipe-L3" >> ~/.bashrc

@@ -201,7 +201,7 @@ def test_psf(tmp_path, caplog):
     assert psf_zone_data.data.shape[0] == len(psf_zone_data.x_centers) * len(psf_zone_data.y_centers)
 
     # Check floating point zone center calculation for different (odd and even) lengths.
-    x_centers = [128., 383., 638., 893., 1148., 1403., 1658., 1913.]
-    y_centers = [340.5, 1020.5, 1700.5]
+    x_centers = [127., 382., 637., 892., 1147., 1402., 1657., 1912.]
+    y_centers = [339.5, 1019.5, 1699.5]
     assert np.array_equal(psf_zone_data.x_centers, x_centers)
     assert np.array_equal(psf_zone_data.y_centers, y_centers)

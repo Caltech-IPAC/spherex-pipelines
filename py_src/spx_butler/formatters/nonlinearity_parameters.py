@@ -37,6 +37,7 @@ class NonlinearityParametersFormatter(FileFormatter):
         `~spx_data.NonLinearityParameters` | `None`
             Either data as `NonLinearityParameters` object read from fits file,
             or `None` if the file could not be opened.
+
         """
         try:
             data = NonLinearityParameters(fits.open(path))
@@ -56,6 +57,7 @@ class NonlinearityParametersFormatter(FileFormatter):
         ------
         Exception
             The file could not be written.
+
         """
         if not isinstance(inMemoryDataset, NonLinearityParameters):
             raise NotImplementedError(

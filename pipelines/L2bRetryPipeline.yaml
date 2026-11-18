@@ -1,0 +1,35 @@
+description: Level 2b Retry Data Processing Pipeline
+tasks:
+  level2b_retry:
+    class: spx_tasks.L2bRetryTask
+    config:
+      connections.spximg: "level2a"
+      connections.l2bwcs: "l2bwcs"
+      connections.abs_gain_matrix: "abs_gain_matrix"
+      connections.dark: "dark"
+      connections.sip: "sip"
+      connections.ssocat: "ssocat"
+      connections.srccat: "srccat"
+      connections.spectral_wcs: "spectral_wcs"
+      connections.he_template: "he_template"
+      connections.aurora_template: "aurora_template"
+      connections.shuttle_glow_template: "shuttle_glow_template"
+      connections.zodi_scaling: "zodi_scaling"
+      connections.spximg_out: "level2"
+      connections.dqa_l2: "dqa_l2"
+      connections.idqr_obs: "idqr_obs"
+
+      # Cross talk-related
+      connections.xtalk_class1: "xtalk_class1"
+      connections.xtalk_class2: "xtalk_class2"
+      create_source_mask.mask_xtalk: true
+
+      # EPSF-related
+      connections.epsf: "epsf"
+      measure_psf.write_epsf_bintable: true
+
+      # Fine astrometry-related
+      connections.astr_diag: "astr_diag"
+      estimate_fine_astrometry.do_write_diagnostics: true
+      estimate_fine_astrometry.keep_target_crpix: true
+      estimate_fine_astrometry.zero_negative_mjysr: true

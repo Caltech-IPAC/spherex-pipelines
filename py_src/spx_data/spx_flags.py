@@ -1,5 +1,5 @@
 __all__ = ["Flag", "flag2bit", "flag_description", "PhotometryFlag",
-           "phot_flag_description"]
+           "phot_flag_description", "FLAG_NAME_ALIASES"]
 
 from enum import IntFlag
 from math import log2
@@ -7,7 +7,8 @@ from typing import Union
 
 
 class Flag(IntFlag):
-    """Bit flags"""
+    """Bit flags."""
+
     TRANSIENT = 1 << 0
     OVERFLOW = 1 << 1
     SUR_ERROR = 1 << 2
@@ -38,7 +39,16 @@ class Flag(IntFlag):
     SATELLITE_HALO = 1 << 29
 
 
+# Aliases for flag names (backward compatibility or shorter names)
+FLAG_NAME_ALIASES = {
+    "MISSING_DATA": "MISSING",
+    "SATELLITE_HALO": "SAT_HALO",
+}
+
+
 class PhotometryFlag(IntFlag):
+    """Bit flags for photometry measurements."""
+
     CONTAINS_BAD_PIXEL = 1 << 32
     FIT_ERROR = 1 << 33
 
@@ -50,10 +60,12 @@ def flag2bit(flag: Union[Flag, PhotometryFlag, int]) -> int:
     ----------
     flag : `Flag` or `PhotometryFlag` or `int`
         Flag value
+
     Returns
     -------
     bitpos : `int`
         Bit position of a flag, the least significant bit is 0
+
     """
     return int(log2(flag))
 
@@ -65,10 +77,12 @@ def flag_description(flag: Flag) -> str:
     ----------
     flag : `Flag`
         A bit flag.
+
     Returns
     -------
     description: `str`
         Short description of the flag, which would be good for FITS comment.
+
     """
     desc = None
     match flag:
@@ -142,10 +156,12 @@ def phot_flag_description(flag: PhotometryFlag) -> str:
     ----------
     flag : `PhotometryFlag`
         A 64-bit flag.
+
     Returns
     -------
     description: `str`
         Short description of the flag.
+
     """
     desc = None
     match flag:

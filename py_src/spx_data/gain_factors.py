@@ -1,7 +1,7 @@
 __all__ = ["GainFactors"]
 
 # Standard library imports
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List
 from pydantic import model_validator, ConfigDict, BaseModel
 
@@ -37,7 +37,7 @@ class Provenance(BaseModel):
 def get_default_provenance() -> Provenance:
     general_provenance = [
         ProvenanceItem(name="DATE",
-                       value=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+                       value=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
                        description="UTC date/time file was created"),
         ProvenanceItem(name="ORIGIN",
                        value="SPHEREx Instrument Team",
@@ -115,6 +115,7 @@ class GainFactors(BaseModel):
       for each detector array (6).
     - Gain factors will be obtained on the ground.
     - Input image needs to be level 1 format.
+
     """
 
     provenance: Provenance | None = get_default_provenance()
@@ -130,8 +131,7 @@ class GainFactors(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def check_gains_length(cls, values: dict) -> dict:
-        """
-        Validates the length of each gain factors list. The length of each gain
+        """Validate the length of each gain factors list. The length of each gain
         factors list must match the value of `num_channels`.
 
         Parameters
@@ -148,6 +148,7 @@ class GainFactors(BaseModel):
         ------
         ValueError
             If the length of the gain factors list does not match `num_channels`.
+
         """
         num_channels = values.get("num_channels", ReadoutParameters.nchannel)
         for gain_name in ["gains_1", "gains_2", "gains_3", "gains_4", "gains_5", "gains_6"]:
@@ -158,7 +159,7 @@ class GainFactors(BaseModel):
         return values
 
     def get_gains_for_detector(self, detector: int) -> list[float]:
-        """Returns the gains for a specific detector.
+        """Return the gains for a specific detector.
 
         Parameters
         ----------
@@ -169,5 +170,6 @@ class GainFactors(BaseModel):
         -------
         result : `list` [`float`]
             The gains for the specific detector.
+
         """
         return getattr(self, f"gains_{detector}")

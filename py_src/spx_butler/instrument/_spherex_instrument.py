@@ -26,11 +26,13 @@ class SPHERExInstrument(Instrument):
         update : `bool`, optional
             If `True` (`False` is default), update existing records if they
             differ from the new ones.
+
         Raises
         ------
         lsst.daf.butler.registry.ConflictingDefinitionError
             Raised if any existing record has the same key but a different
             definition as one being registered.
+
         """
         instr_name: str = self.getName()
         # make sure instrument and detector dimensions are populated
@@ -97,6 +99,7 @@ class SPHERExInstrument(Instrument):
         formatter : `lsst.daf.butler.Formatter` class
             Class to be used that reads the file into the correct
             Python object for the raw data.
+
         """
         pass
 

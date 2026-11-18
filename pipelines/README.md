@@ -47,34 +47,6 @@ Run pipeline:
 $ pipetask run -b <butler_repo>/butler.yaml -p ../spherex-pipelines/pipelines/EstimatePSFPipeline.yaml -d "instrument='simu' AND detector=2" -i <input_collection> -o <output_chained_collection>  --register-dataset-types
 ```
 
-
-### Without Pipeline Framework
-Get help:
-```console
-$ python estiamte_flat_field.py -h
-```
-
-Run:
-```console
-$ python estimate_flat_field.py ~/Desktop/test-images -o ~/Desktop/estimate-flat-field
-```
-
-## Estimate Dark Current Pipeline
-Create execution plan:
-```console
-$ pipetask qgraph -b <butler_repo> -p ../spherex-pipelines/pipelines/EstimateDarkCurrentPipeline.yaml  --qgraph-dot dc.dot -i <input_collection> -o <output_chained_collection>
-```
-
-Run pipeline:
-```console
-$ pipetask run -b <butler_repo> -p ../spherex-pipelines/pipelines/EstimateDarkCurrentPipeline.yaml -d "instrument='simu' AND detector=2 AND exposure.dgl_qntl < 0.88 AND exposure.galactic_lat > 25.0" --register-dataset-types -i <input_collection> -o <output_chained_collection>
-```
-
-### Without Pipeline Framework
-```console
-$ python estimate_dark_current.py -i <path/to/inputs> -f <path/to/ff.Fits -o <path/to/save/dc-output> -p <path/to/dc-out-plots>
-```
-
 ## Create All Sky Catalog
 Create execution plan:
 ```console

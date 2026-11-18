@@ -5,7 +5,9 @@ from enum import IntFlag
 
 class SPSFlag(IntFlag):
     """Bit fields corresponding to Survey Planning Software flags
-    for a single planned observation."""
+    for a single planned observation.
+    """
+
     DEEP_SOUTH = 1 << 0  # deep field survey observation: south zone
     DEEP_NORTH = 1 << 1  # deep field survey observation: north zone
     ALL_SKY = 1 << 2  # all-sky survey observation
@@ -14,8 +16,12 @@ class SPSFlag(IntFlag):
     EARTH_STRAYLIGHT = 1 << 5  # observation is a part of Earth Stray Light test
     MOON_STRAYLIGHT = 1 << 6  # observation is a part of Moon Stray Light test
     SPECIAL = 1 << 7  # Targeted observations of comet 3I/Atlas
-    GO_BACK_S12 = 1 << 8  # # Go back observations for Surveys 1/2,
+    GO_BACK_S12 = 1 << 8  # Go back observations for Surveys 1/2,
     # to be executed in Surveys 3/4 (or later)
+    GO_BACK_S34 = 1 << 9  # Go back observations for Surveys 3/4,
+    # to be executed in Surveys 5/6 (or later)
+    GO_BACK_S56 = 1 << 10  # Go back observations for Surveys 5/6,
+    # to be executed in later surveys
 
     @classmethod
     def from_string(cls, sps_flag: str) -> int:
@@ -41,7 +47,8 @@ class SPSFlag(IntFlag):
         -----
         The flag logic will be updated as the PEF item information evolves.
         SPS flags: deep_south, deep_north, all_sky, downlink, saa,
-        earth_straylight, moon_straylight, special, go_back_s12.
+        earth_straylight, moon_straylight, special, go_back_s12,
+        go_back_s34, go_back_s56.
 
         According to current policy, the PEF "go-back"
         mechanism will only be used on all-sky targets
@@ -60,9 +67,15 @@ class SPSFlag(IntFlag):
             'earth_straylight': SPSFlag.EARTH_STRAYLIGHT,
             'moon_straylight': SPSFlag.MOON_STRAYLIGHT,
             'special': SPSFlag.SPECIAL,
-            'go_back_s12': SPSFlag.GO_BACK_S12
+            'go_back_s12': SPSFlag.GO_BACK_S12,
+            'go_back_s34': SPSFlag.GO_BACK_S34,
+            'go_back_s56': SPSFlag.GO_BACK_S56
         }
-        go_back_dict = {'go_back_s12': SPSFlag.GO_BACK_S12}
+        go_back_dict = {
+            'go_back_s12': SPSFlag.GO_BACK_S12,
+            'go_back_s34': SPSFlag.GO_BACK_S34,
+            'go_back_s56': SPSFlag.GO_BACK_S56
+        }
         sps_flag_int = 0
         for flag in flag_list:
             if flag not in flag_dict:
@@ -80,11 +93,13 @@ class SPSFlag(IntFlag):
         Parameters
         ----------
         sps_flags_int : `int`
+            Integer representation of SPS flags.
 
         Returns
         -------
         result : `str`
             Comma-separated flag names in lower case.
+
         """
         active_flags = [flag.name.lower() for flag in cls if sps_flags_int & flag.value]
         return ",".join(active_flags)
@@ -96,11 +111,13 @@ class SPSFlag(IntFlag):
         Parameters
         ----------
         sps_flags_int : `int`
+            Integer representation of SPS flags.
 
         Returns
         -------
         result : `bool`
             ``True`` for Deep Field observations, ``False`` otherwise.
+
         """
         return sps_flags_int & (cls.DEEP_SOUTH | cls.DEEP_NORTH) > 0
 
@@ -111,10 +128,57 @@ class SPSFlag(IntFlag):
         Parameters
         ----------
         sps_flags_int : `int`
+            Integer representation of SPS flags.
 
         Returns
         -------
         `bool`
             ``True`` for SAA observations, ``False`` otherwise.
+
         """
         return sps_flags_int & cls.SAA > 0
+
+    @classmethod
+    def is_go_back(cls, sps_flags_int: int) -> bool:
+        """Return ``True`` if any go-back flag is set.
+
+        Parameters
+        ----------
+        sps_flags_int : `int`
+            Integer representation of SPS flags.
+
+        Returns
+        -------
+        `bool`
+            ``True`` if GO_BACK_S12, GO_BACK_S34, or GO_BACK_S56 is set.
+
+        """
+        go_back_mask = cls.GO_BACK_S12 | cls.GO_BACK_S34 | cls.GO_BACK_S56
+        return bool(sps_flags_int & go_back_mask)
+
+    @classmethod
+    def get_go_back_survey_id(cls, sps_flags_int: int) -> str | None:
+        """Return the survey identifier from go-back flags.
+
+        For go-back observations, the survey identifier is derived from
+        the go-back flag name (e.g., "S12" from GO_BACK_S12).
+
+        Parameters
+        ----------
+        sps_flags_int : `int`
+            Integer representation of SPS flags.
+
+        Returns
+        -------
+        `str` or `None`
+            Survey identifier ("S12", "S34", or "S56") if a go-back flag
+            is set, otherwise None.
+
+        """
+        if sps_flags_int & cls.GO_BACK_S12:
+            return "S12"
+        if sps_flags_int & cls.GO_BACK_S34:
+            return "S34"
+        if sps_flags_int & cls.GO_BACK_S56:
+            return "S56"
+        return None

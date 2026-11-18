@@ -12,7 +12,7 @@ PLAN_VERSION_CHARS = "яABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" \
 
 
 def _char_to_position(char: str) -> str:
-    """Converts the plan version letter value to the numeric value, base 1."""
+    """Convert the plan version letter value to the numeric value, base 1."""
     # valid plan versions A-Z are converted to two digits using
     # the position of a character in the Unicode map relative to 'A'
     position = ord(char) - ord("A") + 1
@@ -25,7 +25,7 @@ def _char_to_position(char: str) -> str:
 
 
 def _position_to_char(position: int) -> str:
-    """Converts the plan version numeric value, base 1, to the letter value."""
+    """Convert the plan version numeric value, base 1, to the letter value."""
     if position < 1 or position > 26:
         # Fake plan versions can appear when we convert a unique combination
         # of digits, such as timestamp to an observation id.
@@ -37,7 +37,7 @@ def _position_to_char(position: int) -> str:
 
 
 def _format_spx(dict_obs_id: dict[str, str]) -> str:
-    """Returns the formatted SPHEREx observation ID."""
+    """Return the formatted SPHEREx observation ID."""
     date = f"{dict_obs_id['year']}{dict_obs_id['week']}"
     plan = f"{dict_obs_id['plan_number']}{dict_obs_id['plan_version']}"
     slew = (f"{dict_obs_id['large_slew_counter']}"
@@ -46,7 +46,7 @@ def _format_spx(dict_obs_id: dict[str, str]) -> str:
 
 
 def _format_sps(dict_obs_id: dict[str, str]) -> str:
-    """Returns the formatted SPS observation ID."""
+    """Return the formatted SPS observation ID."""
     date = f"{dict_obs_id['year']}W{dict_obs_id['week']}"
     slew = (f"{dict_obs_id['large_slew_counter']}_"
             f"{dict_obs_id['small_slew_counter']}")
@@ -54,7 +54,7 @@ def _format_sps(dict_obs_id: dict[str, str]) -> str:
 
 
 def _breakdown(obs_id: Union[str, int]) -> dict[str, str]:
-    """Takes in either SPHEREx or SPS observation ID and extracts information.
+    """Take in either SPHEREx or SPS observation ID and extracts information.
 
     Parameters
     ----------
@@ -70,6 +70,7 @@ def _breakdown(obs_id: Union[str, int]) -> dict[str, str]:
     ------
     ValueError
         Raised if the observation ID does not match SPS or SPHEREx.
+
     """
     # Need in string format to slice
     if isinstance(obs_id, int):
@@ -169,6 +170,7 @@ class ObservationId:
     https://confluence.ipac.caltech.edu/pages/viewpage.action?spaceKey=SPHEREx&title=Binary+form+of+the+observation+ID
 
     """
+
     def __init__(self, obs_id: Union[str, int]):
         dict_obs_id = _breakdown(obs_id)
         self.spx_id = _format_spx(dict_obs_id)

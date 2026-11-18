@@ -77,7 +77,7 @@ class L2aConnections(pipeBase.PipelineTaskConnections,
     persistence_image = cT.Output(
         name="persistence_image",
         doc="Persistence image.",
-        storageClass="SPHERExImage",
+        storageClass="PersistenceImage",
         dimensions=("instrument", "exposure"),
     )
     spk = cT.Input(
@@ -134,6 +134,8 @@ class L2aConnections(pipeBase.PipelineTaskConnections,
 
 class L2aConfig(pipeBase.PipelineTaskConfig,
                 pipelineConnections=L2aConnections):
+    """Configuration for L2a pipeline task."""
+
     gds_image_association = pexConfig.ConfigurableField(
         doc="GDS Image Association",
         target=GdsImageAssociationTask
@@ -169,7 +171,7 @@ class L2aConfig(pipeBase.PipelineTaskConfig,
 
 
 class L2aTask(pipeBase.PipelineTask):
-    """Implementation of Level2a data processing pipeline"""
+    """Implementation of Level2a data processing pipeline."""
 
     _DefaultName = "l2a-pipeline"
     ConfigClass = L2aConfig

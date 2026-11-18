@@ -26,16 +26,15 @@ dependencies = [
     "click >8.3.0",
     "healpy >=1.17.1",
     "joblib",
-    "kete==1.0.6",
+    "kete<2.0",
     "lsst_ctrl_mpexec",
-    "lsst-ctrl-bps-parsl==30.2026.300",
     "lsst_pipe_base",
     "lsst_daf_butler[postgres]",
     "matplotlib",
     "numba",
     "numpy",
-    "parsl==2025.11.10",
-    "photutils <=1.13.0",
+    "parsl",
+    "photutils",
     "pyarrow",
     "pydantic >=2.3, <3.0",
     "scipy >=1.6",
@@ -57,12 +56,12 @@ dynamic = ["version"]
 [project.optional-dependencies]
 test = [
     "pytest >= 3.2",
-    "flake8 <=5.0.4",
     "pytest-xdist",
     "pytest-cov",
+    "ruff>=0.15.1",
 ]
 docs = [
-    "spherex-sphinx @ git+https://github.com/SPHEREx/spherex-sphinx.git@main"
+    "spherex-sphinx @ git+https://github.com/SPHEREx/spherex-sphinx.git@main",
 ]
 extra = [
     "spherex-parameters @ git+https://github.com/SPHEREx/SPHEREx-Parameters@main",
@@ -84,12 +83,15 @@ zip-safe = true
 
 [tool.setuptools.package-data]
 spx_butler = ["configs/*.yaml", "configs/*/*.yaml", "cli/*.yaml"]
+spx_data = ["data/*.fits", "data/*.fits.gz"]
 spx_utils = ["astrometry/*.sex", "astrometry/*.param", "astrometry/*.conf", "data/*.csv"]
-spx_apps = ["data/*.vot", "data/*.yaml"]
+spx_apps = ["*/data/*.vot", "*/data/*.yaml"]
 
 [tool.setuptools_scm]
 version_scheme = "post-release"
 local_scheme = "node-and-date"
+tag_regex = "^(?P<version>\\d+\\.\\d+\\.\\d+(?:(?:a|b|rc)\\d+)?)$"
+git_describe_command = "git describe --dirty --tags --long --match [0-9]*.[0-9]*.[0-9]*"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -125,3 +127,59 @@ addopts = ["--ignore=tools/template"]
         directory = "other"
         name = "Other"
         showcontent = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = [
+    "__init__.py",
+    "docs",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D101", "D103"]
+
+# docs.astral.sh/ruff/rules
+[tool.ruff.lint]
+ignore = [
+    "N802",
+    "N803",
+    "N806",
+    "N812",
+    "N815",
+    "N816",
+    "N999",
+    "D107",
+    "D105",
+    "D102",
+    "D104",
+    "D100",
+    "D200",
+    "D205",
+    "D400",
+    "UP007",  # Allow UNION in type annotation
+]
+select = [
+    "E",  # pycodestyle
+    "F",  # pycodestyle
+    "N",  # pep8-naming
+    "W",  # pycodestyle
+    "D",  # pydocstyle
+#    "UP",  # TODO: pyupgrade
+#    "I",  # TODO: isort
+#    "RUF022",  # TODO: sort __all__
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 88
+
+[tool.coverage.report]
+exclude_also = [
+    # NOTE: coverage instruments Python bytecode and cannot see Numba JIT-compiled
+    #       machine code. Functions decorated with @njit should still be unit
+    #       unit tested to verify JIT compilation, but can use this pragma.
+    "# pragma: not-coverage-visible"
+]

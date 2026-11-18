@@ -1,4 +1,7 @@
+# Standard library imports
 from collections.abc import Iterator
+
+# Related third party imports
 from lsst.daf.butler import (
     Butler,
     CollectionType,
@@ -9,6 +12,7 @@ from lsst.daf.butler import (
 )
 from lsst.resources import ResourcePath
 
+# Local application/library specific imports
 from ..defaults import DatasetTypes, fake_products
 from ..instrument import ensure_registered_instrument, SimulatorInstrument, SPHERExInstrument
 
@@ -47,6 +51,7 @@ def ingestCalibrations(repo,
     ------
     Exception
         Raised if operations on configuration object fail.
+
     """
     butler = Butler(repo, writeable=True)
 
@@ -67,25 +72,34 @@ def ingestCalibrations(repo,
         dataset_and_storage_class = (
             (dt.gain_factors, "GainFactors"),
             (dt.initial_distortion_table, "InitDistTable"),
-            (dt.sband_mnemonics, "SbandMnemonics")
+            (dt.sband_mnemonics, "SbandMnemonics"),
+            (dt.spectral_channels, "AstropyImage"),
+            (dt.cosmo_mask, "AstropyImage"),
+            (dt.hi_density_mask, "AstropyImage")
         )
 
     else:
         dataset_and_storage_class = (
             (dt.nonlinear_pars, "NonLinearityParameters"),
             (dt.readnoise_pars, "ReadNoiseParameters"),
-            (dt.nonfunc_map, "SPHERExImage"),
-            # (dt.nonfunc_map_v2, "NonfuncData"),
+            (dt.nonfunc_map_v2, "NonfuncData"),
             (dt.dichroic_cut_map, "SPHERExImage"),
             (dt.ff_calib, "SPHERExImage"),
             (dt.dc_calib, "SPHERExImage"),
             (dt.abs_gain_matrix, "SPHERExImage"),
             (dt.average_psf, "PSF"),
+            (dt.epsf, "EPSF"),
             (dt.sip, "AstropySIP"),
             (dt.spectral_wcs, "AstropyImage"),
             (dt.photo_calib, "SpxPhotoCalib"),
             (dt.solid_angle_pixel_map, "SPHERExImage"),
-            (dt.xtalk_coupling_matrix, "SPHERExImage")
+            (dt.he_template, "SPHERExImage"),
+            (dt.aurora_template, "SPHERExImage"),
+            (dt.shuttle_glow_template, "SPHERExImage"),
+            (dt.xtalk_class1, "Xtalk"),
+            (dt.xtalk_class2, "Xtalk"),
+            (dt.zodi_scaling, "ZodiScaling"),
+            (dt.l3_flux_corrections, "SPHERExImage")
         )
         # Add additional dimensions
         dataid_kwargs["detector"] = detector
@@ -113,6 +127,7 @@ def ingestCalibrations(repo,
     butler.registry.registerCollection(run, type=CollectionType.RUN)
 
     if ingest_type == "fake" and detector == 0:
+        from spx_tasks import QueryReferenceCatalogConfig  # deferred to avoid circular import
         with butler.transaction():
             # Gain factors - needed for Convert To Engineering Units
             gain_factors = fake_products.fake_gain_factors()
@@ -125,6 +140,20 @@ def ingestCalibrations(repo,
             # Test Sband telemetry list
             sband_mnemonics = fake_products.sband_subset_table()
             butler.put(sband_mnemonics, dt.sband_mnemonics, dataId=dataid, run=run)
+
+            # Test spectral channels
+            spectral_channels = fake_products.fake_spectral_channels()
+            butler.put(spectral_channels, dt.spectral_channels, dataId=dataid, run=run)
+
+            # Initial cosmology mask
+            cosmo_mask = fake_products.fake_selection_mask(
+                "cosmology", QueryReferenceCatalogConfig().mask_hips_order)
+            butler.put(cosmo_mask, dt.cosmo_mask, dataId=dataid, run=run)
+
+            # Initial high-density mask
+            hi_density_mask = fake_products.fake_selection_mask(
+                "high_density", QueryReferenceCatalogConfig().mask_hips_order)
+            butler.put(hi_density_mask, dt.hi_density_mask, dataId=dataid, run=run)
 
             print("Ingested fake calibrations")
 
@@ -143,10 +172,8 @@ def ingestCalibrations(repo,
             butler.put(photo_calib, dt.photo_calib, dataId=dataid, run=run)
 
             # non-functional pixel map - set as a pixel flag
-            nonfunc_map = fake_products.fake_nonfunc_map(detector)
-            # nonfunc_map_v2 = fake_products.fake_nonfunc_v2_map(detector)
-            butler.put(nonfunc_map, dt.nonfunc_map, dataId=dataid, run=run)
-            # butler.put(nonfunc_map_v2, dt.nonfunc_map_v2, dataId=dataid, run=run)
+            nonfunc_map_v2 = fake_products.fake_nonfunc_v2_map(detector)
+            butler.put(nonfunc_map_v2, dt.nonfunc_map_v2, dataId=dataid, run=run)
 
             # dichroic cut map - set as a pixel flag
             dichroic_cut_map = fake_products.fake_dichroic_cut_map(detector)
@@ -156,7 +183,8 @@ def ingestCalibrations(repo,
             spectral_wcs = fake_products.fake_spectral_wcs(detector)
             butler.put(spectral_wcs, dt.spectral_wcs, dataId=dataid, run=run)
 
-            # dark current calibration - needed for Dark Current Field Correction
+            # dark current calibration
+            # needed for Dark Current Field Correction
             dc_calib = fake_products.fake_dc_calib(detector)
             butler.put(dc_calib, dt.dc_calib, dataId=dataid, run=run)
 
@@ -165,25 +193,54 @@ def ingestCalibrations(repo,
             butler.put(ff_calib, dt.ff_calib, dataId=dataid, run=run)
 
             # absolute gain matrix
-            # needed for Apply Flat Field Correction and Photometric Calibration
+            # needed for Apply Flat Field Correction & Photometric Calibration
             abs_gain_matrix = fake_products.fake_abs_gain_matrix(detector)
             butler.put(abs_gain_matrix, dt.abs_gain_matrix, dataId=dataid, run=run)
 
-            # distortion / SIP coefficients - needed for Estimate Fine Astrometry
+            # distortion/SIP coefficients - needed for Estimate Fine Astrometry
             sip = fake_products.fake_sip(detector)
             butler.put(sip, dt.sip, dataId=dataid, run=run)
 
-            # exposure averaged PSF - needed for Measure Per-Exposure PSF
+            # exposure averaged PSF
+            # needed for Measure Per-Exposure PSF legacy mode
             average_psf = fake_products.fake_PSF(detector)
             butler.put(average_psf, dt.average_psf, dataId=dataid, run=run)
+
+            # exposure averaged EPSF
+            # needed for Measure Per-Exposure PSF EPSF mode
+            epsf = fake_products.fake_epsf(detector)
+            butler.put(epsf, dt.epsf, dataId=dataid, run=run)
 
             # solid angle pixel map
             solid_angle_pixel_map = fake_products.fake_solid_angle_pixel_map(detector)
             butler.put(solid_angle_pixel_map, dt.solid_angle_pixel_map, dataId=dataid, run=run)
 
-            # Crosstalk coupling matrix
-            xtalk_coupling_matrix = fake_products.fake_xtalk_coupling(detector)
-            butler.put(xtalk_coupling_matrix, dt.xtalk_coupling_matrix, dataId=dataid, run=run)
+            # Crosstalk class I
+            if detector in (1, 2, 3):
+                xtalk_class1 = fake_products.fake_xtalk_class1(detector)
+                butler.put(xtalk_class1, dt.xtalk_class1, dataId=dataid, run=run)
+            # Crosstalk class II
+            xtalk_class2 = fake_products.fake_xtalk_class2(detector)
+            butler.put(xtalk_class2, dt.xtalk_class2, dataId=dataid, run=run)
+
+            # Zodi scaling template
+            zodi_scaling = fake_products.fake_zodi_scaling()
+            butler.put(zodi_scaling, dt.zodi_scaling, dataId=dataid, run=run)
+
+            # He I Airglow, Aurora, and Shuttleglow Templates
+            if detector in (1, 2):
+                he_template = fake_products.fake_he_template()
+                butler.put(he_template, dt.he_template, dataId=dataid, run=run)
+                if detector == 1:
+                    aurora_template = fake_products.fake_template()
+                    butler.put(aurora_template, dt.aurora_template, dataId=dataid, run=run)
+            if detector == 5:
+                shuttle_glow_template = fake_products.fake_template()
+                butler.put(shuttle_glow_template, dt.shuttle_glow_template, dataId=dataid, run=run)
+
+            # L3 flux corrections
+            l3_flux_corrections = fake_products.fake_l3_flux_corrections(detector)
+            butler.put(l3_flux_corrections, dt.l3_flux_corrections, dataId=dataid, run=run)
 
             print(f"Ingested fake calibrations for detector {detector}")
     else:

@@ -1,0 +1,20 @@
+description: L1PipelineOdirOnly
+tasks:
+  level1_odir_only:
+    class: spx_tasks.l1_split.L1OdirOnlyTask
+    config:
+      gds_image_association.useSband: false
+      gds_image_association.usePlannedObs: true
+      create_image_data_files.layers: ["RAWDATA", "CUBEFLGS"]
+      connections.spximg: "raw"
+      connections.planned_obs: "planned_obs"
+      connections.gain_factors: "gain_factors"
+      connections.nonfunc_map_v2: "nonfunc_v2"
+      connections.dichroic_cut_map: "dichroic"
+      connections.spectral_wcs: "spectral_wcs"
+      connections.initial_distortion_table: "initial_distortion_table"
+      connections.sgt: "sgt"
+      connections.spk: "spk"
+      connections.dqa_l1: "dqa_l1"
+      connections.sur_diag: "sur_diag"
+      connections.odir_obs: "odir_obs"

@@ -38,7 +38,9 @@ class CalspecPredict(object):
     Logger : `logging.Logger`, optional
         Logger instance for logging messages.
         If not provided, the root logger will be used.
+
     """
+
     def __init__(self, Logger=None):
         self.Names = []
         self.Coordinates = {}
@@ -75,6 +77,7 @@ class CalspecPredict(object):
         This method reads a catalog file with source metadata and photometric band data,
         and constructs high-resolution spectral templates for each source.
         It then creates an interpolation function for each source's spectrum.
+
         """
         Bandinfo = Table.read(band_data_file)
         # Make a lookup of band name to wavelength

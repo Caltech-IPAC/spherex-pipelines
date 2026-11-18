@@ -1,13 +1,16 @@
 # Standard library imports
 import math
+from typing import Literal, Tuple
 
 # Related third party imports
 from dataclasses import dataclass, field
 import astropy.units as u
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.io.fits import HDUList
 from astropy.table import Table
 from astropy.wcs import Sip
+import healpy as hp
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.interpolate import interpn
@@ -22,6 +25,7 @@ except ImportError:
 # Local application/library specific imports
 from spx_data import (
     GainFactors,
+    NonfuncData,
     NonLinearityParameters,
     PSFZoneData,
     ReadoutParameters,
@@ -30,8 +34,8 @@ from spx_data import (
     PersistenceState,
     PersistenceStateModelPars,
     ReadNoiseParameters,
-    NonfuncData
 )
+from spx_data.spectral_channels_reference import get_reference_spectral_channel_defs
 
 from spx_utils import spectral_wcs_lookup_data, get_data_file
 from spx_utils.utils import add_detcoord
@@ -45,7 +49,9 @@ class ArrayCalValues:
     -----
     Coded here because we will not have access
     to these numbers with in-orbit data taking.
+
     """
+
     cal_values: dict = field(default_factory=lambda: {
         1: 8.286700087641215,
         2: 8.38949569816677,
@@ -57,13 +63,13 @@ class ArrayCalValues:
 
 
 def initial_distortion() -> Table:
-    """Returns the intial csv ray-tracing data."""
+    """Return the initial csv ray-tracing data."""
     dist_file = get_data_file("data/distorted_pixels_20240425.csv", package="spx_utils")
     return Table.read(dist_file)
 
 
 def fake_persistence_state() -> PersistenceState:
-    """Fake persistence state for pipeline. (mutable)"""
+    """Return fake persistence state for pipeline (mutable)."""
     # Initialize PersistenceData with empty state.
     rp = ReadoutParameters()
 
@@ -87,7 +93,7 @@ def fake_persistence_state() -> PersistenceState:
 
 
 def fake_ssocat() -> Table:
-    """Fake Solar System Objects catalog"""
+    """Return fake Solar System Objects catalog."""
     names = ["object", "ra", "dec", "vmag", "x", "y"]
     units = ["", "deg", "deg", "V", "pixel", "pixel"]
     dtype = [str, float, float, float, float, float]
@@ -96,7 +102,7 @@ def fake_ssocat() -> Table:
 
 
 def fake_nonfunc_map(detector_id: int) -> SPHERExImage:
-    """Fake Nonfunctional Pixels map"""
+    """Return fake Nonfunctional Pixels map."""
     npix_x = spx_param.get_npix_x()
     npix_y = spx_param.get_npix_y()
     data = np.zeros([npix_x, npix_y], dtype=np.uint8)
@@ -109,16 +115,19 @@ def fake_nonfunc_map(detector_id: int) -> SPHERExImage:
 
 
 def fake_nonfunc_v2_map(detector: int, seed: int | None = 42) -> NonfuncData:
-    """Fake Nonfunctional v2 product, returned as a NonfuncData instance.
+    """Return fake Nonfunctional v2 product as a NonfuncData instance.
 
     Builds a multi-extension FITS with:
       - COMBINED (1=bad, 0=good)
-      - DARKCURR, HIGHDRIFT, SPECCAL, TRANSIENT, OVERFLOW (each 1=bad, 0=good)
+      - DARKCURR, HIGHDRIFT, SPECCAL, TRANSIENT, OVERFLOW, OPTEFF, OOS
+        (each 1=bad, 0=good)
 
     Parameters
     ----------
     detector : `int`
         Detector ID written into the PrimaryHDU header.
+    seed : `int` or None, optional
+        Random seed for reproducibility. Default is 42.
 
     Returns
     -------
@@ -127,7 +136,6 @@ def fake_nonfunc_v2_map(detector: int, seed: int | None = 42) -> NonfuncData:
     """
     rng = np.random.default_rng(seed)
 
-    # Match how fake_nonlin_inputs gets its shape
     ny, nx = spx_param.get_npix_x(), spx_param.get_npix_y()
 
     def sparse_mask(count: int) -> np.ndarray:
@@ -145,46 +153,58 @@ def fake_nonfunc_v2_map(detector: int, seed: int | None = 42) -> NonfuncData:
     speccal = sparse_mask(120)
     transient = sparse_mask(7000)
     overflow = sparse_mask(60)
+    opteff = sparse_mask(400)
+    oos = sparse_mask(500)
 
     # Add a couple structured features for easy QA
-    np.fill_diagonal(speccal, 1)      # thin diagonal line
+    np.fill_diagonal(speccal, 1)
     box = 24
-    darkcurr[:box, :box] |= 1         # small UL box
+    darkcurr[:box, :box] |= 1
 
-    combined = (darkcurr | highdrift | speccal | transient | overflow).astype(np.uint8)
+    category_planes = {
+        "DARKCURR": darkcurr,
+        "HIGHDRIFT": highdrift,
+        "SPECCAL": speccal,
+        "TRANSIENT": transient,
+        "OVERFLOW": overflow,
+        "OPTEFF": opteff,
+        "OOS": oos,
+    }
+
+    combined = np.zeros((ny, nx), dtype=np.uint8)
+    for mask in category_planes.values():
+        combined |= mask
 
     primary_hdu = fits.PrimaryHDU()
     primary_hdu.header["DETECTOR"] = detector
     primary_hdu.header["BPCONV"] = (1, "Bad-pixel convention: 1=bad, 0=good")
 
-    combined_hdu = fits.ImageHDU(data=combined, header=fits.Header({"EXTNAME": "COMBINED"}))
-    darkcurr_hdu = fits.ImageHDU(data=darkcurr, header=fits.Header({"EXTNAME": "DARKCURR"}))
-    highdrift_hdu = fits.ImageHDU(data=highdrift, header=fits.Header({"EXTNAME": "HIGHDRIFT"}))
-    speccal_hdu = fits.ImageHDU(data=speccal, header=fits.Header({"EXTNAME": "SPECCAL"}))
-    transient_hdu = fits.ImageHDU(data=transient, header=fits.Header({"EXTNAME": "TRANSIENT"}))
-    overflow_hdu = fits.ImageHDU(data=overflow, header=fits.Header({"EXTNAME": "OVERFLOW"}))
-
-    hdul = fits.HDUList([
+    hdus = [
         primary_hdu,
-        combined_hdu,
-        darkcurr_hdu,
-        highdrift_hdu,
-        speccal_hdu,
-        transient_hdu,
-        overflow_hdu,
-    ])
+        fits.ImageHDU(data=combined, header=fits.Header({"EXTNAME": "COMBINED"})),
+    ]
 
-    # Optional integrity check
-    union = (darkcurr | highdrift | speccal | transient | overflow).astype(bool)
-    cmb = (combined == 1)
-    if np.any(union & ~cmb) or np.any(cmb & ~union):
+    for extname, mask in category_planes.items():
+        hdus.append(
+            fits.ImageHDU(data=mask, header=fits.Header({"EXTNAME": extname}))
+        )
+
+    hdul = fits.HDUList(hdus)
+
+    # Integrity check: COMBINED should be the union of category planes.
+    union = np.zeros((ny, nx), dtype=bool)
+    for mask in category_planes.values():
+        union |= mask.astype(bool)
+
+    cmb = combined.astype(bool)
+    if not np.array_equal(cmb, union):
         raise ValueError("COMBINED is not the union of category planes.")
 
     return NonfuncData(hdul, detector=detector)
 
 
 def fake_dichroic_cut_map(detector_id: int) -> SPHERExImage:
-    """Fake Dichroic Cut Pixels map"""
+    """Return fake Dichroic Cut Pixels map."""
     npix_x = spx_param.get_npix_x_active()
     npix_y = spx_param.get_npix_y_active()
     data = np.zeros([npix_x, npix_y], dtype=np.uint8)
@@ -199,7 +219,7 @@ def fake_dichroic_cut_map(detector_id: int) -> SPHERExImage:
 
 
 def fake_ff_calib(detector_id: int) -> SPHERExImage:
-    """Fake Flat Field Calibration"""
+    """Return fake Flat Field Calibration."""
     rp = ReadoutParameters()
     data = np.ones((rp.Jactive, rp.Kactive), dtype=np.float32)
     img = SPHERExImage(data, unit=u.dimensionless_unscaled)
@@ -210,7 +230,7 @@ def fake_ff_calib(detector_id: int) -> SPHERExImage:
 
 
 def fake_dc_calib(detector_id: int) -> SPHERExImage:
-    """Fake Dark Current Calibration"""
+    """Return fake Dark Current Calibration."""
     npix_x = spx_param.get_npix_x_active()
     npix_y = spx_param.get_npix_y_active()
     data = np.zeros([npix_x, npix_y], dtype=np.float32)
@@ -222,7 +242,7 @@ def fake_dc_calib(detector_id: int) -> SPHERExImage:
 
 
 def fake_abs_gain_matrix(detector_id: int) -> SPHERExImage:
-    """Fake Absolute Gain Matrix"""
+    """Return fake Absolute Gain Matrix."""
     cal_value = ArrayCalValues().cal_values.get(detector_id)
     npix_x = spx_param.get_npix_x_active()
     npix_y = spx_param.get_npix_y_active()
@@ -235,7 +255,7 @@ def fake_abs_gain_matrix(detector_id: int) -> SPHERExImage:
 
 
 def fake_sip(detector_id: int) -> Sip:
-    """Fake Distortion / SIP Coefficients"""
+    """Return fake Distortion / SIP Coefficients."""
     npix_x = spx_param.get_npix_x_active()
     npix_y = spx_param.get_npix_y_active()
     a = np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
@@ -254,12 +274,13 @@ def fake_sip(detector_id: int) -> Sip:
 
 
 def fake_gain_factors() -> GainFactors:
-    """Generates a sample `~spx_data.GainFactors`.
+    """Generate a sample `~spx_data.GainFactors`.
 
     Returns
     -------
     `~spx_data.GainFactors`
         Sample gain factors for each array id.
+
     """
     rp = ReadoutParameters()
 
@@ -273,8 +294,8 @@ def fake_gain_factors() -> GainFactors:
 
 
 def fake_read_noise_map(detector: int) -> ReadNoiseParameters:
-    """Generates sample per-pixel readout noise map matching Simulator's implementation
-    based on Robberto 2007, page 25.
+    """Generate sample per-pixel readout noise map matching Simulator's
+    implementation based on Robberto 2007, page 25.
 
     Parameters
     ----------
@@ -292,6 +313,7 @@ def fake_read_noise_map(detector: int) -> ReadNoiseParameters:
       where nref = 1.
     - There will be a separate map for each of the six detectors.
     - Read noise maps are in units of electrons.
+
     """
     rp = ReadoutParameters()
 
@@ -324,7 +346,7 @@ def fake_read_noise_map(detector: int) -> ReadNoiseParameters:
 
 
 def fake_PSF(detector: int = 1, nbr_x_zones: int = 11, nbr_y_zones: int = 11) -> PSFZoneData:
-    """Creates a fake Point Spread Function.
+    """Create a fake Point Spread Function.
 
     Parameters
     ----------
@@ -341,6 +363,7 @@ def fake_PSF(detector: int = 1, nbr_x_zones: int = 11, nbr_y_zones: int = 11) ->
     -------
     `PSFZoneData`
         Fake PSF data structure.
+
     """
     psf_size = 101  # In oversampled pixels
     psf_oversampling = 10  # In times SPHEREx pixels
@@ -349,8 +372,8 @@ def fake_PSF(detector: int = 1, nbr_x_zones: int = 11, nbr_y_zones: int = 11) ->
     npx_x = rp.Jactive
     npx_y = rp.Kactive
 
-    # PSFs are oversampled by factor of 20 for arrays 1-3 and 10 for arrays 4-6.
-    downsample_by_array = {  # NOTE why this division for downsample?
+    # Detectors 1-3 have 20x oversampling and 4-6 have 10x oversampling
+    downsample_by_array = {
         1: int(20/psf_oversampling),
         2: int(20/psf_oversampling),
         3: int(20/psf_oversampling),
@@ -401,7 +424,7 @@ def fake_PSF(detector: int = 1, nbr_x_zones: int = 11, nbr_y_zones: int = 11) ->
     z1_interp = np.linspace(0, 3-1, nbr_x_zones)  # interpolated coordinates
     z2_interp = np.linspace(0, 3-1, nbr_y_zones)  # interpolated coordinates
 
-    # Inteprolate the PSF 3x3 grid for each of the arrays.
+    # Interpolate the PSF 3x3 grid for each of the arrays.
     data_cube = np.zeros((nbr_x_zones * nbr_y_zones, psf_size, psf_size), dtype=np.float32)
     for iy in range(nbr_y_zones):
         for ix in range(nbr_x_zones):
@@ -412,15 +435,63 @@ def fake_PSF(detector: int = 1, nbr_x_zones: int = 11, nbr_y_zones: int = 11) ->
             img_interp = img_interp / np.nanmax(img_interp)
             data_cube[iy * nbr_x_zones + ix] = img_interp
 
-    # Get centers of the zones (represented in FITS convention).
-    zone_x_centers = np.asarray([ii*npx_x/nbr_x_zones + (npx_x/nbr_x_zones + 1)/2
-                                 for ii in range(nbr_x_zones)])
-    zone_y_centers = np.asarray([ii*npx_y/nbr_y_zones + (npx_y/nbr_y_zones + 1)/2
-                                 for ii in range(nbr_y_zones)])
+    # Get centers of the zones (using 0-based numpy convention)
+    x_edges = np.linspace(-0.5, npx_x - 0.5, nbr_x_zones + 1)
+    y_edges = np.linspace(-0.5, npx_y - 0.5, nbr_y_zones + 1)
+    zone_x_centers = (x_edges[:-1] + x_edges[1:]) / 2  # element-wise midpoint between edges
+    zone_y_centers = (y_edges[:-1] + y_edges[1:]) / 2
 
     psf_zone_data = PSFZoneData(data_cube, zone_x_centers, zone_y_centers, psf_oversampling)
     add_detcoord(psf_zone_data)
     return psf_zone_data
+
+
+def fake_epsf(detector: int = 1, nbr_x_zones: int = 11, nbr_y_zones: int = 11) -> SPHERExImage:
+    """Create a fake average EPSF product stored as SPHERExImage.
+
+    The main image plane is a placeholder image.
+    The EPSF binary table is stored in the EPSF layer.
+    """
+    psf = fake_PSF(detector=detector, nbr_x_zones=nbr_x_zones, nbr_y_zones=nbr_y_zones)
+    cube = np.asarray(psf.data, dtype=np.float64)
+
+    nzone, ny, nx = cube.shape
+
+    # x-fast then y ordering
+    binx = np.tile(np.arange(nbr_x_zones, dtype=np.int32), nbr_y_zones)
+    biny = np.repeat(np.arange(nbr_y_zones, dtype=np.int32), nbr_x_zones)
+    xwidth = np.array([psf.header[key] for key in psf.header["XWID*"]], dtype=np.float32)
+    ywidth = np.array([psf.header[key] for key in psf.header["YWID*"]], dtype=np.float32)
+    xcenter = np.array([psf.header[key] for key in psf.header["XCTR*"]], dtype=np.float32)
+    ycenter = np.array([psf.header[key] for key in psf.header["YCTR*"]], dtype=np.float32)
+    cols = fits.ColDefs([
+        fits.Column(name="BINX", format="J", array=binx),
+        fits.Column(name="BINY", format="J", array=biny),
+        fits.Column(name="XCENTER", format="E", array=xcenter),
+        fits.Column(name="YCENTER", format="E", array=ycenter),
+        fits.Column(name="XWIDTH", format="E", array=xwidth),
+        fits.Column(name="YWIDTH", format="E", array=ywidth),
+        fits.Column(name="NEFF_MEAN", format="E", array=np.ones(nbr_x_zones * nbr_y_zones, dtype=np.float32)),
+        fits.Column(
+            name="EPSF",
+            format=f"{nx * ny}D",
+            dim=f"({nx},{ny})",
+            array=cube.reshape(nzone, nx * ny),
+        ),
+    ])
+    epsf_hdu = fits.BinTableHDU.from_columns(cols, name="EPSF")
+    epsf_hdu.header["OVSMPY"] = psf.oversampling
+    epsf_hdu.header["OVSMPX"] = psf.oversampling
+
+    # Placeholder image plane; real ingested products will use the mosaic
+    img = SPHERExImage(
+        data=np.zeros((10, 10), dtype=np.float32),
+        unit=u.dimensionless_unscaled
+    )
+    img.setArrayId(detector)
+    img.epsf_table = epsf_hdu
+
+    return img
 
 
 def interp_images_2d(imgs: ArrayLike, z1: np.ndarray, z2: np.ndarray, z1_interp: float,
@@ -445,6 +516,7 @@ def interp_images_2d(imgs: ArrayLike, z1: np.ndarray, z2: np.ndarray, z1_interp:
     -------
     `~numpy.typing.ArrayLike`
         The interpolated NxN image.
+
     """
     # Get points
     n = imgs.shape[2]
@@ -470,8 +542,10 @@ def fake_nonlin_inputs(det_id: int) -> NonLinearityParameters:
         Detector ID.
 
     Returns
+    -------
     `NonLinearityParameters`
-        Nonlinearity paramters in primary and extensions of fits header data unit list.
+        Nonlinearity paramters in primary and extensions of fits header data
+        unit list.
 
     """
     rp = ReadoutParameters()
@@ -502,15 +576,18 @@ def fake_nonlin_inputs(det_id: int) -> NonLinearityParameters:
 
 def fake_spectral_wcs(detector_id: int) -> HDUList:
     """Get HDUList with central wavelength and bandwidth for each active pixel
-    and lookup table, as defined in "Representations of spectral coordinates in FITS",
-    Greisen et al. [2006], section 6.
+    and lookup table, as defined in "Representations of spectral coordinates
+    in FITS", Greisen et al. [2006], section 6.
 
     Parameters
     ----------
     detector_id : int
         Detector id.
+
     Returns
     -------
+    HDUList
+        FITS HDUList containing spectral WCS lookup data.
 
     """
     hdul = spectral_wcs_lookup_data(detector=detector_id, wl_tolerance=1 * u.nm)
@@ -519,18 +596,36 @@ def fake_spectral_wcs(detector_id: int) -> HDUList:
     return hdul
 
 
+def fake_spectral_channels() -> HDUList:
+    """Get HDUList with spectral channel lookup map and metadata.
+
+    Returns
+    -------
+    HDUList
+        FITS HDUList containing pixel-to-spectral-channel map and per-channel
+        metadata.
+
+    """
+    # Default to channels 1-17 (exclude channel 18 from bundled contour map)
+    return get_reference_spectral_channel_defs().to_hdul()
+
+
 def fake_binned_calib_data(detector_id: int, num_bins: int = 64) -> Table:
-    """Fake binned calibration data output from
-       Photometric Calibration module.
+    """Return fake binned calibration data output from Photometric Calibration
+    module.
 
     Parameters
     ----------
     detector_id : `int`
+        SPHEREx detector ID (1-6).
+    num_bins : `int`, optional
+        Number of bins to generate. Default is 64.
 
     Returns
     -------
     `astropy.table.Table`
         Ballpark values of binned calibration data.
+
     """
     # Define approximate ranges for `a_bin` based on detector ID
     a_bin_ranges = {
@@ -574,6 +669,7 @@ def fake_solid_angle_pixel_map(detector_id: int) -> SPHERExImage:
     -------
     `SPHERExImage`
         Fake solid angle pixel map.
+
     """
     rp = ReadoutParameters()
     data = np.full((rp.Jactive, rp.Kactive), 6.15*6.15, dtype=np.float32)
@@ -583,6 +679,7 @@ def fake_solid_angle_pixel_map(detector_id: int) -> SPHERExImage:
 
 
 def sband_subset_table():
+    """Return a sample S-band subset table with mnemonic definitions."""
     data = {
         "El.": [
             "SPX", "SPX", "SPX", "SPX", "SPX", "SPX", "SPX", "SPX", "SPX", "SPX", "SPX", "SPX", "SPX", "SPX"
@@ -652,27 +749,8 @@ def sband_subset_table():
     return sband_mnemonics
 
 
-def fake_xtalk_coupling(detector_id: int) -> SPHERExImage:
-    """Fake crosstalk coupling calibration values.
-
-    Parameters
-    ----------
-    detector_id : `int`
-        SPHEREx detector id.
-
-    Returns
-    -------
-    `SPHERExImage`
-        Fake crosstalk coupling values.
-    """
-    data_shape = (32, 32, 3)
-    dummy_array = np.ones(data_shape)
-    xtalk_coupling = SPHERExImage(data=dummy_array, unit=u.dimensionless_unscaled)
-    xtalk_coupling.setArrayId(detector_id)
-    return xtalk_coupling
-
-
 def sgt_table() -> Table:
+    """Return a sample SGT (Spacecraft Ground Track) table."""
     data = {
         "Date_Time": ["2025-086T17:07:40.000", "2025-086T17:08:00.000", "2025-086T17:08:20.000",
                       "2025-086T17:08:40.000", "2025-086T17:09:00.000", "2025-086T17:09:20.000",
@@ -688,3 +766,186 @@ def sgt_table() -> Table:
     }
     sgt = Table(data)
     return sgt
+
+
+def fake_he_template() -> SPHERExImage:
+    """Return fake He I Airglow Template."""
+    npix_x = spx_param.get_npix_x_active()
+    npix_y = spx_param.get_npix_y_active()
+    data = np.ones([npix_x, npix_y], dtype=np.float32)
+    img = SPHERExImage(data, unit=u.Unit("MJy/sr"))
+    img.header.extend({
+        "HE_WLAIR": 1.083,  # placeholder parameter values
+        "HE_HWAIR": 0.027 + 0.007,
+        "HE_HWBKG": 0.035 + 0.010,
+        "HIERARCH HE_WLTOP1": 1.0737,
+        "HIERARCH HE_WLTOP2": 1.0915
+    })
+    return img
+
+
+def fake_template() -> SPHERExImage:
+    """Return fake Aurora and Shuttle-glow Template."""
+    npix_x = 102
+    npix_y = 102
+    data = np.ones([npix_x, npix_y], dtype=np.float32)
+    # TODO check units!
+    img = SPHERExImage(data, unit=u.Unit("MJy/sr"))
+    return img
+
+
+def fake_zodi_scaling(num_bins: int = 64) -> Table:
+    """Return fake 1D zodi scaling table.
+
+    Columns
+    -------
+    wavelength_um : float
+        Central wavelength in microns.
+    ZodiScale : float
+        Multiplicative scale applied to zodi model.
+    ZodiOffset_nWm2sr : float
+        Additive offset in nu*I_nu units of nW m^-2 sr^-1.
+
+    Notes
+    -----
+    Default values make this effectively a near no-op:
+      corrected_zodi ~= zodi * 1 + 0
+    """
+    wavelength_um = np.linspace(0.75, 5.0, num_bins, dtype=np.float32)
+    zodi_scale = np.ones(num_bins, dtype=np.float32)
+    zodi_offset = np.zeros(num_bins, dtype=np.float32)
+
+    tab = Table()
+    tab["wavelength_um"] = wavelength_um
+    tab["ZodiScale"] = zodi_scale
+    tab["ZodiOffset_nWm2sr"] = zodi_offset
+
+    tab["wavelength_um"].unit = u.um
+    tab["ZodiOffset_nWm2sr"].unit = u.nW / (u.m**2 * u.sr)
+
+    return tab
+
+
+def fake_xtalk_class1(detector_id: int) -> Table:
+    """Fake crosstalk type class 1."""
+    channels = np.arange(1, 33, dtype=int)
+    amps = np.zeros(32, dtype=np.float32)
+
+    # deterministic non-zero values for testing
+    amps[2] = -5.7e-3
+    amps[5] = -8.0e-3
+
+    return Table({
+        "Channel": channels,
+        "Coupling Amplitude": amps,
+    })
+
+
+def fake_xtalk_class2(detector_id: int) -> Table:
+    """Fake crosstalk type class 2."""
+    matrix = np.zeros((32, 32), dtype=np.float32)
+
+    # deterministic sparse couplings
+    matrix[2, 6] = 2.0e-3
+    matrix[3, 7] = 1.5e-3
+
+    # IMPORTANT: preserve column order
+    return Table({str(i): matrix[:, i] for i in range(32)})
+
+
+def fake_selection_mask(type: Literal["cosmology", "high_density"], mask_hips_order: int) -> HDUList:
+    """Return a fake selection mask to use in Query Reference Catalog testing.
+
+    Parameters
+    ----------
+    type : `str`
+        Type of mask to generate. Must be "cosmology" or "high_density".
+    mask_hips_order : `int`
+        HEALPix order for the mask. The number of pixels in the mask will
+        be 12*(NSIDE)^2, where NSIDE = 2^mask_hips_order.
+
+    Returns
+    -------
+    hdul : `astropy.io.fits.HDUList`
+        HDUList with a single-column binary table HDU. Indices correspond to
+        the galactic, NESTED, pixel/tile numbers at the requested order. Values
+        are 0=excluded pixels and 1=included pixels.
+    """
+    # Construct coordinates of interest based on mask type
+    if type == "cosmology":
+        # Make a fake cosmology mask with tiles outside the plane/LMC/SMC
+        positions = [
+            [270.00000, 66.56071],  # North Ecliptic Pole
+            [90.00000, -66.56071],  # South Ecliptic Pole
+        ]
+        coords = SkyCoord(ra=[p[0] * u.deg for p in positions], dec=[p[1] * u.deg for p in positions],
+                          frame='icrs')
+        ext_name = "COSMO_MASK"
+    elif type == "high_density":
+        # Make a fake high-density mask with tiles inside the plane/LMC/SMC
+        positions = [
+            [266.41501, -29.00611],  # Galactic Center
+            [80.89417, -69.75611],   # Large Magellanic Cloud
+            [13.18667, -72.82861]    # Small Magellanic Cloud
+        ]
+        coords = SkyCoord(ra=[p[0] * u.deg for p in positions], dec=[p[1] * u.deg for p in positions],
+                          frame='icrs')
+        ext_name = "HI_DENSITY_MASK"
+    else:
+        raise ValueError(f"Unknown mask type: {type}")
+
+    # To mimic IMPLICIT format, create a mask with indices corresponding
+    # to the pixel numbers at the specified order
+    mask = np.zeros((12*(2**mask_hips_order)**2), dtype=np.uint8)
+
+    # Identify tiles that contain the coordinates of interest
+    tile_list = hp.ang2pix(2**mask_hips_order, coords.galactic.l.deg, coords.galactic.b.deg,
+                           nest=True, lonlat=True)
+
+    # Include relevant tiles in the mask
+    mask[tile_list] = 1
+
+    # Store mask within a single-column binary table HDU
+    primary = fits.PrimaryHDU()
+    bin_hdu = fits.BinTableHDU.from_columns(
+        [fits.Column(name="MASK", format="B", unit="", array=mask)])
+    bin_hdu.header["EXTNAME"] = ext_name
+    hdul = fits.HDUList([primary, bin_hdu])
+
+    return hdul
+
+
+def fake_l3_flux_corrections(detector_id: int, shape: Tuple[int, int] = None,
+                             factor: float = 1.0) -> SPHERExImage:
+    """Return a fake L3 flux correction for a given detector.
+
+    Parameters
+    ----------
+    detector_id : `int`
+        SPHEREx detector number (1-6).
+    shape : `Tuple[int, int]`, optional
+        Shape of the flux correction image (y, x). Default is None, which uses
+        the active pixel dimensions.
+    factor : `float`, optional
+        Factor by which to scale the flux correction. Default is 1.0 for
+        a no-op correction.
+
+    Returns
+    -------
+    img : `spx_data.SPHERExImage`
+        Image containing a fake flux correction for the specified
+        detector.
+    """
+    # Generate correction map
+    if shape is None:
+        npix_x = spx_param.get_npix_x_active()
+        npix_y = spx_param.get_npix_y_active()
+    else:
+        npix_y, npix_x = shape
+    data = np.full((npix_y, npix_x), fill_value=factor, dtype=np.float32)
+
+    # Add dimensionless unit and detector ID to image metadata
+    img = SPHERExImage(data, unit=u.dimensionless_unscaled)
+    img.setArrayId(detector_id)
+
+    return img

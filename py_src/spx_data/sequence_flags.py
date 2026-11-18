@@ -4,8 +4,7 @@ from enum import IntFlag
 
 
 class SequenceFlag(IntFlag):
-    """
-    Sequence flags for timed data associated with an observation.
+    """Sequence flags for timed data associated with an observation.
 
     These flags indicate the overlap between the time range of per-observation
     data snippets and the time range of an observation. They specify how much

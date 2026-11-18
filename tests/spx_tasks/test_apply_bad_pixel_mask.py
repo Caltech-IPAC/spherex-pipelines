@@ -24,6 +24,7 @@ def make_random_cold(spximg: SPHERExImage) -> SPHERExImage:
     -------
     `SPHERExImage`
         Image with 3 random pixels less than -2 eps.
+
     """
     rng = np.random.default_rng(193)
     x, y = spximg.shape
@@ -47,6 +48,7 @@ def make_random_hot(spximg: SPHERExImage) -> SPHERExImage:
     -------
     `SPHERExImage`
         Image with 3 random pixels greater than 10000 eps.
+
     """
     rng = np.random.default_rng(199)
     x, y = spximg.shape

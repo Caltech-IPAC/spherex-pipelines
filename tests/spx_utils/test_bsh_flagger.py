@@ -7,6 +7,7 @@ from spx_utils import BSHFlagger, BSHConfig, apply_bsh_flags_to_spx
 
 class MockSPHERExImage:
     """Minimal SPHERExImage stand-in for BSHFlagger tests."""
+
     def __init__(self, data, flags=None, array_id=2, telapse=1.0):
         self.data = np.asarray(data, dtype=float)  # e/s
         if flags is None:
@@ -53,7 +54,8 @@ def set_bit(mask: np.ndarray, bit: int, rows, cols):
 
 def test_ctor_sets_detector_thresholds_and_header(make_spx):
     """Verify init chooses the right min_overflow by detector id
-       and writes header keys."""
+    and writes header keys.
+    """
     # Detector 5 should pick d456 threshold
     spx = make_spx(array_id=5, telapse=5.0)
     cfg = BSHConfig()
@@ -67,7 +69,8 @@ def test_ctor_sets_detector_thresholds_and_header(make_spx):
 
 def test_mark_transient_halo_convolution_kernel(make_spx):
     """A single transient pixel should mark itself and
-       4-neighbors in halo via the 4-connected kernel."""
+    4-neighbors in halo via the 4-connected kernel.
+    """
     spx = make_spx(shape=(9, 9))
     flags = spx.flags
 
@@ -101,7 +104,7 @@ def test_apply_bsh_flags_sets_bits_and_satellite_halo(make_spx):
     flagger.halo_rows = np.array([8, 8, 8])
     flagger.halo_cols = np.array([5, 6, 7])
     # Indicate at least one satellite streak was detected
-    flagger.header["SATSTRKS"] = (1, "Satellite Streaks Detected")
+    flagger.header["SNWSTRK"] = (1, "Saturating streaks detected by BSH algorithm")
 
     # Apply into spx.flags
     apply_bsh_flags_to_spx(spx, flagger)
@@ -116,7 +119,8 @@ def test_apply_bsh_flags_sets_bits_and_satellite_halo(make_spx):
 
 def test_apply_halo_flag_eccentric_border_expand_and_project(make_spx):
     """Force the eccentric-track branch (r_max > r_) and
-       verify SATSTRKS and SATELLITE_HALO pixels."""
+    verify SNWSTRK and SATELLITE_HALO pixels.
+    """
     spx = make_spx(shape=(32, 32), telapse=10.0, fill_rate=200.0)
     cfg = BSHConfig(satellite_halomethod="border_expand")  # avoid skimage dependency in test
     flagger = BSHFlagger(spx, cfg)
@@ -137,10 +141,10 @@ def test_apply_halo_flag_eccentric_border_expand_and_project(make_spx):
     flagger._apply_halo_flag()
 
     # We should be in the eccentric path (track longer than circular radius),
-    # which increments SATSTRKS and fills halo_rows/cols.
-    sat_str = flagger.header.get("SATSTRKS", (0,))[0] if isinstance(
-        flagger.header.get("SATSTRKS"), tuple
-    ) else flagger.header.get("SATSTRKS", 0)
+    # which increments SNWSTRK and fills halo_rows/cols.
+    sat_str = flagger.header.get("SNWSTRK", (0,))[0] if isinstance(
+        flagger.header.get("SNWSTRK"), tuple
+    ) else flagger.header.get("SNWSTRK", 0)
     assert sat_str > 0
     assert hasattr(flagger, "halo_rows") and flagger.halo_rows.size > 0
 
@@ -152,7 +156,8 @@ def test_apply_halo_flag_eccentric_border_expand_and_project(make_spx):
 
 def test_get_nonoverflow_bloom_flag_sets_flag5(make_spx):
     """Craft a small scenario that triggers the
-       non-overflow bloom path, setting bloom_flag=5."""
+    non-overflow bloom path, setting bloom_flag=5.
+    """
     shape = (21, 21)
     spx = make_spx(shape=shape, telapse=10.0, fill_rate=500.0)  # fluence=5000e-, comfortably above thresholds
     cfg = BSHConfig()

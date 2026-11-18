@@ -5,6 +5,8 @@ storageClasses:
     pytype: spx_data.NonLinearityParameters
   ReadNoiseParameters:
     pytype: spx_data.ReadNoiseParameters
+  PersistenceImage:
+    inheritsFrom: SPHERExImage
   PersistenceState:
     pytype: spx_data.PersistenceState
   AstropyImage:
@@ -22,10 +24,13 @@ storageClasses:
       - dtype_data
       - extname
       - hdu
+      - compress_image_hdu
   SPHERExL1Image:
     inheritsFrom: SPHERExImage
   PSF:
     pytype: spx_data.PSFZoneData
+  EPSF:
+    pytype: spx_data.SPHERExImage
   AstropyParquet:
     pytype: astropy.table.Table
     converters:
@@ -70,4 +75,8 @@ storageClasses:
   SpxPhotoCalib:
     pytype: astropy.table.Table
   SbandMnemonics:
+    pytype: astropy.table.Table
+  ZodiScaling:
+    pytype: astropy.table.Table
+  Xtalk:
     pytype: astropy.table.Table

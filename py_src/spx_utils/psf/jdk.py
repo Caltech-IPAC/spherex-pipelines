@@ -1,8 +1,8 @@
 import numpy as np
 from numba import prange
-from photutils.psf import create_matching_kernel
-from photutils.psf.matching import (TopHatWindow, CosineBellWindow, TukeyWindow,
-                                    SplitCosineBellWindow, HanningWindow)
+from photutils.psf.matching import (
+    create_matching_kernel, TopHatWindow, CosineBellWindow, TukeyWindow,
+    SplitCosineBellWindow, HanningWindow)
 
 
 def photutils_jdk(decon_mission_stack: np.ndarray,
@@ -15,8 +15,7 @@ def photutils_jdk(decon_mission_stack: np.ndarray,
                   beta: float,
                   verbose=False,
                   plt=False):
-    """
-    Determine the jitter difference kernel (JDK) using photutils.
+    """Determine the jitter difference kernel (JDK) using photutils.
 
     This function computes the JDK by creating jitter point spread functions (PSFs)
     for a mission stack and a given PSF library. The method involves matching kernels
@@ -67,6 +66,7 @@ def photutils_jdk(decon_mission_stack: np.ndarray,
     - The function uses different window functions for creating matching kernels.
     - The resulting kernels can optionally be trimmed to remove edge artifacts.
     - If `plt` is enabled, the PSFs are plotted, useful for visual verification.
+
     """
     if window == "":
         win = None

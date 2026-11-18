@@ -8,6 +8,7 @@ from spx_data import BackgroundMesh
 
 class BackgroundMeshFormatter(FileFormatter):
     """Interface for reading and writing background model files."""
+
     extension = ".fits"
     supportedExtensions = frozenset({".fits.gz", ".fits"})
 
@@ -25,6 +26,8 @@ class BackgroundMeshFormatter(FileFormatter):
 
         Returns
         -------
+        `BackgroundMesh` or None
+            BackgroundMesh object or None if file not found.
 
         """
         try:
@@ -40,12 +43,14 @@ class BackgroundMeshFormatter(FileFormatter):
 
         Parameters
         ----------
-        inMemoryDataset :
+        inMemoryDataset : `~spx_data.BackgroundMesh`
+            The background mesh data to write.
 
         Raises
         ------
         NotImplementedError
             Unable to write this representation of FITS into a file.
+
         """
         if not isinstance(inMemoryDataset, BackgroundMesh):
             raise NotImplementedError("Unable to write this representation of FITS into a file.")

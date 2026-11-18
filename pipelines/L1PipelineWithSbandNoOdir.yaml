@@ -1,0 +1,24 @@
+description: L1PipelineWithSbandNoOdir
+tasks:
+  level1_with_sband:
+    class: spx_tasks.l1_split.L1WithSbandNoOdirTask
+    config:
+      gds_image_association.useSband: true
+      gds_image_association.usePlannedObs: true
+      gds_image_association.useSgt: false
+      gds_image_association.useSpk: false
+      create_image_data_files.layers: ["RAWDATA", "CUBEFLGS", "GDSDATA"]
+      connections.spximg: "raw"
+      connections.planned_obs: "planned_obs"
+      connections.sband_mnemonics: "sband_mnemonics"
+      connections.sband: "sband"
+      connections.sgt: "sgt"
+      connections.spk: "spk"
+      connections.gain_factors: "gain_factors"
+      connections.nonfunc_map_v2: "nonfunc_v2"
+      connections.dichroic_cut_map: "dichroic"
+      connections.spectral_wcs: "spectral_wcs"
+      connections.initial_distortion_table: "initial_distortion_table"
+      connections.level1_img: "level1"
+      connections.dqa_l1: "dqa_l1"
+      connections.sur_diag: "sur_diag"

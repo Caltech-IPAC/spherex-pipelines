@@ -1,8 +1,0 @@
-description: EstimateDarkCurrentPipeline
-tasks:
-  estimate_dark_current:
-    class: spx_tasks.EstimateDarkCurrentTask
-    config:
-      connections.dataset: "level2"
-      connections.dc_prev: "dark"
-      connections.dark_current_img: "dc_est"

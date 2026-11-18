@@ -61,10 +61,14 @@ class AggregateIdqrConnections(pipeBase.PipelineTaskConnections,
 
 class AggregateIdqrTaskConfig(pipeBase.PipelineTaskConfig,
                               pipelineConnections=AggregateIdqrConnections):
+    """Configuration for AggregateIdqrTask."""
+
     pass
 
 
 class AggregateIdqrTask(pipeBase.PipelineTask):
+    """Task to aggregate IDQR data across multiple observations."""
+
     _DefaultName = "pointing-solution"
     ConfigClass = AggregateIdqrTaskConfig
     full_name = "Pointing Solution"

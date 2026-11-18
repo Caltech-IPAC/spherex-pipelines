@@ -15,6 +15,7 @@ def set_active_pix_wcs(header: Header, key='A', crpix: tuple = (1, 1), crval: tu
         Image coordinates of the reference pixel, default is (1., 1.)
     crval :
         Coordinate value at the reference pixel, default is (0., 0.)
+
     """
     header[f"WCSNAME{key}"] = "0-based active pixel coordinates"
     header[f"WCSAXES{key}"] = 2

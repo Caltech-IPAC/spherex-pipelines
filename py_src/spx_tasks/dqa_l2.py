@@ -15,7 +15,7 @@ from astropy.units import Unit
 from astropy.wcs import WCS
 
 # Local application/library specific imports
-from spx_data import SPHERExImage, Level2DQA, Flag
+from spx_data import SPHERExImage, Level2DQA, Flag, FLAG_NAME_ALIASES
 from spx_tasks import add_history
 from spx_utils.idqr_utils import get_idqr
 from spx_tasks.update_persistence import dqa_check_persistence_flux
@@ -38,8 +38,7 @@ def dqa_check_variance_sigma(uncertainty: VarianceUncertainty,
                              tolerance: float,
                              flags: np.ndarray = None,
                              mask_flags: int = None) -> dict:
-    """
-    Perform a DQA check on the square root of the variance map,
+    """Perform a DQA check on the square root of the variance map,
     excluding flagged pixels.
 
     Parameters
@@ -59,6 +58,7 @@ def dqa_check_variance_sigma(uncertainty: VarianceUncertainty,
     -------
     result : `dict`
         Dictionary with result ('PASS'/'FAIL') and description.
+
     """
     if not isinstance(uncertainty, VarianceUncertainty):
         raise TypeError(f"Expected VarianceUncertainty, got {type(uncertainty)}")
@@ -111,6 +111,7 @@ def dqa_check_zodi_exists(spximg: SPHERExImage) -> dict:
     -------
     result : `dict`
         DQA result dictionary with "result" and "description".
+
     """
     try:
         _ = spximg.zodi
@@ -139,6 +140,7 @@ def dqa_check_all_layers_present(spximg: SPHERExImage) -> dict:
     -------
     result : `dict`
         Dictionary with DQA result and description.
+
     """
     missing = []
 
@@ -164,8 +166,7 @@ def dqa_check_all_layers_present(spximg: SPHERExImage) -> dict:
 
 
 def dqa_check_solid_angle(spximg, ranges: dict, tolerance_pct: float) -> dict:
-    """
-    Perform a DQA check on the pixel solid angle solution for a given detector array.
+    """Perform a DQA check on the pixel solid angle solution for a given detector array.
 
     Parameters
     ----------
@@ -180,6 +181,7 @@ def dqa_check_solid_angle(spximg, ranges: dict, tolerance_pct: float) -> dict:
     -------
     result : `dict`
         Dictionary with DQA "result" and "description".
+
     """
     arr = spximg.getArrayId()
     if "OMEGA_MEDIAN" not in spximg.meta or "OMEGA_STDDEV" not in spximg.meta:
@@ -227,6 +229,7 @@ def dqa_check_psf_solid_angle(spximg, expected_fwhm: float = 7.00, tolerance_fra
     -------
     result : `dict`
         Dictionary with DQA "result" and "description".
+
     """
     try:
         omega_measured = spximg.header["HIERARCH.PSF_OMEGA"]
@@ -287,6 +290,7 @@ def dqa_check_srccat_coverage(spximg: SPHERExImage,
     -------
     result : `dict`
         DQA result dictionary with "result" and "description".
+
     """
     # get ra, dec columns
     colnames = {c.lower(): c for c in srccat.colnames}
@@ -428,6 +432,8 @@ class DQAL2Connections(pipeBase.PipelineTaskConnections,
 
 class DQAL2Config(pipeBase.PipelineTaskConfig,
                   pipelineConnections=DQAL2Connections):
+    """Configuration for DQAL2 (Level 2 Data Quality Assessment) task."""
+
     variance_range = DictField(
         doc="Expected range of variance plane values, in MJy/sr.",
         keytype=str,
@@ -545,6 +551,7 @@ class DQAL2Task(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "dqa-l2"
@@ -729,6 +736,7 @@ class DQAL2Task(pipeBase.PipelineTask):
             srccat_coverage_check=srccat_coverage_check
         )
 
+        # shallow copy
         spximg_out = copy.copy(spximg)
 
         # Check for unflagged NaNs in the image
@@ -756,72 +764,33 @@ class DQAL2Task(pipeBase.PipelineTask):
         # Add final result to the record (mutate after construction)
         dqa_record.overall_result = "PASS" if dqa_result else "FAIL"
 
-        # NOTE: Use distinct calculations/variables to independently check
-        #       flagged pixel counts
-        # DQA statistics for flags used in Level-2
-        numpix_transients = np.sum((spximg_out.flags & Flag.TRANSIENT) > 0)
-        numpix_overflow = np.sum((spximg_out.flags & Flag.OVERFLOW) > 0)
-        numpix_surerror = np.sum((spximg_out.flags & Flag.SUR_ERROR) > 0)
-        numpix_phantom = np.sum((spximg_out.flags & Flag.PHANTOM) > 0)
-        numpix_reference = np.sum((spximg_out.flags & Flag.REFERENCE) > 0)
-        numpix_nonfunc = np.sum((spximg_out.flags & Flag.NONFUNC) > 0)
-        numpix_dichroic = np.sum((spximg_out.flags & Flag.DICHROIC) > 0)
-        numpix_missing = np.sum((spximg_out.flags & Flag.MISSING_DATA) > 0)
-        numpix_fullsample = np.sum((spximg_out.flags & Flag.FULLSAMPLE) > 0)
-        numpix_phanmiss = np.sum((spximg_out.flags & Flag.PHANMISS) > 0)
-        numpix_outlier = np.sum((spximg_out.flags & Flag.OUTLIER) > 0)
-
-        # DQA statistics for image data using flags
-        n_trans = len(spximg_out.data[(spximg_out.flags & Flag.TRANSIENT) > 0])
-        n_ovrflw = len(spximg_out.data[(spximg_out.flags & Flag.OVERFLOW) > 0])
-        n_surerr = len(spximg_out.data[(spximg_out.flags & Flag.SUR_ERROR) > 0])
-        n_nonfunc = len(spximg_out.data[(spximg_out.flags & Flag.NONFUNC) > 0])
-        n_dichroic = len(spximg_out.data[(spximg_out.flags & Flag.DICHROIC) > 0])
-        n_missing = len(spximg_out.data[(spximg_out.flags & Flag.MISSING_DATA) > 0])
-        n_fullsample = len(spximg_out.data[(spximg_out.flags & Flag.FULLSAMPLE) > 0])
-        n_phanmiss = len(spximg_out.data[(spximg_out.flags & Flag.PHANMISS) > 0])
-
-        spximg_out.header['HIERARCH L2 N_TRANSIENT'] = (n_trans, "number of flagged transient pixels")
-        spximg_out.header["HIERARCH L2 N_OVERFLOW"] = (n_ovrflw, "number of flagged overflow pixels")
-        spximg_out.header["HIERARCH L2 N_SUR_ERROR"] = (n_surerr, "number of flagged sur error pixels")
-        spximg_out.header["HIERARCH L2 N_NONFUNC"] = (n_nonfunc, "number of flagged nonfunctional pixels")
-        spximg_out.header["HIERARCH L2 N_DICHROIC"] = (n_dichroic,
-                                                       "number of flagged pixels due to low efficiency")
-        spximg_out.header["HIERARCH L2 N_MISSING"] = (n_missing, "number of flagged pixels with missing data")
-        spximg_out.header["HIERARCH L2 N_FULLSAMPLE"] = (n_fullsample, "number of flagged full-sample pixels")
-        spximg_out.header["HIERARCH L2 N_PHANMISS"] = (n_phanmiss, "number of flagged phanmiss pixels")
-
-        # Add to flags layer header
-        spximg_out.flag_header['HIERARCH L2 N_TRANSIENT'] = (numpix_transients,
-                                                             "number of flagged transient pixels")
-        spximg_out.flag_header["HIERARCH L2 N_OVERFLOW"] = (numpix_overflow,
-                                                            "number of flagged overflow pixels")
-        spximg_out.flag_header["HIERARCH L2 N_SUR_ERROR"] = (numpix_surerror,
-                                                             "number of flagged sur error pixels")
-        spximg_out.flag_header["HIERARCH L2 N_PHANTOM"] = (numpix_phantom, "number of flagged phantom pixels")
-        spximg_out.flag_header["HIERARCH L2 N_REFERENCE"] = (numpix_reference,
-                                                             "number of flagged reference pixels")
-        spximg_out.flag_header["HIERARCH L2 N_NONFUNC"] = (numpix_nonfunc,
-                                                           "number of flagged nonfunctional pixels")
-        spximg_out.flag_header["HIERARCH L2 N_DICHROIC"] = (numpix_dichroic,
-                                                            "number of flagged pixels due to low efficiency")
-        spximg_out.flag_header["HIERARCH L2 N_MISSING"] = (numpix_missing,
-                                                           "number of flagged pixels with missing data")
-        spximg_out.flag_header["HIERARCH L2 N_FULLSAMPLE"] = (numpix_fullsample,
-                                                              "number of flagged full-sample pixels")
-        spximg_out.flag_header["HIERARCH L2 N_PHANMISS"] = (numpix_phanmiss,
-                                                            "number of flagged phanmiss pixels")
-        spximg_out.flag_header["HIERARCH L2 N_OUTLIER"] = (numpix_outlier,
-                                                           "number of flagged outlier pixels")
+        L2_FLAGS_TO_COUNT = [
+            (Flag.TRANSIENT, "flagged transient pixels"),
+            (Flag.OVERFLOW, "overflow pixels"),
+            (Flag.SUR_ERROR, "sur error pixels"),
+            (Flag.NONFUNC, "nonfunctional pixels"),
+            (Flag.DICHROIC, "pixels due to low efficiency"),
+            (Flag.MISSING_DATA, "pixels with missing data"),
+            (Flag.FULLSAMPLE, "full-sample pixels"),
+            (Flag.PHANMISS, "phanmiss pixels"),
+            (Flag.SNOWBALL, "snowball artifact pixels"),
+            (Flag.BLOOM, "bloom artifact pixels"),
+            (Flag.HALO, "transient halo pixels"),
+            (Flag.SATELLITE_HALO, "streak halo pixels"),
+        ]
+        for flag, desc in L2_FLAGS_TO_COUNT:
+            count = np.count_nonzero(spximg_out.flags & flag)
+            flag_name = FLAG_NAME_ALIASES.get(flag.name, flag.name)
+            keyword = f"HIERARCH L2 N_{flag_name}"
+            description = f"number of flagged {desc}"
+            spximg_out.header[keyword] = (count, description)
 
         # Flag plane should be unitless
         spximg_out.flag_header["BUNIT"] = ("", "Unit of flag pixel value (dimensionless)")
 
         idqr = get_idqr(spximg_out)
-
-        for key in ["NL_DQA_RES", "NL_DQA_DESC"]:
-            if key in spximg.meta:
-                del spximg.meta[key]
+        # Remove integer target id, only needed for ODIR/IDQR reports
+        spximg_out.meta.pop("SPS_TARGET_PEF", None)
 
         # Extract refcat provenance and write into image header
         _, ref_ver = get_refcat_provenance(srccat)

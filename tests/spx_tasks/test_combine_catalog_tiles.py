@@ -48,9 +48,17 @@ def get_sample_file(type: str) -> SPHERExImage:
     return str(sample_file)
 
 
+def get_sample_spectral_wcs(data: np.ndarray) -> fits.HDUList:
+    primary_hdu = fits.PrimaryHDU()
+    cwave_hdu = fits.ImageHDU(data=np.full(data.shape, 0.123), name="CWAVE")
+    cband_hdu = fits.ImageHDU(data=np.full(data.shape, 0.001), name="CBAND")
+    return fits.HDUList([primary_hdu, cwave_hdu, cband_hdu])
+
+
 def run_pfp(config, fits_files, runs=2):
-    """Runs the ``PerformForcedPhotometryTask`` ``runs`` amount of times and
-    aggregates results into one dictionary with an entry for each healpix. All
+    """Run the ``PerformForcedPhotometryTask`` ``runs`` amount of times.
+
+    Aggregate results into one dictionary with an entry for each healpix. All
     source measurements per healpix are combined into its respective healpix
     index.
 
@@ -67,6 +75,7 @@ def run_pfp(config, fits_files, runs=2):
     -------
     healpixes : `dict`
         Dictionary of healpixes with lists for each source measurements.
+
     """
     pfp_task = PerformForcedPhotometryTask(config=config)
 
@@ -77,7 +86,9 @@ def run_pfp(config, fits_files, runs=2):
             spx_img = SPHERExImage.read(img)
             bkgd = get_sample_global_bkgd(spx_img.data)
             pix_map = get_sample_pix_map(spx_img.data)
-            output = pfp_task.run(spx_img, spx_img.catalog, bkgd, pix_map)
+            spectral_wcs = get_sample_spectral_wcs(spx_img.data)
+            output = pfp_task.run(spximg=spx_img, srccat=spx_img.catalog, global_bkgd=bkgd,
+                                  solid_angle_pixel_map=pix_map, spectral_wcs=spectral_wcs)
 
             # Want to combine it all together so combining healpixes
             for healpix, table in output.phot_meas.items():
@@ -89,7 +100,7 @@ def run_pfp(config, fits_files, runs=2):
 
 
 def run_casc(deferred_meas_table_list: list[MockDeferredDatasetHandle]) -> pa.Table:
-    """Runs the ``Create All Sky Catalog`` task.
+    """Run the ``Create All Sky Catalog`` task.
 
     Parameters
     ----------
@@ -100,6 +111,7 @@ def run_casc(deferred_meas_table_list: list[MockDeferredDatasetHandle]) -> pa.Ta
     -------
     allsky_cat : `pyarrow.Table`
         A table of all-sky catalog measurements for a single HEALpix.
+
     """
     # No filtering; no pass through columns
     config = CreateAllSkyCatalogConfig(sort_on="lambda", merge_refcat=False, pass_thru_cols=["name"],
@@ -117,7 +129,7 @@ def test_combine_catalog_tiles():
         # Point source sample (15x15 image cutout; 6 sources; HEALPix 19644)
         ps_file = get_sample_file("point source")
         ps_config = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=False, merge_srccat=True,
-                                                  pass_thru_cols=["name"])
+                                                  pass_thru_cols=["name"], fit_sso=False)
         ps_healpixes = run_pfp(ps_config, [ps_file], runs=2)
         ps_id = next(iter(ps_healpixes))
         ps_allsky = run_casc([MockDeferredDatasetHandle(ps_healpixes[ps_id])])
@@ -126,7 +138,7 @@ def test_combine_catalog_tiles():
         gal_file = get_sample_file("galaxy")
         gal_config = PerformForcedPhotometryConfig(hips_order=6, combinedOutput=False, merge_srccat=True,
                                                    pass_thru_cols=["name"], cut_side_length=2, frame_width=1,
-                                                   bkg_side_length=4, bkg_box_size=1)
+                                                   fit_sso=False)
         gal_healpixes = run_pfp(gal_config, [gal_file], runs=5)
         gal_id = next(iter(gal_healpixes))
         gal_allsky = run_casc([MockDeferredDatasetHandle(gal_healpixes[gal_id])])

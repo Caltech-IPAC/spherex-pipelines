@@ -10,10 +10,21 @@ tasks:
       connections.sip: "sip"
       connections.srccat: "srccat"
       connections.spectral_wcs: "spectral_wcs"
-      # connections.xtalk_coupling_matrix: "xtalk_coupling_matrix"
-      # connections.ssocat: "ssocat"
-      connections.psf_avg: "average_psf"
+      connections.zodi_scaling: "zodi_scaling"
+      connections.he_template: "he_template"
+      connections.aurora_template: "aurora_template"
+      connections.shuttle_glow_template: "shuttle_glow_template"
+      connections.ssocat: "ssocat"
       connections.spximg_out: "level2"
       connections.dqa_l2: "dqa_l2"
       connections.idqr_obs: "idqr_obs"
       connections.astr_diag: "astr_diag"
+
+      # Cross-talk related
+      connections.xtalk_class1: "xtalk_class1"
+      connections.xtalk_class2: "xtalk_class2"
+      create_source_mask.mask_xtalk: true
+
+      # EPSF-related
+      connections.epsf: "epsf"
+      measure_psf.write_epsf_bintable: true

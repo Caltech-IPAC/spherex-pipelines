@@ -1,5 +1,5 @@
-"""
-This python module defines a pydantic representation for a single observation.
+"""Pydantic representation for a single observation.
+
 The following is the json output.
 
 .. code-block:: json
@@ -76,8 +76,8 @@ The following is the json output.
 }
 
 
-  Notes
-  -----
+Notes
+-----
   boresight: The planned telescope boresight in (ra, dec) at the start of the
              observation (ICRS equatorial coordinates in degrees)
   ra: right ascension
@@ -88,6 +88,7 @@ The following is the json output.
   stop_time: The observation ID (probably in its integer form)
   target_id: The "target ID" from the SPS
   flags: derived from the SPS metadata",
+
 """
 
 __all__ = ["PlannedObservation"]
@@ -102,7 +103,9 @@ from lsst.daf.butler import Timespan
 
 # Local application/library specific imports
 from .models import AstropyAngleType
+from .observation_id import ObservationId
 from .sps_flags import SPSFlag
+from .survey_identifier import derive_target_name
 
 
 class PlannedObservation(BaseModel):
@@ -149,7 +152,18 @@ class PlannedObservation(BaseModel):
       in detector pixel data and should be excluded from calibrations.
     non_survey : `bool`
       Observation is a non-survey test observation, as noted in PEF.
+    regularized_target_id : `int`, optional
+      Regularized SPS target number. For go-back observations, this is the
+      original target ID from the first survey when the target was observed
+      (looked up from the GDS go-backs file). For non-go-back observations,
+      this is the same as target_id.
+    target_name : `str`, optional
+      Target name string for use in SPS_TARGET header and CAOM2/ObsCore.
+      Format: "SPS_NNNNNN_SXX" where NNNNNN is the 6-digit zero-padded
+      regularized target ID and SXX is the survey identifier (S12, S34, S56).
+
     """
+
     model_config = ConfigDict(validate_default=True, arbitrary_types_allowed=True)
     ra: AstropyAngleType
     dec: AstropyAngleType
@@ -168,6 +182,14 @@ class PlannedObservation(BaseModel):
     vel: list[float]  # velx, vely, velz
     in_sband: bool
     non_survey: Optional[bool] = None
+    regularized_target_id: Optional[int] = Field(
+        default=None,
+        description="Regularized target ID (original ID for go-backs, same as target_id otherwise)"
+    )
+    target_name: Optional[str] = Field(
+        default=None,
+        description="Target name string (e.g., 'SPS_000123_S12')"
+    )
 
     @field_validator("dec")
     @classmethod
@@ -199,8 +221,46 @@ class PlannedObservation(BaseModel):
         -------
         result : `str`
             A comma-separated string of all active flag names.
+
         """
         active_flags = SPSFlag.to_string(self.flags)
         if len(active_flags) == 0:
             active_flags = "No flags set"
         return active_flags
+
+    def get_target_name(self) -> str:
+        """Get the extended SPS target ID string (target_name).
+
+        Returns the target_name in format "SPS_NNNNNN_SXX" (e.g., "SPS_000123_S12").
+        If target_name is already set, returns it directly. Otherwise, derives it
+        from the observation metadata for non-go-back observations.
+
+        Returns
+        -------
+        target_name : `str`
+            The extended SPS target ID string.
+
+        Raises
+        ------
+        ValueError
+            If target_name is not set and the observation is a go-back observation.
+            Go-back observations require regularized_target_id to be looked up
+            from the GDS go-backs file and target_name to be set explicitly.
+
+        """
+        if self.target_name is not None:
+            return self.target_name
+
+        # Check if this is a go-back observation
+        if SPSFlag.is_go_back(self.flags):
+            raise ValueError(
+                "Go-back observation target name is not available. "
+                "The regularized_target_id must be looked up from the GDS "
+                "go-backs file and target_name must be set explicitly."
+            )
+
+        # Non-go-back observation: derive target_name from obs_id and target_id
+        obs = ObservationId(self.obs_id)
+        spsplan_id = obs.plan_id
+        target_id = self.regularized_target_id or self.target_id
+        return derive_target_name(self.flags, spsplan_id, target_id)

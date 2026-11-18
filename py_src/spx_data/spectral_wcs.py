@@ -8,7 +8,8 @@ from astropy.table import Table
 class SpectralWCS:
     """Object that holds spectral WCS data.
 
-    Attributes:
+    Attributes
+    ----------
     hdr : `~astropy.io.fits.Header`
         FITS Header with the spectral coordinates WCS.
     tab : `~astropy.io.fits.BinTableHDU`
@@ -124,6 +125,7 @@ def _modify_lookup_data(img_shape: tuple[int, int],
     -------
     result : `astropy.io.fits.BinTableHDU`
         Binary Table HDU with modified lookup data matching image shape
+
     """
     img_nrows, img_ncols = img_shape
     actv_rows, actv_cols = actv_area  # zero-based indexes

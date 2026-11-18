@@ -12,7 +12,7 @@ class SPHERExImageFormatter(FileFormatter):
 
     extension = ".fits"
     supportedExtensions = frozenset({".fits.gz", ".fits"})
-    supportedWriteParameters = frozenset({"dtype_flags", "dtype_data", "extname"})
+    supportedWriteParameters = frozenset({"dtype_flags", "dtype_data", "extname", "compress_image_hdu"})
 
     def _readFile(self, path: str, pytype: Any | None = None) -> SPHERExImage | None:
         """Read a file from the path in FITS format.
@@ -29,6 +29,7 @@ class SPHERExImageFormatter(FileFormatter):
         result : `~spx_data.SPHERExImage` or `None`
             Either data as `~spx_data.SPHERExImage` object read from fits file,
             or `None` if the file could not be opened.
+
         """
         read_kwargs = self.fileDescriptor.parameters or {}
 
@@ -51,15 +52,30 @@ class SPHERExImageFormatter(FileFormatter):
         ------
         Exception
             The file could not be written.
+
         """
         if not isinstance(inMemoryDataset, SPHERExImage):
             raise NotImplementedError("Unable to write this representation of FITS into a file.")
+
         # Write to precision wanted.
-        inMemoryDataset.dtype_flags = self.writeParameters.get("dtype_flags",
-                                                               inMemoryDataset.dtype_flags)
-        inMemoryDataset.dtype_data = self.writeParameters.get("dtype_data",
-                                                              inMemoryDataset.dtype_data)
+        inMemoryDataset.dtype_flags = self.writeParameters.get(
+            "dtype_flags",
+            inMemoryDataset.dtype_flags,
+        )
+        inMemoryDataset.dtype_data = self.writeParameters.get(
+            "dtype_data",
+            inMemoryDataset.dtype_data,
+        )
+        compress_image_hdu = self.writeParameters.get(
+            "compress_image_hdu",
+            False,
+        )
+
         # Write extname if not default.
         extname = self.writeParameters.get("extname", "IMAGE")
 
-        inMemoryDataset.write(self.fileDescriptor.location.path, extname=extname)
+        inMemoryDataset.write(
+            self.fileDescriptor.location.path,
+            extname=extname,
+            compress_image_hdu=compress_image_hdu,
+        )

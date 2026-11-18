@@ -88,7 +88,8 @@ def test_image_catalog():
 
 def test_all_definition():
     """Tests that the manually defined `ALL` member includes all previously
-    defined members."""
+    defined members.
+    """
     for name, member in SourcePipelineClass.__members__.items():
         if name != "ALL":
             msg = f"Member {member} is missing from the manually-defined `ALL` member of "\

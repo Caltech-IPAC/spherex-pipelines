@@ -44,6 +44,7 @@ def _get_tab_data(spectral_info: DetectorSpectralInfo,
         - index_x, 1d array of integer indexes in X direction (1-based)
         - index_y, 1d array of indexes in Y direction (1-based)
         - coordinate_data, 6x6x2 array of coordinate values for wavelength and bandwidth
+
     """
     if n % 2 == 0:
         raise ValueError(f"n={n} is not odd")
@@ -78,6 +79,7 @@ def spectral_wcs_tab_header(alt="W") -> fits.Header:
     -------
     hdr : `~astropy.io.fits.Header`
         FITS header keywords to add alternate WCS with spectral coordinates
+
     """
     hdr = fits.Header()
 
@@ -148,8 +150,8 @@ def spectral_wcs_lookup_data(detector: int, wl_tolerance: Quantity) -> HDUList:
     Returns
     -------
     result : ~astropy.io.fits.HDUList
-    """
 
+    """
     spectral_info = DetectorSpectralInfo.create(detector)
     wl_true, bw_true = (spectral_info.central_wl, spectral_info.central_bw)
     if bw_true is None:

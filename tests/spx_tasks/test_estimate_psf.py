@@ -15,13 +15,13 @@ test_root = Path(__file__).parent.parent
 
 
 def get_sim_img() -> SPHERExImage:
-    """
-    Gets input simulated SPHEREx level 2 image.
+    """Get input simulated SPHEREx level 2 image.
 
     Returns
     -------
     `SPHERExImage`
         Simulated L2 image includes: data, flags, catalog.
+
     """
     sample_file = test_root / "data/simplified_psf.fits"
     assert sample_file.exists(), f"Sample file {sample_file} does not exist."
@@ -53,7 +53,7 @@ class TestEstimatePSF(unittest.TestCase):
         self.spximg = get_sim_img()
         # Ensure the mock image passes the quality checks in the task
         self.spximg.header["FINAST"] = 0
-        self.spximg.header["SPS_FLAGS"] = "survey"
+        self.spximg.header["HIERARCH SPS_FLAGS"] = "survey"
 
     def mockDataId(self, i: int):
         """Create a mock dataId."""

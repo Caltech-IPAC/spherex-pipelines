@@ -1,10 +1,12 @@
 __all__ = ["add_detcoord", "is_device_detcoord", "get_data_file",
-           "get_overflow_threshold", "get_refcat_provenance"]
+           "get_overflow_threshold", "get_refcat_provenance",
+           "get_data_release_version"]
 
 # Standard library imports
 from pathlib import Path
 import importlib.resources as resources
 import logging
+from typing import Literal
 
 # Related third party imports
 import numpy as np
@@ -12,8 +14,9 @@ from astropy.io import fits
 from astropy.table import Table
 
 # Local application/library specific imports
-from spx_data import ReadoutParameters
+from spx_data import ReadoutParameters, ObservationId
 from spx_data import SPHERExImage, PSFZoneData
+from spx_data.survey_identifier import get_survey_id_from_spsplan
 from astropy.io.fits import HDUList
 
 
@@ -21,8 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def add_detcoord(obj, device_coord: bool = False):
-    """
-    Add DETCOORD keyword to headers of SPHERExImage, HDUList (e.g., spectral WCS),
+    """Add DETCOORD keyword to headers of SPHERExImage, HDUList (e.g., spectral WCS),
     or PSFZoneData.
 
     Parameters
@@ -37,6 +39,7 @@ def add_detcoord(obj, device_coord: bool = False):
     -------
     obj : same as input
         Updated object with DETCOORD keyword in header(s).
+
     """
     if device_coord:
         value = "device"
@@ -87,6 +90,7 @@ def is_device_detcoord(obj) -> bool:
     ------
     TypeError
         If the input object is not one of the supported types.
+
     """
     device_detcoord_value = "device"
 
@@ -106,7 +110,7 @@ def is_device_detcoord(obj) -> bool:
 
 
 def get_data_file(rel_filename: str, package: str = "spx_tests") -> Path:
-    """Returns path to package file.
+    """Return path to package file.
 
     Parameters
     ----------
@@ -124,6 +128,7 @@ def get_data_file(rel_filename: str, package: str = "spx_tests") -> Path:
     ------
     FileNotFoundError
         Raised if the file is not found.
+
     """
     pkg = resources.files(package)
     resource = pkg / rel_filename
@@ -135,7 +140,7 @@ def get_data_file(rel_filename: str, package: str = "spx_tests") -> Path:
 
 
 def gains_for_image(gains: list[float], rp: ReadoutParameters, extra_refs: bool = False) -> np.ndarray:
-    """Generates a sample map of gain factors for readout parameters.
+    """Generate a sample map of gain factors for readout parameters.
 
     Parameters
     ----------
@@ -163,7 +168,7 @@ def gains_for_image(gains: list[float], rp: ReadoutParameters, extra_refs: bool 
 
 
 def get_overflow_threshold(header: fits.header, primary_key: str) -> int:
-    """Attempts to retrieve a overflow threshold value from the image header.
+    """Attempt to retrieve a overflow threshold value from the image header.
 
     Parameters
     ----------
@@ -196,6 +201,7 @@ def get_overflow_threshold(header: fits.header, primary_key: str) -> int:
 
     - TODO: After new simulations are made, post 05/15/2024, change handling for
             the case when no primary or fallback key is found to an exception.
+
     """
     try:
         # Attempt to retrieve the primary key value directly from the header.
@@ -226,6 +232,7 @@ def get_refcat_provenance(srccat: Table) -> tuple[str | None, str | None]:
     version : `str` or `None`
         Human-readable reference-catalog version label
         (e.g., ``"SPHEREx_RefCat_v0.73"``). ``None`` if unavailable.
+
     """
     run = ver = None
 
@@ -239,3 +246,39 @@ def get_refcat_provenance(srccat: Table) -> tuple[str | None, str | None]:
         logger.warning("Reference catalog provenance not found in srccat metadata")
 
     return run, ver
+
+
+def get_data_release_version(spximg) -> Literal["qr2", "qr3", "dr1"]:
+    """Determine the data release version for an SPX observation.
+    This function must be updated after survey 4, and after
+    each subsequent data release to ensure consistency.
+
+    Parameters
+    ----------
+    spximg : SPHERExImage
+        SPHEREx image object containing ``header`` metadata, including
+        ``OBSID`` and optionally ``VERSION``.
+
+    Returns
+    -------
+    `Literal["qr2", "qr3", "dr1"]`
+        The data release version associated with the observation.
+
+    Raises
+    ------
+    ValueError
+        Raised if the survey corresponding to the observation ID
+        cannot be determined.
+    """
+    spx_header_version = spximg.header.get("VERSION", None)
+
+    plan_id = ObservationId(spximg.header["OBSID"]).plan_id
+    # Survey ID determined from plan_id using boundaries in spx_data.survey_identifier
+    survey = get_survey_id_from_spsplan(plan_id)
+    if spx_header_version is None:
+        return "qr2"
+    # parsing versions like 6.4+psffix11
+    if int(str(spx_header_version)[0]) >= 7:
+        return "dr1" if survey == "S12" else "qr3"
+    else:
+        return "qr2"

@@ -13,6 +13,9 @@ class TestSPSFlag(unittest.TestCase):
         self.assertEqual(SPSFlag.EARTH_STRAYLIGHT, 1 << 5)
         self.assertEqual(SPSFlag.MOON_STRAYLIGHT, 1 << 6)
         self.assertEqual(SPSFlag.SPECIAL, 1 << 7)
+        self.assertEqual(SPSFlag.GO_BACK_S12, 1 << 8)
+        self.assertEqual(SPSFlag.GO_BACK_S34, 1 << 9)
+        self.assertEqual(SPSFlag.GO_BACK_S56, 1 << 10)
 
     def test_from_string_valid(self):
         self.assertEqual(SPSFlag.from_string("deep_south"), SPSFlag.DEEP_SOUTH)
@@ -55,3 +58,41 @@ class TestSPSFlag(unittest.TestCase):
         ]
         for f, v in expected:
             assert SPSFlag.is_saa(f) == v
+
+    def test_go_back_flags_from_string(self):
+        # go_back flags should also set ALL_SKY
+        self.assertEqual(
+            SPSFlag.from_string("go_back_s12"),
+            SPSFlag.GO_BACK_S12 | SPSFlag.ALL_SKY
+        )
+        self.assertEqual(
+            SPSFlag.from_string("go_back_s34"),
+            SPSFlag.GO_BACK_S34 | SPSFlag.ALL_SKY
+        )
+        self.assertEqual(
+            SPSFlag.from_string("go_back_s56"),
+            SPSFlag.GO_BACK_S56 | SPSFlag.ALL_SKY
+        )
+
+    def test_is_go_back(self):
+        expected = [
+            (SPSFlag.ALL_SKY, False),
+            (SPSFlag.GO_BACK_S12, True),
+            (SPSFlag.GO_BACK_S34, True),
+            (SPSFlag.GO_BACK_S56, True),
+            (SPSFlag.GO_BACK_S12 | SPSFlag.ALL_SKY, True),
+            (SPSFlag.ALL_SKY | SPSFlag.SAA, False),
+        ]
+        for f, v in expected:
+            self.assertEqual(SPSFlag.is_go_back(f), v)
+
+    def test_get_go_back_survey_id(self):
+        self.assertIsNone(SPSFlag.get_go_back_survey_id(SPSFlag.ALL_SKY))
+        self.assertEqual(SPSFlag.get_go_back_survey_id(SPSFlag.GO_BACK_S12), "S12")
+        self.assertEqual(SPSFlag.get_go_back_survey_id(SPSFlag.GO_BACK_S34), "S34")
+        self.assertEqual(SPSFlag.get_go_back_survey_id(SPSFlag.GO_BACK_S56), "S56")
+        # With combined flags, GO_BACK_S12 takes precedence
+        self.assertEqual(
+            SPSFlag.get_go_back_survey_id(SPSFlag.GO_BACK_S12 | SPSFlag.ALL_SKY),
+            "S12"
+        )

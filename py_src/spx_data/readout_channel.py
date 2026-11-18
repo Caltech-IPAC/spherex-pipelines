@@ -5,8 +5,7 @@ from .readout_parameters import ReadoutParameters
 
 
 class L1ReadoutChannel:
-    """
-    Definition of a readout channel in L1 image.
+    """Definition of a readout channel in L1 image.
 
     Attributes
     ----------
@@ -16,6 +15,7 @@ class L1ReadoutChannel:
         Range of the phantom column indexes in this channel.
     det_cols : `range`
         Range of the H2RG column indexes in this channel.
+
     """
 
     def __init__(self, i: int, ro_params: ReadoutParameters):
@@ -32,17 +32,19 @@ class L1ReadoutChannel:
 
 
 def l1_readout_channels(ro_params: ReadoutParameters) -> Iterator[L1ReadoutChannel]:
-    """Generator iterator through readout channels.
+    """Generate iterator through readout channels.
 
     Parameters
     ----------
     ro_params : `~spx_data.ReadoutParameters`
         Readout parameters
+
     Returns
     -------
     readout_channel : `Iterator[L1ReadoutChannel]`
         Iterator through readout channels (the information about image columns
         that belong to a readout channel)
+
     """
     for i in range(ro_params.nchannel):
         yield L1ReadoutChannel(i, ro_params)

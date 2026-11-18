@@ -39,6 +39,8 @@ class CorrectDarkCurrentConnections(pipeBase.PipelineTaskConnections,
 
 class CorrectDarkCurrentConfig(pipeBase.PipelineTaskConfig,
                                pipelineConnections=CorrectDarkCurrentConnections):
+    """Configuration for CorrectDarkCurrent task."""
+
     pass
 
 
@@ -63,6 +65,7 @@ class CorrectDarkCurrentTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "correct-dark-current"
@@ -76,7 +79,7 @@ class CorrectDarkCurrentTask(pipeBase.PipelineTask):
 
     @add_history()
     def run(self, spximg: SPHERExImage, dc_calib: SPHERExImage) -> pipeBase.Struct:
-        """Returns the dark current corrected image by subtracting the input
+        """Return the dark current corrected image by subtracting the input
         image by the provided dark current template.
 
         Parameters
@@ -99,6 +102,7 @@ class CorrectDarkCurrentTask(pipeBase.PipelineTask):
         -----
         ``spximg`` and ``dc_calib`` must be the same size and shape. Variance
         for dark current is ignored. Copy image variance to output.
+
         """
         # Copies original image flags, flag_defs, meta, and layers
         spx_reduced = spximg.subtract(operand=dc_calib,

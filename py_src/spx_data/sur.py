@@ -20,16 +20,17 @@ class SUR:
     """
 
     def __init__(self, data: ArrayLike | None, row_start: int, col_sectn: int | None = None, unit=u.electron):
-        """
+        """Initialize a full-sample region.
 
         Parameters
         ----------
         data : `numpy.typing.ArrayLike`
-            3D array containing data with `float` type
+            3D array containing data with `float` type.
         row_start : int
             Row offset of the full-sample area relative to the parent image.
         col_sectn :int
             Column section full-sample area relative to the parent image.
+
         """
         if hasattr(data, "value"):
             self.data = data.value

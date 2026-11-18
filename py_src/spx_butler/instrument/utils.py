@@ -15,6 +15,7 @@ def to_dichroicpair(detector: int) -> int:
     -------
     dichroicpair : int
         The matching dichroic pair ID.
+
     """
     return detector if detector < 4 else detector - 3
 
@@ -31,6 +32,7 @@ def from_dichroicpair(dichroicpair: int) -> tuple[int, int]:
     -------
     result : tuple[int, int]
         A tuple with matching SWIR and MWIR detector IDs.
+
     """
     # the SWIR detector ID is the same as dichroic pair id,
     # the MWIR detector ID is SWIR detector ID plus 3
@@ -51,6 +53,7 @@ def ensure_registered_instrument(instrument: Instrument, registry: Registry) -> 
         Instrument to register
     registry :
         Butler registry
+
     """
     try:
         _ = Instrument.fromName(instrument.getName(), registry)

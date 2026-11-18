@@ -6,5 +6,8 @@ tasks:
     class: spx_tasks.QueryReferenceCatalogTask
     config:
       connections.planned_obs: "planned_obs"
+      connections.cosmo_mask: "cosmo_mask"
+      connections.hi_density_mask: "hi_density_mask"
       connections.initial_distortion_table: "initial_distortion_table"
+      connections.special_ids: "special_ids"
       connections.catalog: "srccat"

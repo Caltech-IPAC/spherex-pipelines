@@ -9,7 +9,7 @@ from astropy.io import fits
 from astropy.nddata import CCDData
 from astropy.table import Table, setdiff
 from pathlib import Path
-from spx_data import SPHERExImage, Flag, Layer, spherex_image_reader, Zodi
+from spx_data import SPHERExImage, Flag, Layer, spherex_image_reader, spherex_image_writer, Zodi
 from spx_tests import get_sample_psf, get_sample_ssocat, get_sample_sur, get_sample_zodi
 
 test_root = Path(__file__).parent.parent
@@ -59,7 +59,7 @@ class TestSPHERExImage(unittest.TestCase):
             self.assertEqual(len(hdulist), 4)
 
         # test layers read/write
-        ssocat_in = get_sample_ssocat()
+        ssocat_in = get_sample_ssocat(asteroids_only=True)  # exclude None values/object dtype from GPs
         spherex_image.ssocat = ssocat_in
         sur_in = get_sample_sur()
         spherex_image.sur = sur_in
@@ -120,6 +120,31 @@ class TestSPHERExImage(unittest.TestCase):
         self.assertTrue(mask_sat_and_cp[2, 2])
         self.assertFalse(mask_sat_and_cp[1, 1])
         self.assertFalse(mask_sat_and_cp[0, 0])
+
+    def test_flags_compressed_with_rice1(self):
+        file_path = os.path.join(test_root, "data", "small.fits")
+        spherex_image = SPHERExImage.read(file_path)
+        self.assertTrue(isinstance(spherex_image, SPHERExImage))
+
+        test_flags = [
+            Flag.TRANSIENT,
+            Flag.OVERFLOW,
+            Flag.DICHROIC,
+            Flag.HOT,
+            Flag.SUR_MISMATCH,
+            Flag.PHANTOM,
+        ]
+
+        for flag in test_flags:
+            mask = np.random.random(spherex_image.flags.shape) < 0.25
+            spherex_image.flags[mask] |= flag
+
+        spherex_small_test_image = Path(self.root) / "small_test.fits"
+        spherex_image_writer(spherex_image, spherex_small_test_image)
+
+        original_flags = spherex_image.flags
+        compressed_flags = spherex_image_reader(spherex_small_test_image).flags
+        np.testing.assert_array_equal(original_flags, compressed_flags)
 
     def test_ensure_layers(self):
         spherex_image = SPHERExImage(np.full([3, 3], 5), unit="adu")

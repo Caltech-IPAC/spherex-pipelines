@@ -27,6 +27,7 @@ instrument_option = MWOptionDecorator("--instrument",
                                       type=click.Choice((SPHERExInstrument.getName(),
                                                          SimulatorInstrument.getName()),
                                                         case_sensitive=False),
+                                      default=SPHERExInstrument.getName(),
                                       help=f"""\b
                                       Possible values for instrument:
                                       - {SPHERExInstrument.getName()}: SPHEREx Instrument.

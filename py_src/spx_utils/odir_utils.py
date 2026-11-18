@@ -13,7 +13,7 @@ from spx_data.idqr import Timestamp
 
 
 def get_odir(spximgs: SPHERExImage | list[SPHERExImage], transient_threshold: int) -> ODIR:
-    """Utility function to create an ODIR from one or more SPHEREx images.
+    """Create an ODIR from one or more SPHEREx images.
 
     Parameters
     ----------
@@ -33,6 +33,7 @@ def get_odir(spximgs: SPHERExImage | list[SPHERExImage], transient_threshold: in
     This function checks for the number of transient pixels and sets a "bad"
     status if a given threshold is exceeded, which can flag an observation
     for re-observation.
+
     """
     # Ensure input is always a list for uniform processing
     if not isinstance(spximgs, list):
@@ -68,8 +69,16 @@ def get_odir(spximgs: SPHERExImage | list[SPHERExImage], transient_threshold: in
         obs_id = ObservationId(spx_obsid)
         sps_id = obs_id.sps_id
 
-        # SPS_TARGET
-        target_id = spximg.header.get("SPS_TARGET", 0)
+        # SPS_TARGET - get integer target ID for ODIR report
+        # First try SPS_TARGET_PEF (new format),
+        # then fall back to SPS_TARGET if integer (old format)
+        target_id = spximg.header.get("SPS_TARGET_PEF")
+        if target_id is None:
+            sps_target = spximg.header.get("SPS_TARGET")
+            if isinstance(sps_target, int):
+                target_id = sps_target
+            else:
+                target_id = 0
         if target_id == 0:
             logging.warning("No SPS target ID found. This is probably a simulated level1 image.")
 

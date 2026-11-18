@@ -1,3 +1,2 @@
-from .query_deep_field_catalog import *
-from .plan_tools import *
-from .photometry_tool import *
+# users should reference tools directly
+# innecessary imports slow down tool initialization

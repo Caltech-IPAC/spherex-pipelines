@@ -12,6 +12,8 @@ EXTNAMES = tuple([v for k, v in Layer.__dict__.items() if not k.startswith("_")]
 
 
 class SPHERExImageConfig(pexConfig.Config):
+    """Configuration for SPHERExImage FITS extension mapping."""
+
     unit = pexConfig.Field(
         doc="Units of the image data.",
         dtype=str,

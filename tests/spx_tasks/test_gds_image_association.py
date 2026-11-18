@@ -60,8 +60,7 @@ sband_raw = """2017/01/01 00:08:15.826,adstate,0,wait
 
 
 def sband_data_to_table(data):
-    """
-    Parse the sample sband data into an Astropy Table.
+    """Parse the sample sband data into an Astropy Table.
 
     Parameters
     ----------
@@ -72,6 +71,7 @@ def sband_data_to_table(data):
     -------
     table : `astropy.table.Table`
         An Astropy Table containing the parsed data.
+
     """
     # Split the data into lines and process each line
     lines = data.strip().split("\n")
@@ -101,22 +101,16 @@ def sband_data_to_table(data):
 class TestGdsImageAssociationTask(unittest.TestCase):
 
     def test_run(self):
-        # GDS data example
         sband_data = sband_data_to_table(data=sband_raw)
-        print(sband_data)
-        # List of sband items
         sband_mnemonics = sband_subset_table()
-        # Ground track data
         sgt = sgt_table()
-        # Create a mock SPHERExImage
+
         mock_spximg = MagicMock(spec=SPHERExImage)
         mock_spximg.header = Header()
         mock_spximg.header["DATE-AVG"] = "2025-03-27T17:08:47.472"
 
-        # Test combined flags to include both SURVEY and DEEPFIELD
         combined_flags = 0b0000001 | 0b0000010
 
-        # Create a mock PlannedObservation JSON
         planned_observation_data = {
             "ra": "153.07868515243598 deg",
             "dec": "28.562713618791285 deg",
@@ -141,32 +135,45 @@ class TestGdsImageAssociationTask(unittest.TestCase):
             "in_sband": False
         }
 
-        # Create PlannedObservation object
         planned_observation = PlannedObservation(**planned_observation_data)
 
-        # Initialize task config and task
         config = GdsImageAssociationConfig()
         config.useSband = True
         config.useSgt = True
         config.useSpk = False
         task = GdsImageAssociationTask(config=config)
 
-        # Run the task
         result = task.run(mock_spximg, planned_observation, sgt, sband_data, None, sband_mnemonics)
 
-        # Check that the output SPHEREx image contains the aggregated GDS table
         self.assertTrue(hasattr(result.spximg_out, 'gds'))
         gds_output_table = result.spximg_out.gds
 
-        # Verify the structure of the output table
-        self.assertEqual(gds_output_table.colnames,
-                         ['Keyword', 'Description',
-                          'First', 'Last', 'Mid',
-                          'Min', 'Max', 'Median', 'Mean',
-                          'Bitmap', 'FlagOptions', 'Type'])
+        self.assertEqual(
+            gds_output_table.colnames,
+            [
+                'Keyword', 'Description',
+                'First', 'Last', 'Mid',
+                'Min', 'Max', 'Median', 'Mean', 'Std', 'Variability',
+                'Bitmap', 'FlagOptions', 'Type'
+            ]
+        )
 
-        # Verify lon, lat, SAA keywords correspond to expected values from
-        # fake table
+        adstate_row = gds_output_table[gds_output_table["Keyword"] == "adstate"]
+        self.assertEqual(adstate_row["First"][0], "wait")
+        self.assertEqual(adstate_row["Last"][0], "wait")
+        self.assertEqual(adstate_row["Mid"][0], "wait")
+        self.assertEqual(adstate_row["Variability"][0], "CONSTANT")
+
+        adst1sang_row = gds_output_table[gds_output_table["Keyword"] == "adst1sang"]
+        self.assertEqual(adst1sang_row["First"][0], "0.0")
+        self.assertEqual(adst1sang_row["Last"][0], "0.0")
+        self.assertEqual(adst1sang_row["Min"][0], 0.0)
+        self.assertEqual(adst1sang_row["Max"][0], 0.0)
+        self.assertEqual(adst1sang_row["Mean"][0], 0.0)
+        self.assertEqual(adst1sang_row["Median"][0], 0.0)
+        self.assertEqual(adst1sang_row["Std"][0], 0.0)
+        self.assertEqual(adst1sang_row["Variability"][0], "CONSTANT")
+
         img_out_hdr = result.spximg_out.header
         self.assertEqual(img_out_hdr['HIERARCH SGT_LAT_MIDPT'], -68.724732)
         self.assertEqual(img_out_hdr['HIERARCH SGT_LON_MIDPT'], 351.684482)

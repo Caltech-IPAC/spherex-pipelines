@@ -40,6 +40,7 @@ def updateExposureRegion(
         column of a dimension table) dimension name.
     limit : `int`, optional
         Maximum number of datasets to query from the Butler.
+
     """
     butler = Butler(repo, writeable=True)
 

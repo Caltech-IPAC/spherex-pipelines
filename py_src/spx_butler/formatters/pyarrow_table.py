@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 
 class PyarrowTableFormatter(Formatter):
     """Formatter to read/write pyarrow table to/from parquet file."""
+
     extension = ".parq"
     supportExtensions = frozenset({".parquet", ".parq"})
 
@@ -32,6 +33,7 @@ class PyarrowTableFormatter(Formatter):
             Raised if a ``component`` is passed.
         ValueError
             Raised if a column name is not found in the table schema.
+
         """
         if component is not None:
             raise NotImplementedError("'component' not implemented.")
@@ -73,7 +75,7 @@ class PyarrowTableFormatter(Formatter):
         return table
 
     def write(self, inMemoryDataset: pa.Table) -> None:
-        """Write in memory dataset to file on disk
+        """Write in memory dataset to file on disk.
 
         Parameters
         ----------
@@ -84,6 +86,7 @@ class PyarrowTableFormatter(Formatter):
         ------
         NotImplementedError
             Raised if ``inMemoryDataset`` is not `pyarrow.Table`
+
         """
         if not isinstance(inMemoryDataset, pa.Table):
             raise NotImplementedError(

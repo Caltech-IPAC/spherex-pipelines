@@ -50,6 +50,8 @@ class SourceBloomAndCosmicRayHaloFlaggingConfig(
     pipeBase.PipelineTaskConfig,
     pipelineConnections=SourceBloomAndCosmicRayHaloFlaggingConnections,
 ):
+    """Configuration for SourceBloomAndCosmicRayHaloFlagging task."""
+
     bsh = ConfigField(
         doc="Configuration for Bloom, Snowball, and Halo (BSH) flagging.",
         dtype=BSHConfig,
@@ -83,6 +85,7 @@ class SourceBloomAndCosmicRayHaloFlaggingTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "source-blooming-and-cosmic-ray-halo-flagging"
@@ -110,6 +113,7 @@ class SourceBloomAndCosmicRayHaloFlaggingTask(pipeBase.PipelineTask):
             An `Output` object containing the ``image`` with
             source bloom, and transient snowball and halo
             flagging.
+
         """
         spximg_out = copy.copy(spximg)
 

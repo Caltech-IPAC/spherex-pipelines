@@ -36,8 +36,8 @@ class AstropyImageFormatter(FileFormatter):
         data : `astropy.io.fits.HDUList`
             Data as astropy HDUList read from image file or None
             if the file could not be opened.
-        """
 
+        """
         try:
             data = fits.open(path)
         except FileNotFoundError:
@@ -57,6 +57,7 @@ class AstropyImageFormatter(FileFormatter):
         ------
         Exception
             The file could not be written.
+
         """
         if not isinstance(inMemoryDataset, fits.HDUList):
             raise NotImplementedError("Unable to write this representation of FITS into a file.")

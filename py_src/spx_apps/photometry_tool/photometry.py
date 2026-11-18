@@ -8,19 +8,10 @@ from importlib import resources
 from .exceptions import PipetaskError
 
 
-def get_l3_pipeline_path(use_simulator_bandpass=False):
-    if use_simulator_bandpass:
-        l3_pipeline_yaml_basename = "L3ToolPipelineSimWL.yaml"
-    else:
-        l3_pipeline_yaml_basename = "L3ToolPipeline.yaml"
-    l3_pipeline_yaml = resources.files("spx_apps") / "photometry_tool" / "data" / l3_pipeline_yaml_basename
-    return str(l3_pipeline_yaml)
-
-
-def run_photometry(temp_butler_root, query_constraint: str, bkg_region: int,
-                   log_file=None, verbose=False, use_simulator_bandpass=False) -> None:
-    # Pipeline definitions
-    l3_pipeline_yaml = get_l3_pipeline_path(use_simulator_bandpass)
+def run_photometry(temp_butler_root, query_constraint: str, log_file=None, verbose=False) -> None:
+    """Run the forced photometry pipeline on the temporary butler."""
+    # Pipeline definition
+    l3_pipeline_yaml = resources.files("spx_apps") / "photometry_tool" / "data" / "L3ToolPipeline.yaml"
 
     # Run collections
     timestamp = datetime.utcnow().strftime("%Y%jT%H%M%S")
@@ -35,7 +26,7 @@ def run_photometry(temp_butler_root, query_constraint: str, bkg_region: int,
     # L3 default timeout is 12 hours
     l3_timeout_sec = int(os.getenv("SPXPHOTO_L3_TIMEOUT", 12 * 60 * 60))
     logging.info("Building QGraph.")
-    qgraph_path = os.path.join(temp_butler_root, f"{l3_output_run}.qgraph")
+    qgraph_path = os.path.join(temp_butler_root, f"{l3_output_run}.qg")
     subprocess_args = ["pipetask"]
     try:
         if log_file is not None:
@@ -45,7 +36,6 @@ def run_photometry(temp_butler_root, query_constraint: str, bkg_region: int,
             "qgraph",
             "--butler-config", temp_butler_root,
             "--pipeline", l3_pipeline_yaml,
-            "--config", f"level3a:perform_forced_photometry.bkg_side_length={bkg_region}",
             "--input", input_coll,
             "--output-run", l3_output_run,
             "--save-qgraph", qgraph_path,

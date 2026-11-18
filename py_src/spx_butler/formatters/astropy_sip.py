@@ -12,7 +12,8 @@ from lsst.daf.butler.formatters.file import FileFormatter
 
 
 class AstropySIPFormatter(FileFormatter):
-    """Interface for reading and writing astropy WCS SIP file"""
+    """Interface for reading and writing astropy WCS SIP file."""
+
     extension = ".fits"
     supportedExtensions = frozenset({".fits.gz", ".fits"})
 
@@ -32,6 +33,7 @@ class AstropySIPFormatter(FileFormatter):
         -------
         data : `object`
             WCS object, or None if the file could not be opened.
+
         """
         try:
             with fits.open(path) as hdulist:
@@ -59,6 +61,7 @@ class AstropySIPFormatter(FileFormatter):
         ------
         NotImplementedError
             Unable to write this representation of FITS into a file.
+
         """
         if not isinstance(inMemoryDataset, wcs.Sip):
             raise NotImplementedError("Unable to write this representation of"

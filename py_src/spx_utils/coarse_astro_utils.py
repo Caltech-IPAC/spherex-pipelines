@@ -18,7 +18,7 @@ from astropy.wcs import WCS
 from astropy.table import Table
 import gwcs
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation
 from astropy import units as u
 from scipy.linalg import solve
 
@@ -29,10 +29,10 @@ from spx_data import PlannedObservation
 
 
 def get_ra_dec_lon_lat_from_quat(Q: np.array) -> tuple[float, float, float]:
-    """Calculates RA, Dec, and PA from a quaternion."""
+    """Calculate RA, Dec, and PA from a quaternion."""
     xPLD = np.array([1, 0, 0])
     zPLD = np.array([0, 0, 1])
-    rotation = R.from_quat(Q)
+    rotation = Rotation.from_quat(Q)
     zLOS_boresight = rotation.apply(zPLD)
     skycoord = SkyCoord(CartesianRepresentation(x=zLOS_boresight[0]*u.km,
                                                 y=zLOS_boresight[1]*u.km,
@@ -50,7 +50,7 @@ def get_ra_dec_lon_lat_from_quat(Q: np.array) -> tuple[float, float, float]:
 
 
 def get_initial_linear_wcs(ra_boresight, dec_boresight, array, roll=None, nx=2040, ny=2040):
-    """Generates a WCS for a detector based on the main boresight pointing."""
+    """Generate a WCS for a detector based on the main boresight pointing."""
     w = wcs.WCS(naxis=2)
     w.wcs.crval = [ra_boresight, dec_boresight]
     gap_size_pixels = (22.4 * 60.0 / 6.15 + 2 * 4)
@@ -71,7 +71,7 @@ def get_initial_linear_wcs(ra_boresight, dec_boresight, array, roll=None, nx=204
 
 
 def calculate_new_crval(original_wcs, dx_pixel, dy_pixel):
-    """Calculates a new CRVAL based on a pixel offset from the CRPIX."""
+    """Calculate a new CRVAL based on a pixel offset from the CRPIX."""
     start_pixel = original_wcs.wcs.crpix
     offset_pixel_location = [start_pixel[0] + dx_pixel, start_pixel[1] + dy_pixel]
     new_crval_coord = original_wcs.pixel_to_world(*offset_pixel_location)
@@ -79,8 +79,9 @@ def calculate_new_crval(original_wcs, dx_pixel, dy_pixel):
 
 
 def calculate_detector_pointings_with_pa(pointing_d2, pointing_d5):
-    """Calculates geometric pointings for side detectors
-       using corrected center detectors."""
+    """Calculate geometric pointings for side detectors
+    using corrected center detectors.
+    """
     ra_d2, dec_d2, pa_d2 = pointing_d2
     ra_d5, dec_d5, pa_d5 = pointing_d5
     offsets = {1: (3.87, 0.04), 3: (-3.8671964, 0.065),
@@ -142,12 +143,10 @@ def calculate_detector_pointings_with_pa(pointing_d2, pointing_d5):
 
 def build_detector_wcs_with_pa(pointing_d2, pointing_d5,
                                crpix=(1020.5, 1020.5)):
-    """
-    From corrected D2/D5 pointings, build a WCS for each of the 6 detectors
-    with:
-      - CRVAL = per-detector RA/Dec from calculate_detector_pointings_with_pa
-      - PA encoded in CD/PC via get_initial_linear_wcs
-      - CRPIX fixed at `crpix`
+    """Build a WCS for each of the 6 detectors from corrected D2/D5 pointings.
+
+    Sets CRVAL from calculate_detector_pointings_with_pa, PA encoded in CD/PC
+    via get_initial_linear_wcs, and CRPIX fixed at `crpix`.
     """
     detector_pointings = calculate_detector_pointings_with_pa(pointing_d2, pointing_d5)
     wcs_by_det = {}
@@ -173,7 +172,7 @@ def get_corrected_linear_wcs(planned_obs: PlannedObservation,
                              obs_from_sps: ObservationId,
                              array_id: int,
                              crpix=(1020.5, 1020.5)):
-
+    """Construct a corrected linear WCS for a given array using planned obs."""
     roll_correction = 0.76195
 
     center_shifts_d2_dx = {1: 23.4740, 2: 21.8969, 3: 21.0275, 4: 20.4142}
@@ -197,16 +196,18 @@ def get_corrected_linear_wcs(planned_obs: PlannedObservation,
     # Apply universal roll correction
     corrected_pa = (planned_pa_d2 + roll_correction) % 360
 
-    # Get shifts for center detectors from the four new configs
-    dx_d2 = center_shifts_d2_dx.get(slew_group_key)
-    dy_d2 = center_shifts_d2_dy.get(slew_group_key)
-    dx_d5 = center_shifts_d5_dx.get(slew_group_key)
-    dy_d5 = center_shifts_d5_dy.get(slew_group_key)
-
-    # Check if corrections are available (all must be present)
-    if any(v is None for v in [dx_d2, dy_d2, dx_d5, dy_d5]):
-        raise ValueError(f"No hard-coded shifts found for Slew {slew_group_key}. "
-                         f"Missing one or more dx/dy values.")
+    if slew_group_key in center_shifts_d2_dx:
+        # Get shifts for center detectors from the four new configs
+        dx_d2 = center_shifts_d2_dx[slew_group_key]
+        dy_d2 = center_shifts_d2_dy[slew_group_key]
+        dx_d5 = center_shifts_d5_dx[slew_group_key]
+        dy_d5 = center_shifts_d5_dy[slew_group_key]
+    else:
+        # Slew groups beyond 1-4 arise only in IOC planning periods, whose data
+        # serves solely for persistence bootstrapping. As these corrections have no
+        # bearing on persistence, a zero shift is applied.
+        logging.warning(f"No hard-coded shifts found for Slew {slew_group_key}. Setting all to 0.0")
+        dx_d2 = dy_d2 = dx_d5 = dy_d5 = 0.0
 
     # Create initial WCS templates for D2 and D5
     # (Using the planned RA/Dec and the *corrected* PA)
@@ -239,16 +240,30 @@ def get_initial_wcs_with_sip(w: WCS,
                              oversample: int = 1,
                              edge_pixels: int = 4,
                              projection="TAN"):
-    """Determines an initial WCS with SIP distortion correction.
+    """Determine an initial WCS with SIP distortion correction.
 
     Parameters
     ----------
-    w : `astropy.wcs.WCS`
+    w : `~astropy.wcs.WCS`
         Initial WCS object without SIP distortion correction.
+    initial_distortion_table : `~astropy.table.Table`
+        Table with initial distortion model data.
+    array : `int`
+        Array/detector ID (1-6).
+    nx : `int`, optional
+        Number of pixels in x direction. Default is 2040.
+    ny : `int`, optional
+        Number of pixels in y direction. Default is 2040.
+    oversample : `int`, optional
+        Oversampling factor. Default is 1.
+    edge_pixels : `int`, optional
+        Number of edge pixels to exclude. Default is 4.
+    projection : `str`, optional
+        WCS projection type. Default is "TAN".
 
     Returns
     -------
-    `astropy.wcs.WCS`
+    `~astropy.wcs.WCS`
         WCS object with SIP distortion correction applied.
 
     Notes
@@ -261,6 +276,7 @@ def get_initial_wcs_with_sip(w: WCS,
     - This function does not change the linear part of the WCS;
       rather, it adds the SIP (Simple Imaging Polynomial) distortion model
       on top of the existing WCS.
+
     """
     # Poly_Transform_Forward, Poly_Transform_Inverse = get_initial_distortion_model()
     Array_Distortion_Model = get_initial_distortion_model(initial_distortion_table)
@@ -418,6 +434,7 @@ def calculate_pa_from_pc(wcs: WCS) -> Angle:
     -------
     position_angle : `astropy.coordinates.Angle`
         The position angle in degrees.
+
     """
     # Extract the PC matrix (or use CD matrix if present)
     if wcs.wcs.has_cd():
@@ -450,6 +467,7 @@ def cd_to_pc(cd: np.ndarray, cdelt: np.ndarray) -> np.ndarray:
 
 
 def position_angle_from_cd(cd_matrix):
+    """Calculate the position angle in degrees from a CD matrix."""
     CD1_1, CD1_2 = cd_matrix[0]
     CD2_1, CD2_2 = cd_matrix[1]
 
@@ -470,8 +488,7 @@ def compute_side_pas(boresight_ra: float,
                      nx: int = 2040,
                      ny: int = 2040,
                      return_roll: bool = False):
-    """
-    Compute the position angles (PAs) for the left, center, and right arrays
+    """Compute the position angles (PAs) for the left, center, and right arrays
     of a three-array focal plane, given a boresight and roll.
 
     Parameters
@@ -529,6 +546,7 @@ def compute_side_pas(boresight_ra: float,
 
     Spacecraft roll is the rotation of the entire spacecraft/focal plane
     around its boresight, expressed in the spacecraft's own frame.
+
     """
     ra0 = boresight_ra * u.deg
     dec0 = boresight_dec * u.deg
@@ -586,7 +604,7 @@ def compute_side_pas(boresight_ra: float,
 
 
 def cd_from_wcs(w: WCS) -> np.ndarray:
-    """ Return CD matrix (scale + rotation) for a WCS.
+    """Return CD matrix (scale + rotation) for a WCS.
 
     Parameters
     ----------
@@ -603,6 +621,7 @@ def cd_from_wcs(w: WCS) -> np.ndarray:
     If a CD matrix is present, it is returned directly.
     Otherwise, the CD matrix is synthesized from
     ``PC`` and ``CDELT`` as: ``CD = diag(CDELT) @ PC``
+
     """
     # unify scale+rotation into a CD matrix
     if w.wcs.has_cd():
@@ -613,8 +632,7 @@ def cd_from_wcs(w: WCS) -> np.ndarray:
 
 
 def north_aligned_pa_from_wcs(w: WCS) -> float:
-    """
-    Compute the north-aligned position angle (PA) of the image +y axis
+    """Compute the north-aligned position angle (PA) of the image +y axis
     for a given WCS, measured east of celestial north.
 
     Parameters
@@ -634,6 +652,7 @@ def north_aligned_pa_from_wcs(w: WCS) -> float:
     :func:`position_angle_from_cd`. If the CD elements indicate that image +y
     points south (i.e., north component of +y is negative), the angle is
     flipped by 180° to yield a conventional north-aligned PA.
+
     """
     cd = cd_from_wcs(w)
     pa = position_angle_from_cd(cd)   # PA of +y (east of north)
@@ -691,6 +710,7 @@ def build_wcs_triplet_from_boresight(boresight_ra: float,
         Linear WCS for the center array at the boresight.
     w_right : `astropy.wcs.WCS`
         Linear WCS for the right array.
+
     """
     # PAs (north-aligned, consistent with detector +y)
     pa_left, pa_center, pa_right = compute_side_pas(

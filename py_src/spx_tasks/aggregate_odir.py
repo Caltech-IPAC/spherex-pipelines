@@ -61,10 +61,14 @@ class AggregateOdirConnections(pipeBase.PipelineTaskConnections,
 
 class AggregateOdirTaskConfig(pipeBase.PipelineTaskConfig,
                               pipelineConnections=AggregateOdirConnections):
+    """Configuration for AggregateOdirTask."""
+
     pass
 
 
 class AggregateOdirTask(pipeBase.PipelineTask):
+    """Task to aggregate ODIR data for transient reobservations."""
+
     _DefaultName = "ODIR"
     ConfigClass = AggregateOdirTaskConfig
     full_name = "ODIR (light): ntrans reobservations"

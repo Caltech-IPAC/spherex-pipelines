@@ -14,13 +14,13 @@ test_root = Path(__file__).parent.parent
 
 
 def get_sim_img() -> SPHERExImage:
-    """
-    Gets input simulated SPHEREx level 2 image.
+    """Get input simulated SPHEREx level 2 image.
 
     Returns
     -------
     `SPHERExImage`
         Simulated L2 image includes: data, flags, catalog.
+
     """
     sample_file = test_root / "data/distortion_cutout.fits"
     assert sample_file.exists(), f"Sample file {sample_file} does not exist."
@@ -30,12 +30,13 @@ def get_sim_img() -> SPHERExImage:
 
 
 def get_cat() -> Table:
-    """Gets input catalog.
+    """Get input catalog.
 
     Returns
     -------
     `SPHERExImage`
         Simulated L2 image includes: data, flags, catalog.
+
     """
     cat_file = test_root / "data/distortion_cat.fits"
     with fits.open(cat_file) as hdul:

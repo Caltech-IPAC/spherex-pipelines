@@ -12,6 +12,7 @@ from spx_data import SPHERExImage
 
 
 class MockDeferredImageHandle(DeferredDatasetHandle):
+    """Mock deferred dataset handle for SPHERExImage."""
 
     def __init__(self,
                  filepath: Path = None,
@@ -30,6 +31,7 @@ class MockDeferredImageHandle(DeferredDatasetHandle):
             SPHEREx image
         dataid : `dict`, optional
             Data coordinate of this dataset.
+
         """
         if filepath is None and image is None:
             raise ValueError(f"Either filepath or image required to create {self.__class__.__name__}")
@@ -40,7 +42,7 @@ class MockDeferredImageHandle(DeferredDatasetHandle):
         return f'''MockDeferredImageHandle('{self.parameters["filepath"]}')'''
 
     def get(self, **kwargs) -> SPHERExImage:
-        """Retrieves the dataset pointed to by this handle"""
+        """Retrieve the dataset pointed to by this handle."""
         if self.parameters["image"] is None:
             spximg = SPHERExImage.read(self.parameters["filepath"])
             self.parameters["image"] = spximg
@@ -53,6 +55,7 @@ class MockDeferredImageHandle(DeferredDatasetHandle):
 
 
 class MockDeferredCatalogHandle(DeferredDatasetHandle):
+    """Mock deferred dataset handle for catalog data."""
 
     def __init__(self,
                  imghandle: MockDeferredImageHandle):
@@ -62,7 +65,7 @@ class MockDeferredCatalogHandle(DeferredDatasetHandle):
         return f'''MockDeferredCatalogHandle('{self.parameters["imghandle"]}')'''
 
     def get(self, **kwargs) -> Table:
-        """Retrieves catalog"""
+        """Retrieve catalog."""
         return self.parameters["imghandle"].get().catalog
 
     @property
@@ -81,7 +84,7 @@ class MockDeferredSSOCatalogHandle(DeferredDatasetHandle):
         return f'''MockDeferredSSOCatalogHandle('{self.parameters["imghandle"]}')'''
 
     def get(self, **kwargs) -> Table:
-        """Retrieves catalog"""
+        """Retrieve catalog."""
         return self.parameters["imghandle"].get().ssocat
 
     @property
@@ -106,8 +109,8 @@ def mockImageCatalogHandles(datapath: Path) -> tuple[list[DeferredDatasetHandle]
         `~lsst.daf.butler.DeferredDatasetHandle` objects:
         the first list contains handles for the deferred images,
         the second list contains handles for the deferred catalogs.
-    """
 
+    """
     fits_files = sorted(datapath.glob("*.fits*"))  # also supports fits.gz
 
     def mockDataId(i: int):

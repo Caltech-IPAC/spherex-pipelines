@@ -10,9 +10,9 @@ import time
 # Related third party imports
 from astropy.coordinates import SkyCoord
 from astropy.io.fits import Header, HDUList
-from astropy.table import Table, Column
+from astropy.table import Table, Column, vstack
 from lsst.daf.butler import DeferredDatasetHandle
-from lsst.pex.config import Field, ListField
+from lsst.pex.config import ChoiceField, Field, ListField, Config
 import numpy as np
 import healpy as hp
 import astropy.units as u
@@ -21,14 +21,15 @@ import lsst.pipe.base.connectionTypes as cT
 
 # Local application/library specific imports
 from spx_data import (
-    DetectorSpectralInfo, Flag, ObservationId, PSFZoneData, SPHERExImage, SPSFlag)
+    Flag, EPSFModels, ObservationId, PSFZoneData, SPHERExImage, SPSFlag)
 from spx_data.spx_param import get_npix_x_active, get_npix_y_active
 from spx_data.spx_version import SSDC_PIPELINES_VERSION
+from spx_tasks import CreateSourceMaskConfig
 from spx_utils.photometry.window_utils import (
     slide_window, run_tractor_window, combine_measurements, combine_fits)
 from spx_utils.photometry.tractor_utils import MJysr_to_uJy
 from spx_utils import SourcePipelineClass, get_current_rss
-from spx_utils.utils import get_refcat_provenance
+from spx_utils.utils import get_refcat_provenance, get_data_release_version
 
 
 # ==============================================================================
@@ -53,7 +54,7 @@ def get_deep_flag(hdr: Header):
 
 def check_cut_side_length(value: int) -> bool:
     """Check that cutout side length (in pixels) is a factor of the number of
-       active pixels along a side.
+    active pixels along a side.
     """
     img_side_length = get_npix_x_active()
     if (img_side_length % value == 0):
@@ -76,6 +77,7 @@ def add_srccat_pass_thru(idx_map: np.array, input_cat: Table, col_name: str, out
         Column name in input source catalog.
     output_tab : `astropy.table.Table`
         Output photometry measurement table.
+
     """
     # Input catalog columns that can be added to the output table
     pass_thru_lookup = {
@@ -107,6 +109,45 @@ def add_srccat_pass_thru(idx_map: np.array, input_cat: Table, col_name: str, out
             index=pass_thru_lookup[col_name]["idx"], copy=False
         )
 
+def modify_ssocat(ssocat: Table, config: Config, srccat: Table):
+    """Modify the Solar System Object catalog format to include required
+    photometry columns.
+
+    Parameters
+    ----------
+    ssocat : `astropy.table.Table`
+        Solar System Object catalog with sources found in SPHEREx FOV. Must
+        include "desig", "RA", and "DEC" columns.
+    config : `lsst.pex.config.Config`
+        Perform Forced Photometry task configuration.
+    srccat : `astropy.table.Table`
+        Star/galaxy source catalog.
+    """
+    # Normalize column names and add units/shape parameters/photometry flag
+    ssocat.rename_columns(names=["RA", "DEC"], new_names=["ra", "dec"])
+    ssocat["ra"].unit = u.deg
+    ssocat["dec"].unit = u.deg
+    shape_r = Column(name="shape_r", data=np.full(len(ssocat), fill_value=0.0), dtype="float32")
+    phi = Column(name="phi", data=np.full(len(ssocat), fill_value=0.0), dtype="float32")
+    ab_ratio = Column(name="ab_ratio", data=np.full(len(ssocat), fill_value=0.0), dtype="float32")
+    sersic = Column(name="sersic", data=np.full(len(ssocat), fill_value=0.0), dtype="float32")
+    ssocat.add_columns([shape_r, phi, ab_ratio, sersic])
+    gp_no_phot = list(CreateSourceMaskConfig().planet_name_keys)
+    ssocat["do_phot"] = (~np.isin(ssocat["desig"].data, gp_no_phot)).astype(np.uint8)
+
+    # If using reference position columns in star/galaxy source catalog,
+    # populate them with current positions for SSOs
+    if "ref_ra" in config.cat_phot_cols and "ref_ra" in srccat.colnames:
+        ssocat["ref_ra"] = ssocat["ra"]
+    if "ref_dec" in config.cat_phot_cols and "ref_dec" in srccat.colnames:
+        ssocat["ref_dec"] = ssocat["dec"]
+
+    # NOTE: To distinguish from stars and galaxies in input source catalog,
+    # use negative sentinel values for the "SPHERExRefID" of SSOs. Original
+    # SSO catalog indices map to IDs like so: idx 0, 1...N-1 -> ID -1, -2...-N
+    ssocat["SPHERExRefID"] = np.arange(-1, -len(ssocat) - 1, -1, dtype=np.int64)
+
+    return
 
 class PerformForcedPhotometryConnections(pipeBase.PipelineTaskConnections,
                                          dimensions=("instrument", "exposure"),
@@ -142,7 +183,28 @@ class PerformForcedPhotometryConnections(pipeBase.PipelineTaskConnections,
         doc="Spectral WCS with lookup table.",
         storageClass="AstropyImage",
         dimensions=["instrument", "detector"],
-        isCalibration=True,
+        isCalibration=True
+    )
+    special_ids = cT.PrerequisiteInput(
+        name="special_ids",
+        doc="List of filtered source IDs to photometer at the window level.",
+        storageClass="NumpyArray",
+        dimensions=["instrument"],
+        isCalibration=False
+    )
+    epsf = cT.PrerequisiteInput(
+        name="epsf",
+        doc="Input average EPSF product used as a template for EPSF binary-table output.",
+        storageClass="EPSF",
+        dimensions=("instrument", "detector"),
+        isCalibration=True
+    )
+    ssocat = cT.Input(
+        name="ssocat",
+        doc="Input Solar System Object catalog with sources found in SPHEREx FOV.",
+        storageClass="AstropyParquet",
+        dimensions=("instrument", "observation"),
+        deferLoad=True
     )
     phot_meas = cT.Output(
         name="phot_meas",
@@ -151,13 +213,21 @@ class PerformForcedPhotometryConnections(pipeBase.PipelineTaskConnections,
         # dimensions should include a table with spatial dimension (exposure)
         # skypix dimension should match commonSkyPix in dimensions.yaml
         dimensions=("instrument", "exposure", "hips6"),
-        multiple=True,
+        multiple=True
+    )
+    phot_exceptions = cT.Output(
+        name="phot_exceptions",
+        doc="Output photometry measurement table for sources with HEALPix-"
+            "related exceptions.",
+        storageClass="AstropyParquet",
+        dimensions=("instrument", "exposure"),
     )
     phot_meas_combined = cT.Output(
         name="phot_meas_combined",
         doc="Output photometry measurement table (full image).",
         storageClass="AstropyParquet",
         dimensions=("instrument", "exposure"),
+        multiple=False
     )
     tractor_fits = cT.Output(
         name="tractor_fits",
@@ -165,24 +235,41 @@ class PerformForcedPhotometryConnections(pipeBase.PipelineTaskConnections,
         storageClass="StructuredDataDict",
         dimensions=("instrument", "exposure"),
     )
+    phot_meas_sso = cT.Output(
+        name="phot_meas_sso",
+        doc="Output photometry measurement table for Solar System Objects.",
+        storageClass="AstropyParquet",
+        dimensions=("instrument", "exposure"),
+        multiple=False
+    )
 
     def __init__(self, *, config=None):
         super().__init__(config=config)
 
         if config.combinedOutput:
             del self.phot_meas
+            del self.phot_exceptions
         else:
             del self.phot_meas_combined
 
         if not config.return_fit:
             del self.tractor_fits
 
-        if config.use_simulator_bandpass:
-            del self.spectral_wcs
+        if not config.filter_by_ids:
+            del self.special_ids
+
+        if not config.override_epsf:
+            del self.epsf
+
+        if not config.fit_sso:
+            del self.ssocat
+            del self.phot_meas_sso
 
 
 class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
                                     pipelineConnections=PerformForcedPhotometryConnections):
+    """Configuration for PerformForcedPhotometry task."""
+
     hips_order = Field(
         doc="HEALPix order for grouping the measurements",
         dtype=int,
@@ -210,14 +297,43 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
         doc="Minimal list of input source catalog columns required to perform photometry.",
         dtype=str,
         default=["SPHERExRefID", "ra", "dec", "ra_error", "dec_error", "ref_ra", "ref_dec", "sersic",
-                 "shape_r", "ab_ratio", "phi", "for_l3phot"]
-    )
+                 "shape_r", "ab_ratio", "phi", "do_phot"])
 
     merge_srccat = Field(
         doc="If True, adds `pass_thru_cols` from the input source catalog to the output photometry table."
             " Default is False.",
         dtype=bool,
         default=False)
+
+    filter_by_ids = Field(
+        doc="If True, only photometer windows with 1+ targets in the `special_ids` input list. If False,"
+            " photometer all windows with 1+ sources flagged for photometry. Default is False.",
+        dtype=bool,
+        default=False)
+
+    psf_extension = ChoiceField(
+        doc="PSF extension name in input SPHERExImage to use for fitting."
+            "If 'PSF', use the legacy PSF. If 'EPSF', use the effectivePSF."
+            "Default is 'EPSF'.",
+        dtype=str,
+        allowed={"PSF": "Use the legacy PSF", "EPSF": "Use the effective PSF"},
+        default="EPSF")
+
+    override_epsf = Field(
+        doc="If True, use input EPSF connection instead of extension from the input SPHERExImage."
+            "Default is False.",
+        dtype=bool,
+        default=False)
+
+    phot_tool_mode = Field(
+        doc="If True, this pipeline is being run as part of the photometry tool. Default is False.",
+        dtype=bool,
+        default=False)
+
+    fit_sso = Field(
+        doc="If True, perform forced photometry for Solar System Objects. Default is True.",
+        dtype=bool,
+        default=True)
 
     # Sliding window parameters
     cut_side_length = Field(
@@ -248,72 +364,16 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
         dtype=int,
         default=SourcePipelineClass.ALL)
 
-    # Local background estimation parameters
-    bkg_side_length = Field(
-        doc="Side length (in pixels) of the NxN square cutouts used to estimate the"
-            " local background.",
-        dtype=int,
-        default=15)
-
-    bkg_sc_sigma_lower = Field(
-        doc="Number of standard deviations to use as the lower bound for the background clipping limit.",
-        dtype=float,
-        default=4)
-
-    bkg_sc_sigma_upper = Field(
-        doc="Number of standard deviations to use as the upper bound for the background clipping limit.",
-        dtype=float,
-        default=4)
-
-    bkg_sc_maxiters = Field(
-        doc="Maximum number of background sigma-clipping iterations to perform.",
-        dtype=int,
-        default=10)
-
-    bkg_filter_threshold = Field(
-        doc="The threshold value used for selective median filtering of"
-            " the low-resolution 2D background map."
-            " The median filter will be applied to only the background boxes"
-            " with values larger than filter_size."
-            " A value of 1 or (1, 1) disables filtering.",
-        dtype=int,
-        optional=True,
-        default=None)
-
-    bkg_box_size = Field(
-        doc="The size of the square box used along each axis. The data should"
-            " be covered by an integer number of boxes.",
-        dtype=int,
-        default=3)
-
-    bkg_filter_size = ListField(
-        doc="The window size of the 2D median filter to apply to the low-resolution"
-            " background map. A value of 1 or (1, 1) disables filtering.",
-        dtype=int,
-        default=(3, 3))
-
-    bkg_exclude_pct = Field(
-        doc="Percentage of masked pixels allowed in a box. If the percent of"
-            " masked pixels exceeds this threshold, the box will be excluded"
-            " from the low-resolution map.",
-        dtype=float,
-        default=50.0)
-
     # Fitting settings
     fit_shapes = Field(
         doc="If True, treat galaxies as shapes during modeling. If False, "
-            "treat galaxies as point sources. Default is True.",
+            "treat galaxies as point sources. Default is False.",
         dtype=bool,
-        default=True)
+        default=False)
 
     return_fit = Field(
         doc="If True, fit model and residual image are returned. Default is"
             " False.",
-        dtype=bool,
-        default=False)
-
-    use_simulator_bandpass = Field(
-        doc="Use simulator wavelength model.",
         dtype=bool,
         default=False)
 
@@ -333,29 +393,6 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
         if not frame_size_check:
             raise ValueError("frame_width must be less than cut_side_length.")
 
-        # Cutout for local BG estimation is larger than photometry cutout
-        bkg_check_1 = (self.bkg_side_length > self.cut_side_length)
-        if not bkg_check_1:
-            raise ValueError("bkg_side_length must be greater than cut_side_length. Received:"
-                             f" bkg_side_length={self.bkg_side_length},"
-                             f" cut_side_length={self.cut_side_length}")
-
-        # Difference in BG estimation size and cutout size is an even number
-        # (for non-corner cutouts, proper Background2D and Cutout2D behavior
-        #  requires the background "frame" on each side to be an integer)
-        bkg_check_2 = ((self.bkg_side_length - self.cut_side_length) % 2.0 == 0)
-        if not bkg_check_2:
-            raise ValueError("Difference between bkg_side_length and cut_side_length must be an"
-                             f" even number. Received: bkg_side_length={self.bkg_side_length},"
-                             f" cut_side_length={self.cut_side_length}")
-
-        # Background box size must be a factor of background side length
-        bkg_check_3 = (self.bkg_side_length % self.bkg_box_size == 0)
-        if not bkg_check_3:
-            raise ValueError("bkg_box_size must be a factor of bkg_side_length. Received:"
-                             f" bkg_side_length={self.bkg_side_length},"
-                             f" bkg_box_size={self.bkg_box_size}")
-
         # Non-default filter class requires spherex_class column
         class_missing = "spherex_class" not in self.pass_thru_cols
         filtering_enabled = (self.class_filter != SourcePipelineClass.ALL.value)
@@ -367,6 +404,11 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
         if self.merge_srccat and (len(self.pass_thru_cols) == 0):
             raise ValueError("To merge data from the srccat, 1+ pass-through columns must be specified.")
 
+        # Minimal required catalog columns for photometry
+        required_cols = set(["SPHERExRefID", "ra", "dec", "shape_r", "ab_ratio", "phi", "sersic"])
+        if not required_cols.issubset(set(self.cat_phot_cols)):
+            missing_cols = required_cols - set(self.cat_phot_cols)
+            raise ValueError(f"cat_phot_cols is missing required columns: {missing_cols}")
 
 class PerformForcedPhotometryTask(pipeBase.PipelineTask):
     """Implementation of L3 Perform Forced Photometry.
@@ -389,6 +431,7 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "perform-forced-photometry"
@@ -401,26 +444,55 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         super().__init__(**kwargs)
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
-        if self.config.combinedOutput is True:
+        if self.config.combinedOutput:
             super().runQuantum(butlerQC, inputRefs, outputRefs)
         else:
             inputs = butlerQC.get(inputRefs)
+            output_ref_map = {name: getattr(outputRefs, name) for name in vars(outputRefs)
+                              if name in ["phot_meas", "phot_exceptions", "phot_meas_sso", "tractor_fits"]}
             result = self.run(**inputs)
+
             if result.phot_meas is not None:
-                healpix_IDs = result.phot_meas.keys()
-                for name, ref_or_lst in outputRefs:
-                    if name == "phot_meas":
-                        for ref in ref_or_lst:
-                            healpix_id = ref.dataId.get("hips6")
-                            if healpix_id in healpix_IDs:
-                                table = result.phot_meas[healpix_id]
-                                butlerQC.put(table, ref)
+                ref_or_lst = output_ref_map["phot_meas"]
+                out_healpix_ids = result.phot_meas.keys()
+                expected_healpix_ids = {ref.dataId.get("hips6") for ref in ref_or_lst}
+                unexpected_ids = set(out_healpix_ids).difference(expected_healpix_ids)
+
+                # Per-HEALPixel measurement tables predicted by level 2 WCS/
+                # exposure region
+                for ref in ref_or_lst:
+                    healpix_id = ref.dataId.get("hips6")
+                    if healpix_id in out_healpix_ids:
+                        butlerQC.put(result.phot_meas[healpix_id], ref)
                     else:
-                        # TODO handle other types of output
-                        print(f"ERROR: output for connection {name} is not saved")
+                        self.log.warning(f"No sources found for expected healpix ID {healpix_id}.")
+
+                # Per-exposure measurement table for high proper motion sources
+                # whose corrected positions shifted the output HEALPix ID
+                if len(unexpected_ids) > 0:
+                    unexpected_tabs = []
+                    for uid in unexpected_ids:
+                        self.log.warning(f"Adding sources from unexpected healpix ID {uid} to"
+                                         " exceptions table.")
+                        unexpected_tabs.append(result.phot_meas[uid])
+                    exceptions = vstack(unexpected_tabs)
+                    if len(exceptions) > 0:
+                        butlerQC.put(exceptions, output_ref_map["phot_exceptions"])
+
+            if self.config.fit_sso and result.phot_meas_sso is not None \
+                and len(result.phot_meas_sso) > 0:
+                butlerQC.put(result.phot_meas_sso, output_ref_map["phot_meas_sso"])
+
+            supported = {"phot_meas", "phot_exceptions", "phot_meas_sso"}
+            for name in output_ref_map:
+                if name not in supported:
+                    # TODO handle other types of output
+                    self.log.warning(f"ERROR: output for connection {name} is not saved")
+
 
     def run(self, spximg: SPHERExImage, srccat: DeferredDatasetHandle | Table, global_bkgd: np.ndarray,
-            solid_angle_pixel_map: SPHERExImage, spectral_wcs: HDUList = None) -> pipeBase.Struct:
+            solid_angle_pixel_map: SPHERExImage, spectral_wcs: HDUList, special_ids: np.ndarray = None,
+            epsf: SPHERExImage = None, ssocat: DeferredDatasetHandle = None) -> pipeBase.Struct:
         """Perform Forced Photometry.
 
         Parameters
@@ -433,30 +505,52 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
             Global background estimate.
         solid_angle_pixel_map : `spx_data.SPHERExImage`
             Solid angle pixel map derived by Update Field Distortion module.
-        spectral_wcs : `~astropy.io.fits.HDUList`, optional
+        spectral_wcs : `~astropy.io.fits.HDUList`
             Spectral WCS calibration with central wavelength and bandwidth.
-            If not specified, Simulator's wavelength model is used.
+        special_ids : `numpy.ndarray`, optional
+            Array of filtered source IDs to photometer at the window level. If
+            not specified, all sources flagged for photometry in the input
+            catalog are photometered at the window level.
+        epsf : `spx_data.SPHERExImage`, optional
+            EPSF calibration to override the extension stored in the image.
+        ssocat : `lsst.daf.butler.DeferredDatasetHandle`, optional
+            Deferred `astropy.table.Table` of Solar System Objects to
+            photometer.
 
         Returns
         -------
         return_obj : `pipeBase.Struct`
-            Container including output connection fields. By default, it only
-            includes `phot_meas_combined` (`astropy.table.Table` of photometry
-            measurements for whole image). If `self.config.return_fit` is
-            True, it includes `tractor_fits` (dictionary of
-            `astropy.fits.io.HDUList`). If `self.config.combinedOutput` is
-            False, it includes `phot_meas` (dictionary of `astropy.table.Table`
-            grouped by HEALPix).
+            Container for output connection fields. By default, only includes
+            `phot_meas` (`dict` of `astropy.table.Table` grouped by HEALPix). If
+            `self.config.return_fit` is True, includes `tractor_fits` (`dict`
+            of `astropy.fits.io.HDUList`). If `self.config.combinedOutput` is
+            True, includes `phot_meas_combined` (`astropy.table.Table`). If
+            `self.config.combinedOutput` is True, includes `phot_meas_sso`
+            (`astropy.table.Table`).
+
+        Raises
+        ------
+        ValueError
+            If configuration settings conflict with input arguments.
+        ValueError
+            If input source catalog is missing requested column or has negative
+            SPHERExRefIDs.
         """
         # =====================================================================
         # Prepare inputs for photometry fitting
         task_t0 = time.time()
         self.log.info("Starting forced photometry...")
 
-        # Only read necessary columns from input catalog
+        # Prevent silent failure due to mismatch between config and run args
+        if self.config.filter_by_ids and special_ids is None:
+            raise ValueError("`filter_by_ids` is True but `special_ids` input was not provided.")
+        if self.config.override_epsf and epsf is None:
+            raise ValueError("`override_epsf` is True but `epsf` input was not provided.")
+        if self.config.fit_sso and ssocat is None:
+            raise ValueError("`fit_sso` is True but `ssocat` input was not provided.")
+
+        # Only read necessary columns from input source catalog
         if isinstance(srccat, DeferredDatasetHandle):
-            # NOTE: Need to convert `lsst.pex.config.listField.List` to
-            # `list` for table item access
             read_cols = list(self.config.cat_phot_cols) + list(self.config.pass_thru_cols) if \
                 self.config.merge_srccat else list(self.config.cat_phot_cols)
             try:
@@ -467,6 +561,24 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                 )
             except KeyError as e:
                 raise ValueError(f"Requested column {e} is not in the input catalog.")
+            else:
+                if not np.all(srccat["SPHERExRefID"] >= 0):
+                    raise ValueError("Negative SPHERExRefIDs found in srccat.")
+
+        # If fitting SSOs, read catalog
+        if self.config.fit_sso and ssocat is not None:
+            if isinstance(ssocat, DeferredDatasetHandle):
+                try:
+                    ssocat = ssocat.get(
+                        parameters={
+                            "columns": ["desig", "RA", "DEC"]  # only need identifier and positions
+                        }
+                    )
+                except KeyError as e:
+                    raise ValueError(f"Requested column {e} is not in the solar system object catalog.")
+            modify_ssocat(ssocat, self.config, srccat)  # standardize basic column names and format
+            srccat = vstack([srccat, ssocat], join_type="outer",
+                            metadata_conflicts="silent")  # temporarily merge all sources
 
         # Extract refcat provenance (version) from input srccat once
         ref_ver = None
@@ -500,9 +612,30 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         cat_coords = cat_coords[img_mask]
         srctab = srctab[img_mask]
 
-        # If "for_l3phot" column exists, filter out sources not flagged for L3
-        if "for_l3phot" in srctab.colnames:
-            l3phot_mask = (srctab["for_l3phot"] == 1)
+        if self.config.filter_by_ids and special_ids is not None:
+            # Filter special IDs down to those in image
+            id_mask = np.isin(srctab["SPHERExRefID"], special_ids)
+            if np.any(id_mask):
+                special_ids = set(srctab["SPHERExRefID"][id_mask])  # use set (faster lookup in window loop)
+            else:
+                self.log.warning("No requested `special_ids` are in the image. Skipping photometry.")
+                # Set up empty output with correct fields and return early
+                kwargs = {}
+                if self.config.return_fit:
+                    kwargs["tractor_fits"] = None
+                if self.config.fit_sso:
+                    kwargs["phot_meas_sso"] = None
+                if self.config.combinedOutput:
+                    kwargs["phot_meas_combined"] = None
+                else:
+                    kwargs["phot_meas"] = None
+                return pipeBase.Struct(**kwargs)
+
+        # If "do_phot" column exists, filter out sources not flagged for L3
+        if "do_phot" in srctab.colnames:
+            l3phot_mask = (srctab["do_phot"] == 1)
+            if self.config.filter_by_ids and special_ids is not None:
+                l3phot_mask |= id_mask  # keep sources flagged by selection criteria or requested by ID
             src_ximg = src_ximg[l3phot_mask]
             src_yimg = src_yimg[l3phot_mask]
             cat_coords = cat_coords[l3phot_mask]
@@ -513,8 +646,10 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         # to ensure consistency over time
         hips_order = self.config.hips_order
         hips_col_name = f"hips{hips_order}"
-        hips_ra = "ref_ra" if "ref_ra" in self.config.cat_phot_cols and srctab.colnames else "ra"
-        hips_dec = "ref_dec" if "ref_dec" in self.config.cat_phot_cols and srctab.colnames else "dec"
+        hips_ra = "ref_ra" if (
+            "ref_ra" in self.config.cat_phot_cols and "ref_ra" in srctab.colnames) else "ra"
+        hips_dec = "ref_dec" if (
+            "ref_dec" in self.config.cat_phot_cols and "ref_dec" in srctab.colnames) else "dec"
         col = Column(data=hp.ang2pix(2 ** hips_order, srctab[hips_ra], srctab[hips_dec], nest=True,
                                      lonlat=True),
                      name=hips_col_name, unit="")  # leaving unit None, makes "deg" unit
@@ -554,13 +689,13 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
             spximg.uncertainty.array[spximg.uncertainty.array == 0] = var_nanmean_init
             self.log.info(f"Assigned {n_zeros} zero-valued variance pixels to initial mean variance value.")
 
-        # Subtract global background if suitable; if not, use local background
-        use_local = np.all(np.isnan(global_bkgd))
-        if not use_local:
-            spximg.data -= global_bkgd
-            self.log.info("Subtracting global background estimate...")
+        # Subtract global spectral background if suitable
+        no_glob_bkg = np.all(np.isnan(global_bkgd))
+        if no_glob_bkg:
+            self.log.info("No good spectral background estimate available...")
         else:
-            self.log.info("Local background estimation and subtraction will occur during window fitting...")
+            spximg.data -= global_bkgd
+            self.log.info("Subtracting global spectral background estimate...")
 
         # Save arguments for data, unit, variance, etc. in memory
         data = spximg.data
@@ -568,9 +703,25 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         variance = spximg.uncertainty
         flags = spximg.flags
         wcs = spximg.wcs
-        psf = PSFZoneData.from_hdu(spximg.layers["PSF"])
         detector = spximg.getArrayId()
         hdr = spximg.header
+        # NOTE: We use exposure ID as a component of the deterministic
+        # per-source flux-initialization seed. Re-runs reproduce, while each
+        # (source, image) measurement still seeds independently.
+        exp_id_int = ObservationId(hdr["OBSID"]).pointing_id + hdr["DETECTOR"]
+
+        # Set up desired PSF model
+        if self.config.override_epsf or self.config.psf_extension == "EPSF":
+            # Use effective PSF (EPSF) format; set legacy PSF to None
+            epsf_hdu = spximg.layers["EPSF"] if not self.config.override_epsf else epsf.layers["EPSF"]
+            psf = EPSFModels.from_hdu(epsf_hdu)
+            psf_msg = "EPSF from level2 image extension" if not self.config.override_epsf else \
+                "EPSF override from input calibration"
+        elif self.config.psf_extension == "PSF":
+            # Use legacy PSF format; set EPSF to None
+            psf = PSFZoneData.from_hdu(spximg.layers["PSF"])
+            psf_msg = "legacy PSF"
+        self.log.info(f"Using {psf_msg} for photometry fitting.")
 
         # Only pass the columns relevant for photometry fitting
         relevant_cols = ["SPHERExRefID", "ra", "dec", "shape_r", "ab_ratio", "phi", "sersic",
@@ -585,7 +736,7 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
         # =====================================================================
         # Perform fitting
         # Step across the detector, storing bounds for "windows" or subregions
-        img_windows = slide_window(spximg, self.config, use_local)
+        img_windows = slide_window(spximg, self.config)
         self.log.debug(get_current_rss("Array of window objects created"))
 
         # Set up photometry measurement array/fitting results dictionary
@@ -600,7 +751,6 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                                                     ("flux", "float32"),
                                                     ("flux_err", "float32"),
                                                     ("flux_bkg", "float32"),
-                                                    ("local_bkg_flg", "bool"),
                                                     ("ext_flg", "bool"),
                                                     ("flags", "int64"),
                                                     ("fit_ql", "float32"),
@@ -622,8 +772,8 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                 result = run_tractor_window(
                     img_data=data, img_units=units, img_wcs=wcs, img_var=variance, img_flags=flags,
                     window_params=window, src_ximg=src_ximg, src_yimg=src_yimg, src_cat=fit_tab_np,
-                    cat_coords=cat_coords, use_local=use_local, config=self.config, psf=psf,
-                    detector=detector, keep_frame_sources=False)
+                    cat_coords=cat_coords, config=self.config, psf=psf, detector=detector,
+                    keep_frame_sources=False, special_ids=special_ids, exp_id=exp_id_int)
                 start, end = combine_measurements(combined_arr, result, start, end)
                 if self.config.return_fit:
                     tractor_fits = combine_fits(tractor_fits, result)
@@ -634,8 +784,8 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
             # Fit windows in parallel (for small datasets/quick local tests)
             iterator = zip(repeat(data), repeat(units), repeat(wcs), repeat(variance), repeat(flags),
                            img_windows, repeat(src_ximg), repeat(src_yimg), repeat(fit_tab_np),
-                           repeat(cat_coords), repeat(use_local), repeat(self.config), repeat(psf),
-                           repeat(detector), repeat(False))
+                           repeat(cat_coords), repeat(self.config), repeat(psf), repeat(detector),
+                           repeat(False), repeat(special_ids), repeat(exp_id_int))
             mp.freeze_support()
             with mp.pool.Pool() as pool:
                 for result in pool.starmap(run_tractor_window, iterator):
@@ -658,25 +808,15 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
 
         # To save memory and avoid creating more cutouts, populate the flux_bkg
         # column in the global background case all at once
-        if not use_local:
-            combined_arr["flux_bkg"] = global_bkgd[ypos_idx, xpos_idx]  # replaces 0s
+        if not no_glob_bkg:
+            combined_arr["flux_bkg"] += global_bkgd[ypos_idx, xpos_idx]  # sum spectral with local background
 
         # =====================================================================
         # Add back in values for non-fitting parameters
         # Get central wavelengths and bandwidths
-        # Use position indices initialized in order of combined_array
-        if spectral_wcs is None:
-            # Use Simulator bandpass model
-            spec_info = DetectorSpectralInfo.create(detector)
-            central_wls, central_bws = spec_info.get_wl_mid_fwhm(xpos_idx, ypos_idx)
-        else:
-            # x corresponds to zero-based indexes in x or columns direction
-            # y corresponds to zero-based indexes in y or row direction
-            central_wls = spectral_wcs["CWAVE"].data[ypos_idx, xpos_idx]
-            central_bws = spectral_wcs["CBAND"].data[ypos_idx, xpos_idx]
-
-        # Construct exposure ID
-        exp_id_int = ObservationId(hdr["OBSID"]).pointing_id + hdr["DETECTOR"]
+        # Use zero-based position indices initialized in order of combined_array
+        central_wls = spectral_wcs["CWAVE"].data[ypos_idx, xpos_idx]  # row-major: x is columns, y is rows
+        central_bws = spectral_wcs["CBAND"].data[ypos_idx, xpos_idx]
 
         # Quantities based on image/detector data
         combined_arr["mjd"] = calculate_mjd(hdr)
@@ -699,7 +839,6 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
             ("flux", "SPHEREx observed flux", u.uJy, "float32"),
             ("flux_err", "SPHEREx observed flux error", u.uJy, "float32"),
             ("flux_bkg", "SPHEREx background surface brightness at source position", u.MJy/u.sr, "float32"),
-            ("local_bkg_flg", "True if background estimation was local", "", "bool"),
             ("ext_flg", "True if treated as extended source", "", "bool"),
             ("flags", "Photometry flags", "", "int64"),
             ("fit_ql", "Photometry metric", "", "float32"),
@@ -714,6 +853,28 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                              descriptions=out_fmt_arr["parameter"].tolist(),
                              units=out_fmt_arr["unit"].tolist(),
                              copy=False)
+
+        # Unmerge SSOs if they were photometered together with stars/galaxies
+        if self.config.fit_sso and ssocat is not None:
+            sso_mask = combined_tab["source_id"] < 0  # SSO IDs were assigned negative values
+            sso_results = combined_tab[sso_mask]
+            combined_tab = combined_tab[~sso_mask]  # drop SSO rows from main table
+
+            # Add SSO designations back in and clean up unnecessary columns
+            og_sso_idx = (-sso_results["source_id"]) - 1  # SSO IDs were assigned as -(idx+1)
+            sso_results.add_column(col=Column(data=ssocat["desig"][og_sso_idx], name="desig",
+                                              dtype=ssocat["desig"].dtype,
+                                              description="JPL Horizons name of object", unit=None))
+            cols_to_remove = ["source_id", hips_col_name]
+            cols_to_remove += ["ref_ra"] if "ref_ra" in sso_results.colnames else []
+            cols_to_remove += ["ref_dec"] if "ref_dec" in sso_results.colnames else []
+            sso_results.remove_columns(cols_to_remove)
+            sso_results.sort("desig")  # for easier gather operation later
+
+            # Add version metadata
+            sso_results.meta["version_ssocat"] = ssocat.meta.get("user_metadata", {}).get("version", "")
+            sso_results.meta["version_level2"] = spximg.header["VERSION"]
+            sso_results.meta["version_phot_meas_sso"] = SSDC_PIPELINES_VERSION
 
         # Add requested pass-through columns from srccat
         if self.config.merge_srccat and len(self.config.pass_thru_cols) > 0:
@@ -735,13 +896,22 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
 
         # =====================================================================
         # Add metadata and create return object based on config parameters
-        combined_tab.meta["version_level2"] = spximg.header["VERSION"]
         combined_tab.meta["version_phot_meas"] = SSDC_PIPELINES_VERSION
-
+        combined_tab.meta["version_level2"] = spximg.header["VERSION"]
+        if self.config.phot_tool_mode:
+            spx_header_version = get_data_release_version(spximg)
+            combined_tab.add_column(
+                Column(
+                    data=np.full(len(combined_tab), spx_header_version),
+                    name="data_collection",
+                    description="Level 2 pipeline version for this measurement",
+                    unit=None,
+                )
+            )
         if ref_ver:
             combined_tab.meta["refcat_version"] = str(ref_ver)
 
-        # Photometry measurement table keyword args
+        # Star/galaxy photometry measurement table keyword args
         if self.config.combinedOutput:
             # Group photometry measurements by image
             kwargs = {"phot_meas_combined": combined_tab}
@@ -754,13 +924,14 @@ class PerformForcedPhotometryTask(pipeBase.PipelineTask):
                 cat_dict[key] = group
             kwargs = {"phot_meas": cat_dict}
 
-        # Fitting results keyword args
+        # Fitting results and SSO photometry measurement table keyword args
         if self.config.return_fit:
             kwargs["tractor_fits"] = tractor_fits
+        if self.config.fit_sso:
+            kwargs["phot_meas_sso"] = sso_results
 
         # Create return object
         return_obj = pipeBase.Struct(**kwargs)
-
         task_t1 = time.time()
         self.log.info("Fitting time in seconds (minutes): %s (%s)", f"{(fitting_t1-fitting_t0):.2f}",
                       f"{((fitting_t1-fitting_t0)/60.):.2f}")

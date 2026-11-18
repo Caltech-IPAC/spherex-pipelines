@@ -18,7 +18,7 @@ cf = .1
 
 
 def generate_dark(spx_img: SPHERExImage) -> SPHERExImage:
-    """Creates dark current image to use for testing.
+    """Create dark current image to use for testing.
 
     Parameters
     ----------
@@ -34,6 +34,7 @@ def generate_dark(spx_img: SPHERExImage) -> SPHERExImage:
     -----
     Tests and validates the generated data for:
     - ``dc_img`` has uncertainty populated.
+
     """
     # Generate sample data
     size = spx_img.data.shape
@@ -47,6 +48,7 @@ def test_ApplyDarkFlatFieldAndPhotoCalib():
     config = ApplyDarkFlatFieldAndPhotoCalibConfig()
     task = ApplyDarkFlatFieldAndPhotoCalibTask(config=config)
     spximg = sample_data.get_sample_l2_img()
+    spximg.header["DETECTOR"] = 1
 
     # Use a calibration matrix with some variation to avoid sigma=0
     np.random.seed(42)  # Ensure reproducibility
@@ -54,9 +56,9 @@ def test_ApplyDarkFlatFieldAndPhotoCalib():
     calib = SPHERExImage(calib_data, unit="MJy s / (electron sr)")
     # Fake dark
     dark = generate_dark(spximg)
-
-    # Run task.
+    # Run Task
     output = task.run(spximg, calib, dark)
+
     assert output.spximg_out.uncertainty is not None
 
     # Shape
@@ -69,10 +71,10 @@ def test_ApplyDarkFlatFieldAndPhotoCalib():
         "Wrong image values after calibration applied."
     )
     # Image unit
-    assert output.spximg_out.unit == u.Unit("MJy / sr"), (f"Wrong image unit: {output.spximg_out.unit = }")
+    assert output.spximg_out.unit == u.Unit("MJy / sr"), (f"Wrong image unit: {output.spximg_out.unit}")
     # Variance unit
     variance = output.spximg_out.uncertainty
-    assert variance.unit == u.Unit("MJy / sr")**2, (f"Wrong variance unit: {variance.unit = }")
+    assert variance.unit == u.Unit("MJy / sr")**2, (f"Wrong variance unit: {variance.unit}")
     # Variance values, calib.data**2 = 0.01
     expected_variance = spximg.uncertainty.array * calib_data**2  # Correct variance propagation
     assert np.allclose(variance.array, expected_variance, equal_nan=True), (

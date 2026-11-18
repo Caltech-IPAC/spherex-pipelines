@@ -12,15 +12,33 @@ import yaml
 from astropy.time import Time
 from datetime import datetime
 import click
+from .resource_usage import log_resource_usage
 # Function for runid handling when not provided.
+
+_start_time = None
 
 
 def make_runid_default(tool_name):
+    """Generate a default run ID using the tool name and current timestamp."""
     timestamp = datetime.now().isoformat(timespec="seconds").replace(":", "").replace("-", "")
     return f"{tool_name}-{timestamp}"
 
 
+def use_deep_option():
+    """Create a click option for toggling inclusion of deep-field data."""
+    return click.option(
+        '--use-deep/--no-use-deep',
+        default=False,
+        help=(
+            "Controls whether deep-field data are included in tool functions. "
+            "Use --use-deep to enable inclusion of deep-field data, or --no-use-deep to exclude it. "
+            "--no-use-deep is equivalent to selecting only all sky data."
+            "Disabled by default; deep-field data are excluded unless explicitly requested."
+        )
+    )
+
 def fake_option():
+    """Create a click option for running simulated jobs."""
     return click.option(
         '--fake',
         type=click.Choice(['normal', 'error-short', 'error-detail', 'error-signal']),
@@ -37,6 +55,7 @@ def fake_option():
 
 
 def runid_option(tool_name):
+    """Create a click option for specifying a UWS run ID."""
     return click.option(
         '--runid',
         default=make_runid_default(tool_name),
@@ -54,6 +73,7 @@ def runid_option(tool_name):
 
 
 def jobid_option():
+    """Create a click option for specifying the UWS job identifier."""
     return click.option(
         '--jobid',
         required=True,
@@ -66,6 +86,7 @@ def jobid_option():
 
 
 def validate_writable(ctx, param, value):
+    """Validate that a directory path exists and is writable."""
     if value is not None:
         # Ensure the path exists and is a directory
         if not value.exists():
@@ -81,7 +102,7 @@ def validate_writable(ctx, param, value):
 
 
 def result_dir_option():
-
+    """Create a click option for specifying the result directory."""
     return click.option(
         '--result-dir',
         type=click.Path(file_okay=False, path_type=Path),
@@ -98,6 +119,7 @@ def result_dir_option():
 
 # Reusable --err-dir option with writable check
 def err_dir_option():
+    """Create a click option for specifying the error directory."""
     return click.option(
         '--err-dir',
         type=click.Path(file_okay=False, path_type=Path),
@@ -115,6 +137,7 @@ def err_dir_option():
 
 
 def tmp_dir_option():
+    """Create a click option for specifying the temporary directory."""
     return click.option(
         '--tmp-dir',
         type=click.Path(file_okay=False, path_type=Path),
@@ -132,10 +155,11 @@ def tmp_dir_option():
 
 
 def log_dir_option():
+    """Create a click option for specifying the log directory."""
     return click.option(
         '--log-dir',
         type=click.Path(file_okay=False, path_type=Path),
-        default=None,
+        default=Path("."),
         show_default=True,
         callback=validate_writable,
         help=(
@@ -149,8 +173,7 @@ def log_dir_option():
 
 
 def parse_time(value) -> tuple[Time, Time] | None:
-    """
-    Parse --time option into a tuple of astropy.time.Time objects using MJD.
+    """Parse --time option into a tuple of astropy.time.Time objects using MJD.
 
     Parameters
     ----------
@@ -167,6 +190,7 @@ def parse_time(value) -> tuple[Time, Time] | None:
     ------
     click.BadParameter
         If the input format is invalid.
+
     """
     try:
         if value is None:
@@ -194,8 +218,7 @@ def parse_time(value) -> tuple[Time, Time] | None:
 
 
 def parse_detectors(value) -> list[int] | None:
-    """
-    Parse multiple --detector options into a list of detector IDs.
+    """Parse multiple --detector options into a list of detector IDs.
 
     Parameters
     ----------
@@ -212,6 +235,7 @@ def parse_detectors(value) -> list[int] | None:
     ------
     click.BadParameter
         If the input value contains duplicate or invalid detector label.
+
     """
     if not value:
         return None
@@ -238,7 +262,7 @@ def parse_detectors(value) -> list[int] | None:
 
 
 def log_start_time():
-    """Log the script start time"""
+    """Log the script start time."""
     global _start_time
     _start_time = time.time()
     start_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -247,7 +271,7 @@ def log_start_time():
 
 
 def log_end_time(exit_code=None):
-    """Log the script end time and duration"""
+    """Log the script end time and duration."""
     end_time = time.time()
     end_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -267,12 +291,13 @@ def log_end_time(exit_code=None):
     logging.info(f"FINAL LOG ENTRY - {_script} MAIN PROCESS ENDED")
     logging.info(f"End time: {end_datetime}")
     logging.info(f"Duration: {duration_str}{exit_info}")
+    log_resource_usage()
     logging.info("NOTE: Subprocess logs may appear after this message due to buffering")
     logging.info("=" * 80)
 
 
 def setup_exit_handlers(script_name):
-    """Setup handlers to ensure end time is logged regardless of how script exits"""
+    """Set up handlers to ensure end time is logged regardless of how script exits."""
     atexit.register(log_end_time)
 
     global _script
@@ -293,13 +318,14 @@ def setup_exit_handlers(script_name):
 
 
 def safe_exit(code):
-    """Exit with logging"""
+    """Exit with logging."""
     atexit.unregister(log_end_time)  # Prevent duplicate call
     log_end_time(exit_code=code)
     sys.exit(code)
 
 
 def extract_log_config_and_ids_from_argv(default_runid=None, default_jobid=None):
+    """Extract logging configuration and IDs from command-line arguments."""
     argv = sys.argv
 
     # Defaults
@@ -333,6 +359,7 @@ def extract_log_config_and_ids_from_argv(default_runid=None, default_jobid=None)
 
 
 def force_override_runid(new_value):
+    """Override the runid in sys.argv with a new value."""
     # Remove all existing --runid or --runid=XYZ entries
     new_argv = []
     skip_next = False
@@ -354,6 +381,7 @@ def force_override_runid(new_value):
 
 
 def extract_err_dir_from_argv(default=os.getcwd()):
+    """Extract the error directory path from command-line arguments."""
     argv = sys.argv
     if '--err-dir' in argv:
         try:
@@ -368,21 +396,26 @@ def extract_err_dir_from_argv(default=os.getcwd()):
 
 def generate_error_summary(
         message="", error_dir=None, write_to_file=False, error_type="fatal", user_error=False):
-    """
-    Generate a JSON-style error summary based on an exit code.
+    """Generate a JSON-style error summary based on an exit code.
 
-    Args:
-        message (str, optional): A descriptive error message.
-        Defaults to an empty string.
-        error_dir (str, optional): Directory to write
-        the errorSummary.yaml file. Defaults to None.
-        write_to_file (bool, optional): Whether to write
-        the error summary to a file. Defaults to False.
-        error_type (str, optional): Type of error
-        (e.g., "fatal", "warning"). Defaults to "fatal".
+    Parameters
+    ----------
+    message : str, optional
+        A descriptive error message. Defaults to an empty string.
+    error_dir : str, optional
+        Directory to write the errorSummary.yaml file. Defaults to None.
+    write_to_file : bool, optional
+        Whether to write the error summary to a file. Defaults to False.
+    error_type : str, optional
+        Type of error (e.g., "fatal", "warning"). Defaults to "fatal".
+    user_error : bool, optional
+        Whether the error is a user error. Defaults to False.
 
-    Returns:
-        dict: The error summary structure.
+    Returns
+    -------
+    dict
+        The error summary structure.
+
     """
     if user_error:
         final_message = str(message)
@@ -402,3 +435,5 @@ def generate_error_summary(
             yaml.dump(error_summary, f)
 
     return error_summary
+
+

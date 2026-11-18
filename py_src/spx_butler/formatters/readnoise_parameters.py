@@ -38,6 +38,7 @@ class ReadNoiseParametersFormatter(FileFormatter):
         `~spx_data.ReadNoiseParameters` | `None`
             Either data as `ReadNoiseParameters` object read from fits file,
             or `None` if the file could not be opened.
+
         """
         try:
             data = ReadNoiseParameters(fits.open(path))
@@ -57,6 +58,7 @@ class ReadNoiseParametersFormatter(FileFormatter):
         ------
         Exception
             The file could not be written.
+
         """
         if not isinstance(inMemoryDataset, ReadNoiseParameters):
             raise NotImplementedError(

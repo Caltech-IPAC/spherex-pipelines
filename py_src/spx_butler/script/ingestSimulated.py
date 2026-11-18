@@ -24,13 +24,12 @@ from ..formatters import SPHERExImageFormatter
 
 
 def nbitToInt(n: int, nbit: int, bitmask: int):
-    """Convert binary to int by shifting bits"""
+    """Convert binary to int by shifting bits."""
     return (n >> nbit) & bitmask
 
 
 def getDimensionIds(file: str):
-    """
-    Gets the dimensions needed for butler from file name.
+    """Get the dimensions needed for butler from file name.
 
     Parameters
     ----------
@@ -41,6 +40,7 @@ def getDimensionIds(file: str):
     -------
     result: tuple(ObservationId, int)
         Tuple with observation id object, and detector id.
+
     """
     # Pattern matches either the short or long SPS observation ID
     # Short: *_2024W25_1A_0094_3_detector_2_*.fits
@@ -68,6 +68,7 @@ def getObservationExposureRecords(file: str,
                                   instrument: str,
                                   obsid: ObservationId,
                                   detector_id: int):
+    """Extract observation and exposure records from a simulated FITS file."""
     # This code knows the format of the file and can extract information from it
 
     # SPS observation id from file name - short form
@@ -159,18 +160,22 @@ def getObservationExposureRecords(file: str,
 
 
 def is_within_range(obsid, obsid_min=None, obsid_max=None):
-    """Function to safely convert to integer and compare for OBSID bounds.
+    """Safely convert to integer and compare for OBSID bounds.
 
-    Parameters:
-        obsid : `str`
-            Observation ID
-        obsid_min : `str`, default is None.
-            Minimum observation ID.
-        obsid_max : `str`
-            Maximum observation ID.
+    Parameters
+    ----------
+    obsid : `str`
+        Observation ID.
+    obsid_min : `str`, optional
+        Minimum observation ID. Default is None.
+    obsid_max : `str`, optional
+        Maximum observation ID. Default is None.
 
-    Returns: `bool`
+    Returns
+    -------
+    `bool`
         True if observation within boundary.
+
     """
     try:
         obsid_num = int(obsid)
@@ -206,7 +211,7 @@ def ingestSimulated(repo,
                     obsid_min=None,
                     obsid_max=None,
                     instrument=None):
-    """Ingests raw frames into the butler registry
+    """Ingest raw frames into the butler registry.
 
     Parameters
     ----------
@@ -243,8 +248,8 @@ def ingestSimulated(repo,
     (in its own transaction), which inserts only if a record with the same
     primary key does not already exist.  This allows different files within
     the same observation to be ingested in different runs.
-    """
 
+    """
     butler = Butler(repo, writeable=True)
 
     # use Simulator instrument by default

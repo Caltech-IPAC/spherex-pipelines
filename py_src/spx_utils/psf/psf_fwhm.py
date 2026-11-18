@@ -11,22 +11,26 @@ from photutils.profiles import RadialProfile
 
 # Local application/library specific imports
 from spx_data import PSFZoneData
+from spx_data.spx_param import get_pix_scale
 
 
 def process_psf_zone_data(psf_zone_data: PSFZoneData,
                           output_dir: str,
                           obsid: str = "",
                           pixsize: float = 6.15):
-    """Processes and visualizes PSFZoneData for each detector.
+    """Process and visualizes PSFZoneData for each detector.
 
     Parameters
     ----------
     psf_zone_data : `PSFZoneData`
         PSF zone data object containing PSF information.
-    output_dir : `str`, optional
-        Directory to save output figures, by default "./figures".
+    output_dir : `str`
+        Directory to save output figures.
+    obsid : `str`, optional
+        Observation ID for labeling. Default is "".
     pixsize : `float`, optional
-        Size of the pixel in arcseconds for scaling, by default 6.15.
+        Size of the pixel in arcseconds for scaling. Default is 6.15.
+
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -80,8 +84,7 @@ def calculate_fwhm(psf_zone_data: PSFZoneData, pixscale: float = None) -> dict:
     psf_zone_data : `PSFZoneData`
         The PSFZoneData object containing the PSF grid data.
     pixscale : `float`, optional
-        Pixel scale in arcseconds per pixel.
-        If None, it's extracted from the PSFZoneData header.
+        Pixel scale in arcseconds per pixel. If None, use default pixel scale.
 
     Returns
     -------
@@ -90,9 +93,10 @@ def calculate_fwhm(psf_zone_data: PSFZoneData, pixscale: float = None) -> dict:
         and in pixels for the PSF grid zones:
         "fwhms_arcsec": list[float],
         "fwhms_pix": list[float]
+
     """
     if pixscale is None:
-        pixscale = psf_zone_data._get_header()["CDELT1"]
+        pixscale = get_pix_scale()
 
     psfs = psf_zone_data.data  # PSF grid data
     fwhms_arcsec = []
@@ -105,6 +109,13 @@ def calculate_fwhm(psf_zone_data: PSFZoneData, pixscale: float = None) -> dict:
         if np.isnan(img).sum() > (img.size * 0.5):
             logging.info(f"Failed to measure FWHM for zone {ii}, "
                          f"{np.isnan(img).sum() / img.size * 100:.2f}% NaN pixels.")
+            fwhms_arcsec.append(np.nan)
+            fwhms_pix.append(np.nan)
+            continue
+
+        # Guard against degenerate / non-finite PSFs (prevents gaussian_fit w/ NaNs)
+        if (not np.isfinite(img).any()) or (np.nanmax(img) <= 0) or (np.nanstd(img) == 0):
+            logging.info(f"Failed to measure FWHM for zone {ii}: degenerate PSF image.")
             fwhms_arcsec.append(np.nan)
             fwhms_pix.append(np.nan)
             continue
@@ -125,7 +136,7 @@ def calculate_fwhm(psf_zone_data: PSFZoneData, pixscale: float = None) -> dict:
 
 
 def plot_fwhm_histogram(fwhms_arcsec1: list, detector_id: int, output_dir: str, obsid: str = ""):
-    """Plots a histogram of FWHM values for a single detector.
+    """Plot a histogram of FWHM values for a single detector.
 
     Parameters
     ----------
@@ -133,13 +144,17 @@ def plot_fwhm_histogram(fwhms_arcsec1: list, detector_id: int, output_dir: str, 
         List of FWHM values in arcseconds for the given detector.
     detector_id : `int`
         ID of the detector (e.g., 1, 2, 3, ...).
-    output_path : `str`
-        Path to save the output plot.
+    output_dir : `str`
+        Directory to save the output plot.
+    obsid : `str`, optional
+        Observation ID for labeling. Default is "".
+
     """
     # Histogram settings
     bins = np.arange(0, 10, 0.5)
     xlims = [-0.5, 8.5]
     ylims = [0, 55]
+    yspan = ylims[1] - ylims[0]
     color = "blue"
 
     # Create plot
@@ -153,7 +168,7 @@ def plot_fwhm_histogram(fwhms_arcsec1: list, detector_id: int, output_dir: str, 
     Xerr = [[np.abs(tmp[1] - tmp[0])], [np.abs(tmp[2] - tmp[1])]]
 
     # Plot median
-    ax.errorbar(tmp[1], ylims[0] + np.diff(ylims) * 0.2, xerr=Xerr, fmt="o", markersize=8,
+    ax.errorbar(tmp[1], ylims[0] + yspan * 0.2, xerr=Xerr, fmt="o", markersize=8,
                 markerfacecolor="white", elinewidth=1, linewidth=1, capsize=4,
                 markeredgecolor="black", ecolor="black", zorder=1000, label="Median")
     ax.text(0.07, 0.82, f"Median: {tmp[1]:.1f}''", va="top", ha="left", fontsize=8, color="black",
@@ -161,7 +176,7 @@ def plot_fwhm_histogram(fwhms_arcsec1: list, detector_id: int, output_dir: str, 
 
     # Add requirement line
     ax.axvline(7, linestyle="--", linewidth=1, color="gray")
-    ax.text(7.3, ylims[0] + np.diff(ylims) * 0.4, "Requirement (7'')", color="gray", rotation=90,
+    ax.text(7.3, ylims[0] + yspan * 0.4, "Requirement (7'')", color="gray", rotation=90,
             fontsize=9, va="center", ha="left")
 
     # Labels, ticks, and limits

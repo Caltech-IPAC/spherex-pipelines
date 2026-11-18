@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class TestDQAUtils(unittest.TestCase):
     """Test DQA utility functions."""
+
     rp = ReadoutParameters(nref=2, Mphan=2, nchannel=3, wchannel=10,
                            kref=2, jref=2, Jactive=28, Kactive=28)
     spximg = get_sample_level1_img(rp)

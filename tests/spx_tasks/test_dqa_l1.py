@@ -18,8 +18,8 @@ def fake_flags_metadata(spximg: SPHERExImage, rp: dict):
     header = fits.Header(rp.to_metadata())
     header["OBSID"] = "2025W37_2A_0486_2"  # Valid SPS format
     header["DETECTOR"] = 1
-    header["SPS_TARGET"] = 54321
-    header["SPS_FLAGS"] = "all_sky"
+    header["HIERARCH SPS_TARGET"] = 54321
+    header["HIERARCH SPS_FLAGS"] = "all_sky"
     start_time = Time("2025-09-15T12:00:00")
     end_time = Time("2025-09-15T12:05:00")
     header["MJD-BEG"] = (start_time.mjd, "Exposure start time in MJD")
@@ -38,6 +38,7 @@ def fake_flags_metadata(spximg: SPHERExImage, rp: dict):
 
 class TestL1DQA(unittest.TestCase):
     """Test L1 DQA Task."""
+
     config = DQAL1Config()
     # Set a lower transient threshold for easier testing
     config.max_transient_pix = 50

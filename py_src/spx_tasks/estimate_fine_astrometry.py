@@ -9,6 +9,7 @@ from pathlib import Path
 import warnings
 import subprocess
 import shutil
+import sep
 
 # Related third party imports
 from astropy import coordinates as coord
@@ -54,7 +55,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='astropy')
 
 # Diagnostic utility function
 def _collect_wcs_diagnostics(wcs_obj: WCS, model_type: type) -> FineAstrometry | CoarseAstrometry | None:
-    """Collects WCS parameters into a dictionary for diagnostics,
+    """Collect WCS parameters into a dictionary for diagnostics,
     ready for JSON serialization, COARSE and FINE ASTRO WCS,
     SCAMP dAXIS1, dAXIS2, CONTRAST, and if astrometry.net failed
     to solve field.
@@ -63,11 +64,14 @@ def _collect_wcs_diagnostics(wcs_obj: WCS, model_type: type) -> FineAstrometry |
     ----------
     wcs_obj : `~astropy.wcs.WCS`
         The WCS object to inspect.
+    model_type : `type`
+        The model type (FineAstrometry or CoarseAstrometry).
 
     Returns
     -------
     diagnostics : `dict`
         A dictionary containing the WCS parameters.
+
     """
     diagnostics = {}
     if wcs_obj is None:
@@ -134,8 +138,7 @@ def quadrant_astrometry_stats(final_wcs: WCS,
                               min_per_quad: int = 10,
                               sigma: float = 3.0,
                               maxiters: int = 6):
-    """
-    Compute STD and RMS astrometric errors for the full image and each quadrant,
+    """Compute STD and RMS astrometric errors for the full image and each quadrant,
     using SCAMP matched stars, with sigma clipping applied per quadrant.
     """
     # Get matched pairs from SCAMP
@@ -283,6 +286,7 @@ def convert_hdu_to_ldac(hdu) -> tuple[fits.BinTableHDU, fits.BinTableHDU]:
         Header info for fits table (LDAC_IMHEAD)
     tbl2: `astropy.io.fits.BinTableHDU`
         Data table (LDAC_OBJECTS)
+
     """
     tblhdr = np.array([hdu.header.tostring(',')])
     col1 = fits.Column(name='Field Header Card', array=tblhdr, format='13200A')
@@ -310,6 +314,7 @@ def catalog2ldac(catalog, ldac_filepath) -> None:
     Returns
     -------
     `None`
+
     """
     hdu = fits.BinTableHDU(catalog)
     tbl1, tbl2 = convert_hdu_to_ldac(hdu)
@@ -323,12 +328,14 @@ def get_matched_pairs(scamp_out) -> tuple[np.ndarray, np.ndarray, SkyCoord]:
 
     Parameters
     ----------
-    scamp_out:
+    scamp_out : `str`
+        Path to scamp output file.
 
     Returns
     -------
-    `tuple[~numpy.ndarray, ~numpy.ndarray, ~astropy.coordinates.SkyCoord]`
-    Source point loctions of matched pairs.
+    `tuple` [`~numpy.ndarray`, `~numpy.ndarray`, `~astropy.coordinates.SkyCoord`]
+        Source point locations of matched pairs.
+
     """
     import warnings
     # retrieves matched pairs from the last run
@@ -349,15 +356,18 @@ def get_matched_pairs(scamp_out) -> tuple[np.ndarray, np.ndarray, SkyCoord]:
 
 
 def wcs_from_head(filepath) -> WCS:
-    """Gets WCS from output scamp output head file.
+    """Get WCS from output scamp output head file.
 
     Parameters
     ----------
-    filepath: `string`
+    filepath : `str`
+        Path to scamp head file.
 
     Returns
     -------
-    `WCS`: Solved WCS.
+    `~astropy.wcs.WCS`
+        Solved WCS.
+
     """
     H = fits.Header()
     fp = open(filepath, 'r')
@@ -386,9 +396,10 @@ def linear_err_function(p: np.array,
                         x: np.array,
                         y: np.array,
                         w_obj: WCS) -> np.ndarray:
-    """Computes residuals between reference celestial and WCS pixel coordinates.
+    """Compute residuals between reference celestial and WCS pixel coordinates.
 
-    Parameters:
+    Parameters
+    ----------
     p : `np.array`
         Array of parameters defining the WCS transformation.
         The first four elements define the CD matrix,
@@ -404,11 +415,13 @@ def linear_err_function(p: np.array,
     w_obj : `WCS`
         An astropy WCS object that will be updated with the WCS parameters from `p`.
 
-    Returns:
+    Returns
+    -------
     resids : ~numpy.ndarray
         The concatenated residuals of longitude and latitude coordinates
         after applying the WCS transformation and comparing to the reference
         coordinates.
+
     """
     cd = p[0:4]
     crpix = p[4:6]
@@ -423,18 +436,25 @@ def linear_err_function(p: np.array,
 
 
 def linear_fit_wcs_nocrpix(x, y, refcoords, guess_wcs):
-    """
-    Fits WCS parameters to reference celestial coordinates given pixel coordinates,
+    """Fit WCS parameters to reference celestial coordinates given pixel coordinates,
     keeping the CRPIX values constant.
 
-    Parameters:
-    - x: np.array of x pixel coordinates
-    - y: np.array of y pixel coordinates
-    - refcoords: SkyCoord object with reference celestial coordinates
-    - guess_wcs: initial WCS object to be optimized
+    Parameters
+    ----------
+    x : `~numpy.ndarray`
+        Array of x pixel coordinates.
+    y : `~numpy.ndarray`
+        Array of y pixel coordinates.
+    refcoords : `~astropy.coordinates.SkyCoord`
+        Reference celestial coordinates.
+    guess_wcs : `~astropy.wcs.WCS`
+        Initial WCS object to be optimized.
 
-    Returns:
-    - wcs: Optimized WCS object
+    Returns
+    -------
+    wcs : `~astropy.wcs.WCS`
+        Optimized WCS object.
+
     """
     wcs = guess_wcs.deepcopy()
     lon, lat = refcoords.ra.deg, refcoords.dec.deg
@@ -486,10 +506,12 @@ def linear_fit_wcs(x: np.array,
 
     Parameters are as previously defined.
 
-    Returns:
+    Returns
+    -------
     wcs : `WCS`
         The optimized WCS object or returns the
         initial guess WCS if optimization was not possible.
+
     """
     logging.info('Linear fit WCS function:')
     logging.info(f'guess wcs = {guess_wcs}')
@@ -541,7 +563,7 @@ def tweak_wcs(input_wcs: WCS,
               shift_pix: np.ndarray = None,
               rotate: float = None,
               scale: float = None) -> WCS:
-    """Modifies linear WCS with shift and rotation;
+    """Modify linear WCS with shift and rotation;
        used to assess recovery of astrometry with known error.
 
     Parameters
@@ -686,6 +708,7 @@ def apply_aberration_correction(spximg: SPHERExImage, ref_cat: Table, verbose=Fa
     -------
     ref_cat : `astropy.table.Table`
         Reference catalog with aberration-corrected coordinates.
+
     """
     try:
         # S/C position and velocity info for aberration.
@@ -734,6 +757,27 @@ def apply_aberration_correction(spximg: SPHERExImage, ref_cat: Table, verbose=Fa
 
     return ref_cat
 
+def _daxis_total(daxis1, daxis2):
+    return float(np.sqrt(float(daxis1)**2 + float(daxis2)**2))
+
+
+def _is_finast0_solution(contrast, daxis1, daxis2):
+    return (
+        float(contrast) > 2.0
+        and float(daxis1) <= 1.5
+        and float(daxis2) <= 1.5
+    )
+
+def _solution_rank(sol):
+    return (
+        int(_is_finast0_solution(sol["contrast"], sol["daxis1"], sol["daxis2"])),
+        -float(sol["daxis"]),
+        -max(float(sol["daxis1"]), float(sol["daxis2"])),
+        -float(sol["daxis1"]),
+        -float(sol["daxis2"]),
+        float(sol["contrast"]),
+    )
+
 
 class EstimateFineAstrometryConnections(pipeBase.PipelineTaskConnections,
                                         dimensions=("instrument", "exposure"),
@@ -780,6 +824,8 @@ class EstimateFineAstrometryConnections(pipeBase.PipelineTaskConnections,
 
 class EstimateFineAstrometryConfig(pipeBase.PipelineTaskConfig,
                                    pipelineConnections=EstimateFineAstrometryConnections):
+    """Configuration for EstimateFineAstrometry task."""
+
     min_ncalibrators = Field(
         doc="The minimum number of astrometric calibrators the module needs."
             " If the number of calibrators is below this threshold,"
@@ -895,6 +941,16 @@ class EstimateFineAstrometryConfig(pipeBase.PipelineTaskConfig,
         dtype=str,
         default=""
     )
+    do_run_astronet = Field(
+        doc="If True, run astrometry.net before SCAMP; if False, skip it and use input WCS.",
+        dtype=bool,
+        default=True
+    )
+    min_quad_matches = Field(
+        doc="Minimum number of SCAMP matches required in each image quadrant.",
+        dtype=int,
+        default=9,
+    )
 
 
 class EstimateFineAstrometryTask(pipeBase.PipelineTask):
@@ -918,6 +974,7 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "estimate-fine-astrometry"
@@ -935,12 +992,13 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             srccat: Table,
             index_dir: str = None,
             sip: Sip | None = None,
+            donor_spximg=None,
             max_sep: float = 1.00,
             naxis_1: int = 2040,
             naxis_2: int = 2040,
             verbose: bool = True,
             plot: bool = True) -> pipeBase.Struct:
-        """
+        """Estimate fine astrometry WCS.
 
         Parameters
         ----------
@@ -971,6 +1029,7 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
         - ICRS = International Celestial Reference System
         - GCRS = Geocentric Celestial Reference System
         - See: https://spherex-docs.ipac.caltech.edu/ssdc-tr-030/v/v1.5/
+
         """
         if index_dir is None:
             index_dir = os.getenv("ASTRONET_INDEX_DIR")
@@ -1029,17 +1088,46 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
         try:
             spximg_1 = copy.deepcopy(spximg)
             spximg_2 = copy.deepcopy(spximg)
-            result_1 = self._run_astrometry_1(spximg_1, srccat, index_dir,
-                                              naxis_1, naxis_2, ncalibrators, ntransients,
-                                              verbose, plot,
-                                              coarse_astro_obj=coarse_astro_obj)
-            if result_1.spximg_out.header["FINAST"] != 0:
-                result = self._run_astrometry_2(spximg_2, srccat, index_dir,
+            donor_source = spximg.header.get("RETRY_WCSMODE", "")
+            print("Estimate Fine Astrometry Initial Pass")
+            if donor_source == "":
+                print("Fine Astrometry Initial Pass")
+                result_1 = self._run_astrometry_1(spximg_1, srccat, index_dir,
                                                 naxis_1, naxis_2, ncalibrators, ntransients,
                                                 verbose, plot,
                                                 coarse_astro_obj=coarse_astro_obj)
+                if result_1.spximg_out.header["FINAST"] != 0:
+                    result = self._run_astrometry_2(spximg_2, srccat, index_dir,
+                                                    naxis_1, naxis_2, ncalibrators, ntransients,
+                                                    verbose, plot,
+                                                    coarse_astro_obj=coarse_astro_obj)
+                else:
+                    result = result_1
             else:
-                result = result_1
+                print("Estimate Fine Astrometry Retry")
+                print(f"[RUN ENTRY] RETRY_WCSMODE = {spximg.header.get('RETRY_WCSMODE')}")
+                if self.config.always_use_astrometric_refcat_flag is False:
+                    print("Refcat ASTROMETRIC flag turned OFF")
+                    result_1 = self._run_astrometry_retry(spximg_1, srccat, index_dir,
+                                                        naxis_1, naxis_2, ncalibrators, ntransients,
+                                                        verbose, plot, donor_spximg,
+                                                        use_astrometric_refcat_flag=True,
+                                                        coarse_astro_obj=coarse_astro_obj)
+                    finast = result_1.spximg_out.header["FINAST"]
+                else:
+                    finast = 999
+
+                if finast > 0:
+                    print("Refcat ASTROMETRIC flag turned ON")
+                    result = self._run_astrometry_retry(spximg_2, srccat, index_dir,
+                                                        naxis_1, naxis_2, ncalibrators, ntransients,
+                                                        verbose, plot, donor_spximg,
+                                                        use_astrometric_refcat_flag=False,
+                                                        coarse_astro_obj=coarse_astro_obj)
+                else:
+                    result = result_1
+
+                return result
 
             return result
         except Exception as e:
@@ -1112,44 +1200,49 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
         # Run Astrometry.net before se_run
         ###############################################################
         astronet_run_pass = False
-        try:
-            print(f"Running astrometry.net on SPXOBSID {spximg.header['OBSID']}")
-            wcs_output, stripped_path, astronet_num_matches, astronet_pixel_scale = astronet_run(
-                input_image=img_path1,
-                stripped_image=img_stripped,
-                wcs_output=wcs_output,
-                index_dir=index_dir,
-                crpix=(spximg.wcs.wcs.crpix[0], spximg.wcs.wcs.crpix[1]),
-                pixel_scale_bounds=(6.0, 6.3),
-                tweak_order=3,
-                pixel_error=2,
-                downsample=2,
-                extension=0,
-                verbose=verbose,
-                array_id=array_id)
-            print(f"wcs_output = {wcs_output}")
-            print(f"stripped_path = {stripped_path}")
+        if self.config.do_run_astronet:
+            try:
+                print(f"Running astrometry.net on SPXOBSID {spximg.header['OBSID']}")
+                wcs_output, stripped_path, astronet_num_matches, astronet_pixel_scale = astronet_run(
+                    input_image=img_path1,
+                    stripped_image=img_stripped,
+                    wcs_output=wcs_output,
+                    index_dir=index_dir,
+                    crpix=(spximg.wcs.wcs.crpix[0], spximg.wcs.wcs.crpix[1]),
+                    pixel_scale_bounds=(6.0, 6.3),
+                    tweak_order=3,
+                    pixel_error=2,
+                    downsample=2,
+                    extension=0,
+                    verbose=verbose,
+                    array_id=array_id)
+                print(f"wcs_output = {wcs_output}")
+                print(f"stripped_path = {stripped_path}")
 
-            # Load updated WCS from solve-field and assign to spximg
-            with fits.open(wcs_output) as wcs_hdul:
-                solved_wcs = WCS(wcs_hdul[0].header)
-                print(solved_wcs)
-                spximg.wcs = solved_wcs
-                astronet_run_pass = True
-        except Exception as e:
-            print(f"[WARNING] astrometry.net failed on OBSID {spximg.header['OBSID']}: {e}")
-            print("[INFO] Using original image WCS for fine astrometry.")
-            # fall back to original WCS
+                # Load updated WCS from solve-field and assign to spximg
+                with fits.open(wcs_output) as wcs_hdul:
+                    solved_wcs = WCS(wcs_hdul[0].header)
+                    print(solved_wcs)
+                    spximg.wcs = solved_wcs
+                    astronet_run_pass = True
+            except Exception as e:
+                print(f"[WARNING] astrometry.net failed on OBSID {spximg.header['OBSID']}: {e}")
+                print("[INFO] Using original image WCS for fine astrometry.")
+                # fall back to original WCS
+                spximg.wcs = spximg_input.wcs
+                spximg_out = spximg
+                spximg_out.header["FINAST"] = 5
+                # Proceed immediately to next try,
+                # usually no hope in convergence with astrometry.net fail
+                return pipeBase.Struct(spximg_out=spximg_out,
+                                    scamp_wcs=None,
+                                    astrometry_diagnostics=None)
+
+            finally:
+                clean(img_path1, wcs_output, img_stripped)
+        else:
+            print("[INFO] Skipping astrometry.net (do_run_astronet=False)")
             spximg.wcs = spximg_input.wcs
-            spximg_out = spximg
-            spximg_out.header["FINAST"] = 5
-            # Proceed immediately to next try,
-            # usually no hope in convergence with astrometry.net fail
-            return pipeBase.Struct(spximg_out=spximg_out,
-                                   scamp_wcs=None,
-                                   astrometry_diagnostics=None)
-
-        finally:
             clean(img_path1, wcs_output, img_stripped)
 
         # Now write the updated SPHERExImage to file
@@ -1253,6 +1346,8 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             detect_thresh = self.config.detect_thresh_lowb[array_id]
             print(f".detect_thresh_lowb used: {detect_thresh}")
 
+        loop_solution = None
+
         while (daxis1 > 1.5 or daxis2 > 1.5) and iteration < MAX_ITER:
             print(f"Iteration [{iteration}]: using detect_thresh = {detect_thresh}")
             # Step 1: Write temp image with current WCS
@@ -1311,13 +1406,33 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             head_path = img_ldac[:-4] + "head"
             new_wcs = wcs_from_head(head_path)
             spximg.wcs = new_wcs
+
+            loop_solution = {
+                "label": "loop",
+                "wcs": copy.deepcopy(new_wcs),
+                "scamp_out": scamp_out,
+                "contrast": float(contrast),
+                "detections_loaded": detections_loaded,
+                "standards_loaded": standards_loaded,
+                "ra_shift": float(ra_shift),
+                "dec_shift": float(dec_shift),
+                "daxis1": float(daxis1),
+                "daxis2": float(daxis2),
+                "daxis": _daxis_total(daxis1, daxis2),
+                "nstars": nstars,
+                "n_sn": n_sn,
+                "head_path": head_path,
+            }
+
             print(f">>>>>> dAXIS1 = {daxis1}\", dAXIS2 = {daxis2}\"")
-            if daxis1 < 1.0 and daxis2 < 1.0 and contrast > 2.:
-                break
-            elif daxis1 < 1.5 and daxis2 < 1.5 and contrast > 2.:
-                print(f"[{iteration}] Accepting early SCAMP solution with contrast={contrast:.2f} "
-                      f"and shifts RA={ra_shift:.2f}\", DEC={dec_shift:.2f}\""
-                      f" dAXIS1 = {daxis1}\", dAXIS2 = {daxis2}\"")
+
+            if _is_finast0_solution(contrast, daxis1, daxis2):
+                print(
+                    f"[{iteration}] Accepting early SCAMP loop solution "
+                    f"contrast={contrast:.2f}, "
+                    f"DAXIS={loop_solution['daxis']:.2f}\", "
+                    f"dAXIS1={daxis1:.2f}\", dAXIS2={daxis2:.2f}\""
+                )
                 break
 
             print(f"ITERATION {iteration}")
@@ -1398,8 +1513,61 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
         except subprocess.CalledProcessError as e:
             self.log.error(f"SCAMP error {e.stderr}.")
             raise ValueError(f"SCAMP error {e.stderr}.")
-        finally:
-            clean(img_path3, img_ldac, refcat_ldac, scamp_out)
+        # finally:
+        #     clean(img_path3, img_ldac, refcat_ldac, scamp_out)
+        second_head_path = img_ldac[:-4] + "head"
+        second_scamp_wcs = wcs_from_head(second_head_path)
+
+        second_solution = {
+            "label": "second",
+            "wcs": copy.deepcopy(second_scamp_wcs),
+            "scamp_out": scamp_out,
+            "contrast": float(contrast),
+            "detections_loaded": detections_loaded,
+            "standards_loaded": standards_loaded,
+            "ra_shift": float(ra_shift),
+            "dec_shift": float(dec_shift),
+            "daxis1": float(daxis1),
+            "daxis2": float(daxis2),
+            "daxis": _daxis_total(daxis1, daxis2),
+            "nstars": nstars,
+            "n_sn": n_sn,
+            "head_path": second_head_path,
+        }
+        if loop_solution is None:
+            best_solution = second_solution
+        else:
+            best_solution = max([loop_solution, second_solution], key=_solution_rank)
+
+        print(
+            "[SCAMP SELECTION]\n"
+            f"Loop solution:   contrast={loop_solution['contrast']:.2f}, "
+            f"DAXIS={loop_solution['daxis']:.2f}\", "
+            f"dAXIS1={loop_solution['daxis1']:.2f}\", "
+            f"dAXIS2={loop_solution['daxis2']:.2f}\""
+            if loop_solution is not None else
+            "Loop solution: None"
+        )
+
+        print(
+            f"Second solution: contrast={second_solution['contrast']:.2f}, "
+            f"DAXIS={second_solution['daxis']:.2f}\", "
+            f"dAXIS1={second_solution['daxis1']:.2f}\", "
+            f"dAXIS2={second_solution['daxis2']:.2f}\""
+        )
+
+        print(f"[SCAMP SELECTION] Using {best_solution['label']} solution")
+        scamp_wcs = best_solution["wcs"]
+        scamp_out = best_solution["scamp_out"]
+        contrast = best_solution["contrast"]
+        detections_loaded = best_solution["detections_loaded"]
+        standards_loaded = best_solution["standards_loaded"]
+        ra_shift = best_solution["ra_shift"]
+        dec_shift = best_solution["dec_shift"]
+        daxis1 = best_solution["daxis1"]
+        daxis2 = best_solution["daxis2"]
+        nstars = best_solution["nstars"]
+        n_sn = best_solution["n_sn"]
 
         print(
             f"2SCAMP contrast ({contrast}).\n"
@@ -1413,8 +1581,9 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
 
         spximg_out = spximg_input
         # Get SCAMP WCS (aka solved wcs)
-        head_path = img_ldac[:-4] + "head"
-        scamp_wcs = wcs_from_head(head_path)
+        # head_path = img_ldac[:-4] + "head"
+        # scamp_wcs = wcs_from_head(head_path)
+        # scamp_hdr = scamp_wcs.to_header(relax=True)
         scamp_hdr = scamp_wcs.to_header(relax=True)
 
         print(">>>> SCAMP_WCS <<<")
@@ -1493,18 +1662,19 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             print(f"Exceptions {e}")
 
         if contrast > 2:
-            if daxis1 < 1.5 and daxis2 < 1.5:
+            if daxis1 <= 1.5 and daxis2 <= 1.5:
                 spximg_out.header["FINAST"] = 0
-                spximg_out.header.comments['FINAST'] = "good fine-astrometric solution"
-            elif (daxis1 >= 1.5 and daxis1 < 5.0) or (daxis2 >= 1.5 and daxis2 < 5.0):
+                spximg_out.header.comments["FINAST"] = "good fine-astrometric solution"
+            elif (1.5 < daxis1 < 5.0) or (1.5 < daxis2 < 5.0):
                 spximg_out.header["FINAST"] = 2
-                spximg_out.header.comments['FINAST'] = "poor fine-astrometric solution"
+                spximg_out.header.comments["FINAST"] = "poor fine-astrometric solution"
             elif daxis1 >= 5.0 or daxis2 >= 5.0:
                 spximg_out.header["FINAST"] = 3
-                spximg_out.header.comments['FINAST'] = "bad fine-astrometric solution"
+                spximg_out.header.comments["FINAST"] = "bad fine-astrometric solution"
         else:
             spximg_out.header["FINAST"] = 4
-            spximg_out.header.comments['FINAST'] = "bad fine-astrometric solution"
+            spximg_out.header.comments["FINAST"] = "bad fine-astrometric solution"
+
 
         # Quadrant-based astrometric diagnostics (image-space quadrants)
         quad_stats = quadrant_astrometry_stats(
@@ -1512,7 +1682,7 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             scamp_out=scamp_out,
             naxis1=naxis_1,
             naxis2=naxis_2,
-            min_per_quad=5,
+            min_per_quad=self.config.min_quad_matches,
         )
         # Compute Qs_all_nmatch and Qs_nmatch_var
         total_n = quad_stats.get("TOTAL", {}).get("n", 0)
@@ -1524,16 +1694,49 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
                 per_quad_matches.append(int(q.get("n_used", 0)))
             Qs_all_nmatch = int(total_n)
             Qs_nmatch_var = float(np.std(per_quad_matches) / Qs_all_nmatch)
+            Qs_min_nmatch = int(min(per_quad_matches))
         else:
             Qs_all_nmatch = 0
             Qs_nmatch_var = np.nan
+            Qs_min_nmatch = 0
 
-        # Only downgrade a "good" solution (FINAST==0)
-        # if quadrant-match variance is high or undefined
-        if (spximg_out.header["FINAST"] == 0 and (not np.isfinite(Qs_nmatch_var) or Qs_nmatch_var >= 0.15)):
+        # Upgrade a marginal solution if both axes are only slightly above the
+        # FINAST=0 threshold and quadrant matching is uniform.
+        if (
+            spximg_out.header["FINAST"] == 2
+            and contrast > 2
+            and 1.5 < daxis1 < 2.5
+            and 1.5 < daxis2 < 2.5
+            and np.isfinite(Qs_nmatch_var)
+            and Qs_nmatch_var < 0.10
+        ):
             spximg_out.header["FINAST"] = 1
-            spximg_out.header.comments["FINAST"] =\
-                "good astrometry but uneven quadrant matches (Qs_nmatch_var>=0.15 or NaN)"
+            spximg_out.header.comments["FINAST"] = (
+                "marginal astrometry upgraded: 1.5<dAXIS1/2<2.5 and QS_NMATCH_VAR<0.10"
+            )
+
+        # Downgrade a good solution if any quadrant has too few matches.
+        # This is worse than FINAST=1 because the solution is underconstrained
+        # in part of the image.
+        if (
+            spximg_out.header["FINAST"] == 0
+            and Qs_min_nmatch < self.config.min_quad_matches
+        ):
+            spximg_out.header["FINAST"] = 2
+            spximg_out.header.comments["FINAST"] = (
+                "poor astrometry: too few matches in one or more quadrants"
+            )
+
+        # Downgrade a good solution if quadrant-match variance is high or undefined.
+        elif (
+            spximg_out.header["FINAST"] == 0
+            and (not np.isfinite(Qs_nmatch_var) or Qs_nmatch_var >= 0.15)
+        ):
+            spximg_out.header["FINAST"] = 1
+            spximg_out.header.comments["FINAST"] = (
+                "good astrometry but uneven quadrant matches "
+                "(QS_NMATCH_VAR>=0.15 or NaN)"
+            )
 
         # First print TOTAL metrics
         total = quad_stats.get("TOTAL", {})
@@ -1819,114 +2022,122 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
         else:
             num_sources_per_chunk = 5000
 
-        try:
-            print(f"Running astrometry.net on SPXOBSID {spximg.header['OBSID']} (Attempt 1: Unclipped)")
+        if self.config.do_run_astronet:
+            try:
+                print(f"Running astrometry.net on SPXOBSID {spximg.header['OBSID']} (Attempt 1: Unclipped)")
 
-            # ATTEMPT 1: RUN ON UNCLIPPED IMAGE
-            wcs_path_1, final_stripped_path, matches_1, astronet_pixel_scale = astronet_run_b(
-                input_image=img_path_unclipped,
-                stripped_image=img_stripped,
-                wcs_output=wcs_output_unclipped,
-                index_dir=index_dir,
-                crpix=(spximg.wcs.wcs.crpix[0], spximg.wcs.wcs.crpix[1]),
-                pixel_scale_bounds=(6.0, 6.3),
-                tweak_order=3,
-                pixel_error=2,
-                downsample=2,
-                extension=0,
-                verbose=verbose,
-                array_id=array_id,
-                num_sources_per_chunk=num_sources_per_chunk)
-
-            # CHECK ATTEMPT 1
-            # If Attempt 1 was not a strong solution, try Attempt 2
-            if matches_1 < 10:
-                print(f"[INFO] astrometry.net (Attempt 1) was weak ({matches_1} matches). "
-                      f"Clipping transients and retrying.")
-
-                # Prepare for attempt 2
-                print(f"INFO:  CLIPPING TRANSIENTS for DETECTOR {array_id}")
-                self._clip_transients(spximg)  # Modify spximg in place
-                img_path_clipped = write_temp_img(spximg, f"{obsid}_att2_clipped", array_id)
-                print(f"Running astrometry.net on SPXOBSID {spximg.header['OBSID']} (Attempt 2: Clipped)")
-
-                # Run on clipped image
-                wcs_path_2, final_stripped_path, matches_2, astronet_pixel_scale = astronet_run_b(
-                    input_image=img_path_clipped,
+                # ATTEMPT 1: RUN ON UNCLIPPED IMAGE
+                wcs_path_1, final_stripped_path, matches_1, astronet_pixel_scale = astronet_run_b(
+                    input_image=img_path_unclipped,
                     stripped_image=img_stripped,
-                    wcs_output=wcs_output_clipped,
+                    wcs_output=wcs_output_unclipped,
                     index_dir=index_dir,
                     crpix=(spximg.wcs.wcs.crpix[0], spximg.wcs.wcs.crpix[1]),
                     pixel_scale_bounds=(6.0, 6.3),
-                    tweak_order=0,
+                    tweak_order=3,
                     pixel_error=2,
-                    downsample=1,
+                    downsample=2,
                     extension=0,
                     verbose=verbose,
                     array_id=array_id,
                     num_sources_per_chunk=num_sources_per_chunk)
 
-            solved_wcs_path = None  # This will hold the final WCS to load
+                # CHECK ATTEMPT 1
+                # If Attempt 1 was not a strong solution, try Attempt 2
+                if matches_1 < 10:
+                    print(f"[INFO] astrometry.net (Attempt 1) was weak ({matches_1} matches). "
+                        f"Clipping transients and retrying.")
 
-            if matches_1 >= 100 and matches_2 == 0:
-                print(f"astrometry.net SUCCEEDED: Using Attempt 1 ({matches_1} matches).")
-                solved_wcs_path = wcs_path_1
-                clip_trans = False
-                astronet_num_matches = matches_1
-            elif matches_2 >= 100 and matches_2 > matches_1:
-                print(f"astrometry.net SUCCEEDED: Using Attempt 2 ({matches_2} matches).")
-                solved_wcs_path = wcs_path_2
-                clip_trans = True
-                astronet_num_matches = matches_2
-            elif matches_1 > matches_2:
-                print(f"astrometry.net SUCCEEDED."
-                      f" Using solution from Attempt 1 ({matches_1} matches).")
-                solved_wcs_path = wcs_path_1
-                astronet_num_matches = matches_1
-                clip_trans = False
-            elif matches_2 > 0:  # Catches matches_2 >= matches_1 AND matches_2 > 0
-                print(f"astrometry.net SUCCEEDED. "
-                      f"Using solution from Attempt 2 ({matches_2} matches).")
-                solved_wcs_path = wcs_path_2
-                astronet_num_matches = matches_2
-                clip_trans = True
-            else:
-                # Both attempts failed completely (0 matches or error)
-                print(f"[WARNING] astrometry.net failed on both unclipped and "
-                      f"clipped attempts for OBSID {spximg.header['OBSID']}")
+                    # Prepare for attempt 2
+                    print(f"INFO:  CLIPPING TRANSIENTS for DETECTOR {array_id}")
+                    self._clip_transients(spximg)  # Modify spximg in place
+                    img_path_clipped = write_temp_img(spximg, f"{obsid}_att2_clipped", array_id)
+                    print(f"Running astrometry.net on SPXOBSID {spximg.header['OBSID']} (Attempt 2: Clipped)")
+
+                    # Run on clipped image
+                    wcs_path_2, final_stripped_path, matches_2, astronet_pixel_scale = astronet_run_b(
+                        input_image=img_path_clipped,
+                        stripped_image=img_stripped,
+                        wcs_output=wcs_output_clipped,
+                        index_dir=index_dir,
+                        crpix=(spximg.wcs.wcs.crpix[0], spximg.wcs.wcs.crpix[1]),
+                        pixel_scale_bounds=(6.0, 6.3),
+                        tweak_order=0,
+                        pixel_error=2,
+                        downsample=1,
+                        extension=0,
+                        verbose=verbose,
+                        array_id=array_id,
+                        num_sources_per_chunk=num_sources_per_chunk)
+
+                solved_wcs_path = None  # This will hold the final WCS to load
+
+                if matches_1 >= 100 and matches_2 == 0:
+                    print(f"astrometry.net SUCCEEDED: Using Attempt 1 ({matches_1} matches).")
+                    solved_wcs_path = wcs_path_1
+                    clip_trans = False
+                    astronet_num_matches = matches_1
+                elif matches_2 >= 100 and matches_2 > matches_1:
+                    print(f"astrometry.net SUCCEEDED: Using Attempt 2 ({matches_2} matches).")
+                    solved_wcs_path = wcs_path_2
+                    clip_trans = True
+                    astronet_num_matches = matches_2
+                elif matches_1 > matches_2:
+                    print(f"astrometry.net SUCCEEDED."
+                        f" Using solution from Attempt 1 ({matches_1} matches).")
+                    solved_wcs_path = wcs_path_1
+                    astronet_num_matches = matches_1
+                    clip_trans = False
+                elif matches_2 > 0:  # Catches matches_2 >= matches_1 AND matches_2 > 0
+                    print(f"astrometry.net SUCCEEDED. "
+                        f"Using solution from Attempt 2 ({matches_2} matches).")
+                    solved_wcs_path = wcs_path_2
+                    astronet_num_matches = matches_2
+                    clip_trans = True
+                else:
+                    # Both attempts failed completely (0 matches or error)
+                    print(f"[WARNING] astrometry.net failed on both unclipped and "
+                        f"clipped attempts for OBSID {spximg.header['OBSID']}")
+                    print("[INFO] Using original image WCS for fine astrometry.")
+                    spximg.wcs = spximg_input.wcs
+                    astronet_run_pass = False  # Explicitly set failure
+
+                # Load the WCS if a solution (strong or weak) was chosen
+                if solved_wcs_path is not None:
+                    solved_wcs_path = Path(solved_wcs_path)  # ensure Path
+
+                    if not solved_wcs_path.exists():
+                        # This should not happen if astronet_run is correct,
+                        # but good to check
+                        print(f"[CRITICAL WARNING] Chosen WCS file does not exist: {solved_wcs_path}. "
+                            f"Reverting to original WCS.")
+                        spximg.wcs = spximg_input.wcs
+                        astronet_run_pass = False
+
+                    else:
+                        print(f">>>>>>>Loading final WCS from: {solved_wcs_path}")
+                        with fits.open(solved_wcs_path) as wcs_hdul:
+                            solved_wcs = WCS(wcs_hdul[0].header)
+                            print(f"SOLVED WCS = {solved_wcs}")
+                            spximg.wcs = solved_wcs
+                            astronet_run_pass = True
+
+            except Exception as e:
+                # This block catches *unexpected* errors
+                print(f"[CRITICAL WARNING] astrometry.net block failed unexpectedly "
+                    f"on OBSID {spximg.header['OBSID']}: {e}")
                 print("[INFO] Using original image WCS for fine astrometry.")
                 spximg.wcs = spximg_input.wcs
-                astronet_run_pass = False  # Explicitly set failure
+                astronet_run_pass = False
 
-            # Load the WCS if a solution (strong or weak) was chosen
-            if solved_wcs_path is not None:
-                solved_wcs_path = Path(solved_wcs_path)  # ensure Path
-
-                if not solved_wcs_path.exists():
-                    # This should not happen if astronet_run is correct,
-                    # but good to check
-                    print(f"[CRITICAL WARNING] Chosen WCS file does not exist: {solved_wcs_path}. "
-                          f"Reverting to original WCS.")
-                    spximg.wcs = spximg_input.wcs
-                    astronet_run_pass = False
-
-                else:
-                    print(f">>>>>>>Loading final WCS from: {solved_wcs_path}")
-                    with fits.open(solved_wcs_path) as wcs_hdul:
-                        solved_wcs = WCS(wcs_hdul[0].header)
-                        print(f"SOLVED WCS = {solved_wcs}")
-                        spximg.wcs = solved_wcs
-                        astronet_run_pass = True
-
-        except Exception as e:
-            # This block catches *unexpected* errors
-            print(f"[CRITICAL WARNING] astrometry.net block failed unexpectedly "
-                  f"on OBSID {spximg.header['OBSID']}: {e}")
-            print("[INFO] Using original image WCS for fine astrometry.")
+            finally:
+                # Clean up all temp files
+                clean(img_path_unclipped, wcs_output_unclipped, img_stripped)
+                if img_path_clipped:
+                    clean(img_path_clipped, wcs_output_clipped)  # Clean the clipped image if it was created
+        else:
+            print("[INFO] Skipping astrometry.net (do_run_astronet=False)")
             spximg.wcs = spximg_input.wcs
-            astronet_run_pass = False
-
-        finally:
             # Clean up all temp files
             clean(img_path_unclipped, wcs_output_unclipped, img_stripped)
             if img_path_clipped:
@@ -2065,7 +2276,9 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             else:
                 detect_thresh = self.config.detect_thresh_lowb[array_id]
                 print(f".detect_thresh_lowb used: {detect_thresh}")
-            early_exit = False
+
+            loop_solution = None
+
             while iteration < MAX_ITER:
                 print(f"Iteration [{iteration}]: using detect_thresh = {detect_thresh}")
                 # Step 1: Write temp image with current WCS
@@ -2124,15 +2337,32 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
                 head_path = img_ldac[:-4] + "head"
                 new_wcs = wcs_from_head(head_path)
                 spximg.wcs = new_wcs
+
+                loop_solution = {
+                    "label": "loop",
+                    "wcs": copy.deepcopy(new_wcs),
+                    "scamp_out": scamp_out,
+                    "contrast": float(contrast),
+                    "detections_loaded": detections_loaded,
+                    "standards_loaded": standards_loaded,
+                    "ra_shift": float(ra_shift),
+                    "dec_shift": float(dec_shift),
+                    "daxis1": float(daxis1),
+                    "daxis2": float(daxis2),
+                    "daxis": _daxis_total(daxis1, daxis2),
+                    "nstars": nstars,
+                    "n_sn": n_sn,
+                    "head_path": head_path,
+                }
+
                 print(f">>>>>> dAXIS1 = {daxis1}\", dAXIS2 = {daxis2}\"")
-                if daxis1 < 1.0 and daxis2 < 1.0 and contrast > 2:
-                    early_exit = True
-                    break
-                elif daxis1 < 1.5 and daxis2 < 1.5 and contrast > 2:
-                    print(f"[{iteration}] Accepting early SCAMP solution with contrast={contrast:.2f} "
-                          f"and shifts RA={ra_shift:.2f}\", DEC={dec_shift:.2f}\""
-                          f" dAXIS1 = {daxis1}\", dAXIS2 = {daxis2}\"")
-                    early_exit = True
+                if _is_finast0_solution(contrast, daxis1, daxis2):
+                    print(
+                        f"[{iteration}] Accepting early SCAMP loop solution "
+                        f"contrast={contrast:.2f}, "
+                        f"DAXIS={loop_solution['daxis']:.2f}\", "
+                        f"dAXIS1={daxis1:.2f}\", dAXIS2={daxis2:.2f}\""
+                    )
                     break
 
                 print(f"ITERATION {iteration}")
@@ -2149,16 +2379,20 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
                 f"nstars matched = {nstars}\n")
 
             spximg_temp = copy.deepcopy(spximg)
-            print(spximg_temp.wcs.to_header(relax=True))
-            # Get SCAMP WCS (aka solved wcs)
-            if early_exit is False:
+
+            if loop_solution is not None:
+                scamp_wcs = loop_solution["wcs"]
+            else:
                 head_path = img_ldac[:-4] + "head"
                 scamp_wcs = wcs_from_head(head_path)
-                print(">>>> SCAMP_WCS <<<")
-                print(scamp_wcs)
-                scamp_hdr = scamp_wcs.to_header(relax=True)
-                spximg_temp.wcs = scamp_wcs
-                spximg_temp.header = scamp_hdr
+
+            print(">>>> SCAMP_WCS <<<")
+            print(scamp_wcs)
+
+            scamp_hdr = scamp_wcs.to_header(relax=True)
+            spximg_temp.wcs = scamp_wcs
+            spximg_temp.header = scamp_hdr
+
             print(spximg_temp.wcs.to_header(relax=True))
 
             # variables for temp file absolute paths
@@ -2213,8 +2447,64 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             except subprocess.CalledProcessError as e:
                 self.log.error(f"SCAMP error {e.stderr}.")
                 raise ValueError(f"SCAMP error {e.stderr}.")
-            finally:
-                clean(img_path3, img_ldac, refcat_ldac, scamp_out)
+            # finally:
+            #     clean(img_path3, img_ldac, refcat_ldac, scamp_out)
+
+            second_head_path = img_ldac[:-4] + "head"
+            second_scamp_wcs = wcs_from_head(second_head_path)
+
+            second_solution = {
+                "label": "second",
+                "wcs": copy.deepcopy(second_scamp_wcs),
+                "scamp_out": scamp_out,
+                "contrast": float(contrast),
+                "detections_loaded": detections_loaded,
+                "standards_loaded": standards_loaded,
+                "ra_shift": float(ra_shift),
+                "dec_shift": float(dec_shift),
+                "daxis1": float(daxis1),
+                "daxis2": float(daxis2),
+                "daxis": _daxis_total(daxis1, daxis2),
+                "nstars": nstars,
+                "n_sn": n_sn,
+                "head_path": second_head_path,
+            }
+
+            if loop_solution is None:
+                best_solution = second_solution
+            else:
+                best_solution = max([loop_solution, second_solution], key=_solution_rank)
+
+            print(
+                "[SCAMP SELECTION]\n"
+                f"Loop solution:   contrast={loop_solution['contrast']:.2f}, "
+                f"DAXIS={loop_solution['daxis']:.2f}\", "
+                f"dAXIS1={loop_solution['daxis1']:.2f}\", "
+                f"dAXIS2={loop_solution['daxis2']:.2f}\""
+                if loop_solution is not None else
+                "Loop solution: None"
+            )
+
+            print(
+                f"Second solution: contrast={second_solution['contrast']:.2f}, "
+                f"DAXIS={second_solution['daxis']:.2f}\", "
+                f"dAXIS1={second_solution['daxis1']:.2f}\", "
+                f"dAXIS2={second_solution['daxis2']:.2f}\""
+            )
+
+            print(f"[SCAMP SELECTION] Using {best_solution['label']} solution")
+
+            scamp_wcs = best_solution["wcs"]
+            scamp_out = best_solution["scamp_out"]
+            contrast = best_solution["contrast"]
+            detections_loaded = best_solution["detections_loaded"]
+            standards_loaded = best_solution["standards_loaded"]
+            ra_shift = best_solution["ra_shift"]
+            dec_shift = best_solution["dec_shift"]
+            daxis1 = best_solution["daxis1"]
+            daxis2 = best_solution["daxis2"]
+            nstars = best_solution["nstars"]
+            n_sn = best_solution["n_sn"]
 
             print(
                 f"2SCAMP contrast ({contrast}).\n"
@@ -2226,13 +2516,11 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
                 f"SExtractor detect thresh = {detect_thresh}\n"
                 f"nstars matched = {nstars}\n")
 
-            if contrast > 2 and daxis1 < 1.5 and daxis2 < 1.5:
+            if contrast > 2 and daxis1 <= 1.5 and daxis2 <= 1.5:
                 break
 
         spximg_out = spximg_input
         # Get SCAMP WCS (aka solved wcs)
-        head_path = img_ldac[:-4] + "head"
-        scamp_wcs = wcs_from_head(head_path)
         scamp_hdr = scamp_wcs.to_header(relax=True)
 
         print(">>>> SCAMP_WCS <<<")
@@ -2306,7 +2594,7 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             scamp_out=scamp_out,
             naxis1=naxis_1,
             naxis2=naxis_2,
-            min_per_quad=5,
+            min_per_quad=self.config.min_quad_matches,
         )
         # Compute Qs_all_nmatch and Qs_nmatch_var
         total_n = quad_stats.get("TOTAL", {}).get("n", 0)
@@ -2318,9 +2606,11 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
                 per_quad_matches.append(int(q.get("n_used", 0)))
             Qs_all_nmatch = int(total_n)
             Qs_nmatch_var = float(np.std(per_quad_matches) / Qs_all_nmatch)
+            Qs_min_nmatch = int(min(per_quad_matches))
         else:
             Qs_all_nmatch = 0
             Qs_nmatch_var = np.nan
+            Qs_min_nmatch = 0
 
         # First print TOTAL metrics
         total = quad_stats.get("TOTAL", {})
@@ -2426,25 +2716,57 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
             print(f"Exceptions {e}")
 
         if contrast > 2:
-            if daxis1 < 1.5 and daxis2 < 1.5:
+            if daxis1 <= 1.5 and daxis2 <= 1.5:
                 spximg_out.header["FINAST"] = 0
-                spximg_out.header.comments['FINAST'] = "good fine-astrometric solution"
-            elif (daxis1 >= 1.5 and daxis1 < 5.0) or (daxis2 >= 1.5 and daxis2 < 5.0):
+                spximg_out.header.comments["FINAST"] = "good fine-astrometric solution"
+            elif (1.5 < daxis1 < 5.0) or (1.5 < daxis2 < 5.0):
                 spximg_out.header["FINAST"] = 2
-                spximg_out.header.comments['FINAST'] = "poor fine-astrometric solution"
+                spximg_out.header.comments["FINAST"] = "poor fine-astrometric solution"
             elif daxis1 >= 5.0 or daxis2 >= 5.0:
                 spximg_out.header["FINAST"] = 3
-                spximg_out.header.comments['FINAST'] = "bad fine-astrometric solution"
+                spximg_out.header.comments["FINAST"] = "bad fine-astrometric solution"
         else:
             spximg_out.header["FINAST"] = 4
-            spximg_out.header.comments['FINAST'] = "bad fine-astrometric solution"
+            spximg_out.header.comments["FINAST"] = "bad fine-astrometric solution"
 
-        # Only downgrade a "good" solution (FINAST==0)
-        # if quadrant-match variance is high or undefined
-        if (spximg_out.header["FINAST"] == 0 and (not np.isfinite(Qs_nmatch_var) or Qs_nmatch_var >= 0.15)):
+
+        # Upgrade a marginal solution if both axes are only slightly above the
+        # FINAST=0 threshold and quadrant matching is uniform.
+        if (
+            spximg_out.header["FINAST"] == 2
+            and contrast > 2
+            and 1.5 < daxis1 < 2.5
+            and 1.5 < daxis2 < 2.5
+            and np.isfinite(Qs_nmatch_var)
+            and Qs_nmatch_var < 0.10
+        ):
             spximg_out.header["FINAST"] = 1
-            spximg_out.header.comments["FINAST"] =\
-                "good astrometry but uneven quadrant matches (Qs_nmatch_var>=0.15 or NaN)"
+            spximg_out.header.comments["FINAST"] = (
+                "marginal astrometry upgraded: 1.5<dAXIS1/2<2.5 and QS_NMATCH_VAR<0.10"
+            )
+
+        # Downgrade a good solution if any quadrant has too few matches.
+        # This is worse than FINAST=1 because the solution is underconstrained
+        # in part of the image.
+        if (
+            spximg_out.header["FINAST"] == 0
+            and Qs_min_nmatch < self.config.min_quad_matches
+        ):
+            spximg_out.header["FINAST"] = 2
+            spximg_out.header.comments["FINAST"] = (
+                "poor astrometry: too few matches in one or more quadrants"
+            )
+
+        # Downgrade a good solution if quadrant-match variance is high or undefined.
+        elif (
+            spximg_out.header["FINAST"] == 0
+            and (not np.isfinite(Qs_nmatch_var) or Qs_nmatch_var >= 0.15)
+        ):
+            spximg_out.header["FINAST"] = 1
+            spximg_out.header.comments["FINAST"] = (
+                "good astrometry but uneven quadrant matches "
+                "(QS_NMATCH_VAR>=0.15 or NaN)"
+            )
 
         # if spximg_out.header["FINAST"] == 0:
         #     # Need to calculate PA from CD matrix (not PC)
@@ -2565,6 +2887,1234 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
 
         return output_struct
 
+    def _run_astrometry_retry(self, spximg, srccat, index_dir, naxis_1, naxis_2,
+                              ncalibrators, ntransients, verbose, plot,
+                              donor_spximg = None,
+                              use_astrometric_refcat_flag: bool = False,
+                              coarse_astro_obj: CoarseAstrometry = None) -> pipeBase.Struct:
+        array_id = spximg.getArrayId()
+        obsid = spximg.header['OBSID']
+
+        # Coarse WCS object
+        coarse_crval_skycoord = None
+        if coarse_astro_obj:
+            # Access with dot notation, not brackets.
+            if coarse_astro_obj.CRVAL1 is not None and coarse_astro_obj.CRVAL2 is not None:
+                coarse_crval_skycoord = SkyCoord(ra=coarse_astro_obj.CRVAL1*u.degree,
+                                                 dec=coarse_astro_obj.CRVAL2*u.degree)
+
+        # Determine |b| to select appropriate config parameters
+        r, d = spximg.wcs.wcs.crval[0], spximg.wcs.wcs.crval[1]
+        sky_coords = SkyCoord(ra=r*u.deg, dec=d*u.deg, frame='icrs')
+        galactic_coords = sky_coords.galactic
+        beta = galactic_coords.b.deg
+        print("-------------------------------------")
+        print(f"galactic_lon, galactic_lat = {galactic_coords}")
+        print(f"|b| = {np.abs(beta)}")
+        print("-------------------------------------")
+
+        if spximg.wcs.wcs.has_pc():
+            _pc = spximg.wcs.wcs.pc
+            _cdelt = spximg.wcs.wcs.cdelt
+            _cd = pc_to_cd(_pc, _cdelt)
+            logging.info(f"cd initial = {_cd}")
+            logging.info(f"pc = {_pc}")
+            logging.info(f"cdelt =  {_cdelt}")
+            del spximg.wcs.wcs.pc
+            spximg.wcs.wcs.cdelt = [1.0, 1.0]
+            spximg.wcs.wcs.cd = _cd
+
+        # Make copy of input SPHEREx image.
+        spximg_input = copy.deepcopy(spximg)
+        spximg_input_2 = copy.deepcopy(spximg)
+
+        # Pre-processing for Estimate Fine Astrometry
+        self.background_sub(spximg)
+        # # Clip negative MJy/sr values if requested
+        # if self.config.zero_negative_mjysr:
+        #     self._clip_negative_mjysr(spximg)
+
+        logging.info(f"cd initial = {spximg.wcs.wcs.cd}")
+        logging.info(f"spximg.wcs : {spximg.wcs.to_header(relax=True)}")
+        # Input image should have initial SIP or updated SIP from calibration.
+        if '-SIP' not in spximg.wcs.wcs.ctype[0] or '-SIP' not in spximg.wcs.wcs.ctype[1]:
+            raise ValueError("SIP is not available in WCS: not acceptable.")
+
+        # variables for temp file absolute paths
+        img_path1 = write_temp_img(spximg, obsid, array_id)
+        img_ldac = None
+        refcat_ldac = None
+        scamp_out = None
+
+        # Create two temp images: one unclipped, one clipped
+        img_path_unclipped = write_temp_img(spximg, f"{obsid}_att1_unclipped", array_id)
+        img_path_clipped = None  # Will be created only if needed
+
+        # Define output paths for astronet (these are *arguments* for the function)
+        img_stripped = get_temp_path(prefix=f"{obsid}_{array_id}_stripped_img_", suffix=".fits")
+        wcs_output_unclipped = Path(get_temp_path(prefix=f"{obsid}_{array_id}_att1_", suffix=".fits"))
+        wcs_output_clipped = Path(get_temp_path(prefix=f"{obsid}_{array_id}_att2_", suffix=".fits"))
+
+        # Get path to astrometry.net index files
+        if not os.path.exists(index_dir):
+            raise ValueError("Missing index files")
+
+        # Get env var astrometry.net index files
+        if not os.path.exists(index_dir):
+            raise ValueError("Missing index files")
+
+        ###############################################################
+        # Run Astrometry.net before se_run
+        ###############################################################
+        astronet_run_pass = False
+        final_stripped_path = None
+        img_path_clipped = None  # Will be created only if needed
+
+        # Store results for comparison
+        wcs_path_1 = None
+        matches_1 = 0
+        wcs_path_2 = None
+        matches_2 = 0
+
+        if np.abs(beta) < 10:
+            num_sources_per_chunk = ncalibrators
+        else:
+            num_sources_per_chunk = 5000
+
+        do_run_astronet = spximg.header.get(
+            "HIERARCH RETRY_RUNASTRO",
+            self.config.do_run_astronet,
+        )
+
+        if do_run_astronet:
+            try:
+                print(f"Running astrometry.net on SPXOBSID {spximg.header['OBSID']} (Attempt 1: Unclipped)")
+
+                # ATTEMPT 1: RUN ON UNCLIPPED IMAGE
+                wcs_path_1, final_stripped_path, matches_1, astronet_pixel_scale = astronet_run_b(
+                    input_image=img_path_unclipped,
+                    stripped_image=img_stripped,
+                    wcs_output=wcs_output_unclipped,
+                    index_dir=index_dir,
+                    crpix=(spximg.wcs.wcs.crpix[0], spximg.wcs.wcs.crpix[1]),
+                    pixel_scale_bounds=(6.0, 6.3),
+                    tweak_order=3,
+                    pixel_error=2,
+                    downsample=2,
+                    extension=0,
+                    verbose=verbose,
+                    array_id=array_id,
+                    num_sources_per_chunk=num_sources_per_chunk,
+                    )
+
+                # CHECK ATTEMPT 1
+                # If Attempt 1 was not a strong solution, try Attempt 2
+                if matches_1 < 10:
+                    print(f"[INFO] astrometry.net (Attempt 1) was weak ({matches_1} matches). "
+                        f"Clipping transients and retrying.")
+
+                    # Prepare for attempt 2
+                    print(f"INFO:  CLIPPING TRANSIENTS for DETECTOR {array_id}")
+                    self._clip_transients(spximg)  # Modify spximg in place
+                    img_path_clipped = write_temp_img(spximg, f"{obsid}_att2_clipped", array_id)
+                    print(f"Running astrometry.net on SPXOBSID {spximg.header['OBSID']} (Attempt 2: Clipped)")
+
+                    # Run on clipped image
+                    wcs_path_2, final_stripped_path, matches_2, astronet_pixel_scale = astronet_run_b(
+                        input_image=img_path_clipped,
+                        stripped_image=img_stripped,
+                        wcs_output=wcs_output_clipped,
+                        index_dir=index_dir,
+                        crpix=(spximg.wcs.wcs.crpix[0], spximg.wcs.wcs.crpix[1]),
+                        pixel_scale_bounds=(6.0, 6.3),
+                        tweak_order=0,
+                        pixel_error=2,
+                        downsample=1,
+                        extension=0,
+                        verbose=verbose,
+                        array_id=array_id,
+                        num_sources_per_chunk=num_sources_per_chunk,
+                        )
+
+                solved_wcs_path = None  # This will hold the final WCS to load
+
+                if matches_1 >= 100 and matches_2 == 0:
+                    print(f"astrometry.net SUCCEEDED: Using Attempt 1 ({matches_1} matches).")
+                    solved_wcs_path = wcs_path_1
+                    clip_trans = False
+                    astronet_num_matches = matches_1
+                elif matches_2 >= 100 and matches_2 > matches_1:
+                    print(f"astrometry.net SUCCEEDED: Using Attempt 2 ({matches_2} matches).")
+                    solved_wcs_path = wcs_path_2
+                    clip_trans = True
+                    astronet_num_matches = matches_2
+                elif matches_1 > matches_2:
+                    print(f"astrometry.net SUCCEEDED."
+                        f" Using solution from Attempt 1 ({matches_1} matches).")
+                    solved_wcs_path = wcs_path_1
+                    astronet_num_matches = matches_1
+                    clip_trans = False
+                elif matches_2 > 0:  # Catches matches_2 >= matches_1 AND matches_2 > 0
+                    print(f"astrometry.net SUCCEEDED. "
+                        f"Using solution from Attempt 2 ({matches_2} matches).")
+                    solved_wcs_path = wcs_path_2
+                    astronet_num_matches = matches_2
+                    clip_trans = True
+                else:
+                    # Both attempts failed completely (0 matches or error)
+                    print(f"[WARNING] astrometry.net failed on both unclipped and "
+                        f"clipped attempts for OBSID {spximg.header['OBSID']}")
+                    print("[INFO] Using original image WCS for fine astrometry.")
+                    spximg.wcs = spximg_input.wcs
+                    astronet_run_pass = False  # Explicitly set failure
+
+                # Load the WCS if a solution (strong or weak) was chosen
+                if solved_wcs_path is not None:
+                    solved_wcs_path = Path(solved_wcs_path)  # ensure Path
+
+                    if not solved_wcs_path.exists():
+                        # This should not happen if astronet_run is correct,
+                        # but good to check
+                        print(f"[CRITICAL WARNING] Chosen WCS file does not exist: {solved_wcs_path}. "
+                            f"Reverting to original WCS.")
+                        spximg.wcs = spximg_input.wcs
+                        astronet_run_pass = False
+
+                    else:
+                        print(f">>>>>>>Loading final WCS from: {solved_wcs_path}")
+                        with fits.open(solved_wcs_path) as wcs_hdul:
+                            solved_wcs = WCS(wcs_hdul[0].header)
+                            print(f"SOLVED WCS = {solved_wcs}")
+                            spximg.wcs = solved_wcs
+                            astronet_run_pass = True
+
+            except Exception as e:
+                # This block catches *unexpected* errors
+                print(f"[CRITICAL WARNING] astrometry.net block failed unexpectedly "
+                    f"on OBSID {spximg.header['OBSID']}: {e}")
+                print("[INFO] Using original image WCS for fine astrometry.")
+                spximg.wcs = spximg_input.wcs
+                astronet_run_pass = False
+
+            finally:
+                # Clean up all temp files
+                clean(img_path_unclipped, wcs_output_unclipped, img_stripped)
+                if img_path_clipped:
+                    clean(img_path_clipped, wcs_output_clipped)  # Clean the clipped image if it was created
+        else:
+            print("[INFO] Skipping astrometry.net (do_run_astronet=False)")
+            spximg.wcs = spximg_input.wcs
+            # Clean up all temp files
+            clean(img_path_unclipped, wcs_output_unclipped, img_stripped)
+            if img_path_clipped:
+                clean(img_path_clipped, wcs_output_clipped)  # Clean the clipped image if it was created
+
+        # wcs_pre_scamp = spximg.wcs.deepcopy()
+        # Now write the updated SPHERExImage to file
+        img_path2 = write_temp_img(spximg, obsid, array_id)
+
+        # Only do this for adjacent-slew same-detector donor seeds.
+        # Replace this condition with the exact flag/header/metadata name used
+        # by your donor-selection code.
+        seed_source = spximg.header.get("RETRY_WCSMODE", "")
+        retry_wcsmode = spximg.header.get("RETRY_WCSMODE", "")
+        print(f"[_run_astrometry_retry ENTRY] RETRY_WCSMODE = {retry_wcsmode!r}")
+
+        is_adjacent_slew_same_detector = (
+            str(seed_source).lower() in {
+                "adjacent_slew_same_detector",
+                "adjacent-slew-same-detector",
+                "adjacent_same_detector",
+                "adjacent_small_slew_same_detector"
+            }
+        )
+
+        print(f"RETRY_WCSMODE = {seed_source!r}")
+        if is_adjacent_slew_same_detector and donor_spximg is not None:
+            print("[ADJ-SLEW CRVAL REFINE] Refining seed WCS CRVAL "
+                  "using donor image + target SEP detections.")
+
+            spximg_for_crval_refine = copy.deepcopy(spximg_input)
+
+            # For donor-image matching, use the donor image WCS
+            # as the base, then apply the same small-slew CRPIX shift.
+            wcs_bad_fix = copy.deepcopy(donor_spximg.wcs)
+
+            shift_x = spximg.header.get("HIERARCH RETRY_SLEWDX", 0.0)
+            shift_y = spximg.header.get("HIERARCH RETRY_SLEWDY", 0.0)
+
+            wcs_bad_fix.wcs.crpix[0] += float(shift_x)
+            wcs_bad_fix.wcs.crpix[1] += float(shift_y)
+
+            spximg_for_crval_refine.wcs = wcs_bad_fix
+
+
+            refined_wcs, crval_refine_diag, target_sources =\
+                self._refine_adjacent_slew_crval_from_donor_image(
+                    target_spximg=spximg_for_crval_refine,
+                    donor_spximg=donor_spximg,
+                    match_radius_arcsec=12.0,
+                    sep_thresh=50.0,
+                    min_matches=15
+                    )
+
+            # use refined wcs from now on
+            spximg.wcs = refined_wcs
+
+            if crval_refine_diag is not None:
+                spximg.header["HIERARCH RETRY_DCRVAL1"] = crval_refine_diag["dcrval1_arcsec"]
+                spximg.header["HIERARCH RETRY_DCRVAL2"] = crval_refine_diag["dcrval2_arcsec"]
+                spximg.header["HIERARCH RETRY_NCRVMAT"] = crval_refine_diag["n_match"]
+        else:
+            crval_refine_diag = None
+
+
+        print("[PREPROCESS REFCAT WCS CHECK]")
+        print("CRVAL used for refcat:", spximg.wcs.wcs.crval)
+        print("CRPIX used for refcat:", spximg.wcs.wcs.crpix)
+        ###############################################################
+        # Transform Reference Catalog:
+        # from barycenter-centric to SPHEREx-centric coordinate system.
+        ###############################################################
+        # Reference catalog.
+        if use_astrometric_refcat_flag:
+            # use refcat ASTROMETRIC flag
+            ref_cat = preprocess_catalog(srccat,
+                                        spximg,
+                                        srcPipeFlag=SourcePipelineClass.ASTROMETRIC,
+                                        addPixelCoords=True,
+                                        pixelCoordsWithDistortion=True,
+                                        filterSourcesOutsideImage=False)
+        else:
+            # do not use refcat ASTROMETRIC flag
+            ref_cat = preprocess_catalog(srccat,
+                                         spximg,
+                                         addPixelCoords=True,
+                                         pixelCoordsWithDistortion=True,
+                                         filterSourcesOutsideImage=False)
+
+        self.log.info(f"len(ref_cat) = {len(ref_cat)}")
+
+        #  Aberration corection
+        if self.config.do_aberr_corr:
+            ref_cat = apply_aberration_correction(spximg, ref_cat, verbose=verbose)
+            print("Aberration correction applied. Example RA before/after:")
+            print(ref_cat["ra"][:3], ref_cat["ra_aberr"][:3])
+            print(ref_cat["dec"][:3], ref_cat["dec_aberr"][:3])
+
+        ###############################################################
+        # Reference catalog in LDAC format w/ needed headers for SCAMP.
+        ###############################################################
+        # See: https://faun.rc.fas.harvard.edu/ameisner/scamp.pdf
+        # "X_WORLD" and "Y_WORLD" are the default ref cat
+        # column names expected by SCAMP (pg 6):
+        # ASTREFCENT_KEYS* X_WORLD, Y_WORLD strings Names
+        # of the columns, in the local astrometric
+        # reference catalogue(s), that contain the centroid
+        # coordinates in degrees. Active only if
+        # ASTREF CATALOG is set to FILE.
+        if self.config.do_aberr_corr:
+            ref_cat['X_WORLD'] = ref_cat['ra_aberr']
+            ref_cat['Y_WORLD'] = ref_cat['dec_aberr']
+        else:
+            ref_cat['X_WORLD'] = ref_cat['ra']
+            ref_cat['Y_WORLD'] = ref_cat['dec']
+        # See SP-648 and SP-455:
+        # two magnitude columns for the corresponding detectors are present
+        # in the output of Query Reference Catalog module.
+        # Should only use MAG from reference catalog,
+        # Estimations have already been done.
+        det_id = str(spximg.getArrayId())
+        ref_cat['MAG'] = ref_cat['mag_det'+det_id]
+        ref_cat['MAGERR'] = 0.1  # Need in output of query refcat.
+        size = len(ref_cat)
+        dum_erra = dum_errb = np.ones((size,))*0.005/3600  # This is in degrees, same unit as X/Y_WORLD.
+        dum_errtheta = np.ones((size,))
+        ref_cat['ERRA_WORLD'] = dum_erra
+        ref_cat['ERRB_WORLD'] = dum_errb
+        ref_cat['ERRTHETA_WORLD'] = dum_errtheta
+        refcat_ldac = get_temp_path(prefix=f"{obsid}_{array_id}_refcat_", suffix=".ldac")
+
+        ref_cat_orig = copy.deepcopy(ref_cat)
+        # SELECT SOURCES FROM REFCAT AND SAVE TO LDAC
+        # NOTE change mag based on number of calibrators
+        # such that number or sources < 8000
+        # 8000 is max for SCAMP
+        # sel_calibrators =
+        # np.where((ref_cat["MAG"] > 10) & (ref_cat["MAG"] < 15) # 13.5
+        # & (ref_cat["dist_nearest"] > 0))[0]  # select isolated sources
+        # ref_cat_use = ref_cat[sel_calibrators]
+        # # ref_cat_all = ref_cat.copy()
+        # ref_cat = ref_cat_use.copy()
+        # logger.info("{} sources selected out of"
+        # "{} in the reference catalog".format(len(ref_cat_use), len(ref_cat)))
+        # num_refcat = len(ref_cat)
+        print("[REFCAT PIX CHECK]")
+        print("N:", len(ref_cat))
+        print("ix:", np.nanmin(ref_cat["ix"]), np.nanmax(ref_cat["ix"]))
+        print("iy:", np.nanmin(ref_cat["iy"]), np.nanmax(ref_cat["iy"]))
+
+        # Ranges to try for LDAC construction
+        print(f"-> [is_adjacent_slew_same_detector] = {is_adjacent_slew_same_detector}")
+        if is_adjacent_slew_same_detector:
+            ldac_source_ranges = [
+                (2000, 10000),
+                (3000, 12000),
+            ]
+        else:
+            ldac_source_ranges = [
+                (2000, 10000),
+                (ncalibrators, ncalibrators * 2),
+                ]
+
+        spximg_prescamp = copy.deepcopy(spximg)
+
+        for min_sources, max_sources in ldac_source_ranges:
+
+            print(f"Trying LDAC range: min_sources={min_sources}, max_sources={max_sources}")
+
+            # IMPORTANT: reset working image to pre-scamp state on each attempt
+            # Reset ref_cat and working image for this attempt
+            ref_cat = copy.deepcopy(ref_cat_orig)
+            spximg = copy.deepcopy(spximg_prescamp)
+
+            mag_lower = 10.0 # turn down for in galactic bulge
+            mag_upper = 15.0  # start with a reasonable default
+            mag_step = 0.25   # change this for finer or coarser steps
+            max_iter = 30     # prevent infinite loop
+
+            for i in range(max_iter):
+                sel_calibrators = np.where((ref_cat["MAG"] > mag_lower)
+                                           & (ref_cat["MAG"] < mag_upper)
+                                           & (ref_cat["dist_nearest"] > 0))[0]
+                ref_cat_use = ref_cat[sel_calibrators]
+                n = len(ref_cat_use)
+
+                logger.info(f"Iter {i}: {n} sources selected with MAG < {mag_upper:.2f}")
+
+                if min_sources <= n <= max_sources:
+                    break
+                elif n < min_sources:
+                    mag_upper += mag_step  # widen magnitude range to get more stars
+                    if np.abs(beta) < 10:
+                        print("Getting more brighter sources")
+                        mag_lower -= 0.25
+                else:
+                    mag_upper -= mag_step  # narrow magnitude range to get fewer stars
+
+            # Final selection
+            ref_cat = ref_cat_use.copy()
+            print(f"Final selection: {len(ref_cat)} sources with {mag_lower:.2f} < MAG < {mag_upper:.2f}")
+
+            catalog2ldac(ref_cat, refcat_ldac)
+
+            contrast = 0.0
+            MAX_ITER = 20
+            iteration = 0
+            se_thresh = 0
+            daxis1 = np.inf
+            daxis2 = np.inf
+
+            # Initial detect threshold for SExtractor
+            if np.abs(beta) > 10:
+                detect_thresh = self.config.detect_thresh_hib[array_id]
+                print(f".detect_thresh_hib used: {detect_thresh}")
+            else:
+                detect_thresh = self.config.detect_thresh_lowb[array_id]
+                print(f".detect_thresh_lowb used: {detect_thresh}")
+
+            loop_solution = None
+
+            while iteration < MAX_ITER:
+                print(f"Iteration [{iteration}]: using detect_thresh = {detect_thresh}")
+                # Step 1: Write temp image with current WCS
+                spximg.header.update(spximg.wcs.to_header(relax=True))
+                spximg.meta.update(spximg.wcs.to_header(relax=True))
+                img_path = write_temp_img(spximg, obsid, array_id)
+
+                with fits.open(img_path) as h:
+                    print("[TEMP IMG WCS CHECK]")
+                    print("CRVAL1/2:", h[1].header.get("CRVAL1"), h[1].header.get("CRVAL2"))
+                    print("CRPIX1/2:", h[1].header.get("CRPIX1"), h[1].header.get("CRPIX2"))
+                    print("CTYPE:", h[1].header.get("CTYPE1"), h[1].header.get("CTYPE2"))
+
+
+                # Step 2: Run SExtractor with current image WCS
+                img_ldac = get_temp_path(prefix=f"{obsid}_{array_id}_imgcat_{iteration}_", suffix=".ldac")
+                if iteration == 0:
+                    override_loop = False
+                else:
+                    override_loop = True
+                try:
+                    se_thresh = se_run(img_path,
+                                       img_ldac,
+                                       num_ref_cat=len(ref_cat),
+                                       detect_thresh=detect_thresh,
+                                       override_loop=override_loop,
+                                       detect_minarea=self.config.detect_minarea[array_id], #"2",
+                                       detect_maxarea=self.config.detect_maxarea[array_id], #"2",
+                                       verbose=True)
+                except Exception as e:
+                    raise ValueError(f"SExtractor failed {e} SPHEREx {spximg_input.header['OBSID']}")
+
+                # update detect_thresh
+                detect_thresh = se_thresh
+
+                # Step 3: Run SCAMP
+                scamp_out = get_temp_path(prefix=f"{obsid}_{array_id}_fulloutcat_{iteration}_", suffix=".fits")  # noqa
+                if np.abs(beta) > 10:
+                    cross_radius = self.config.cross_radius_hib[array_id]
+                    print(f"hi |b|>10 cross radius used: {cross_radius}")
+                else:
+                    cross_radius = self.config.cross_radius_lowb[array_id]
+                    print(f"low |b|<=10 cross radius used: {cross_radius}")
+                position_maxerr = self.config.position_maxerr
+                posangle_maxerr = self.config.posangle_maxerr
+                pixscale_maxerr = self.config.pixscale_maxerr
+                cross_radius = cross_radius
+                astrclip_nsigma = self.config.astrclip_nsigma
+                distort_degrees = self.config.distort_degrees
+                (contrast,
+                 detections_loaded,
+                 standards_loaded,
+                 ra_shift,
+                 dec_shift,
+                 daxis1,
+                 daxis2,
+                 nstars, n_sn) = scamp_run(img_ldac,
+                                           refcat_ldac,
+                                           scamp_out,
+                                           verbose=True,
+                                           position_maxerr=position_maxerr,
+                                           posangle_maxerr=posangle_maxerr,
+                                           pixscale_maxerr=pixscale_maxerr,
+                                           cross_radius=cross_radius,
+                                           astrclip_nsigma=astrclip_nsigma,
+                                           distort_degrees=distort_degrees)
+
+                print(f"[{iteration}] SCAMP contrast = {contrast}")
+
+                # Step 5: Update WCS for next iteration
+                head_path = img_ldac[:-4] + "head"
+                new_wcs = wcs_from_head(head_path)
+                spximg.wcs = new_wcs
+
+                loop_solution = {
+                    "label": "loop",
+                    "wcs": copy.deepcopy(new_wcs),
+                    "scamp_out": scamp_out,
+                    "contrast": float(contrast),
+                    "detections_loaded": detections_loaded,
+                    "standards_loaded": standards_loaded,
+                    "ra_shift": float(ra_shift),
+                    "dec_shift": float(dec_shift),
+                    "daxis1": float(daxis1),
+                    "daxis2": float(daxis2),
+                    "daxis": _daxis_total(daxis1, daxis2),
+                    "nstars": nstars,
+                    "n_sn": n_sn,
+                    "head_path": head_path,
+                }
+
+                print(f">>>>>> dAXIS1 = {daxis1}\", dAXIS2 = {daxis2}\"")
+                if _is_finast0_solution(contrast, daxis1, daxis2):
+                    print(
+                        f"[{iteration}] Accepting early SCAMP loop solution "
+                        f"contrast={contrast:.2f}, "
+                        f"DAXIS={loop_solution['daxis']:.2f}\", "
+                        f"dAXIS1={daxis1:.2f}\", dAXIS2={daxis2:.2f}\""
+                    )
+                    break
+
+                print(f"ITERATION {iteration}")
+                iteration += 1
+
+            print(
+                f"1SCAMP contrast ({contrast}).\n"
+                f"SPHEREx image {spximg_input.header['OBSID']}\n"
+                f"CRVAL1 = {spximg_input.wcs.wcs.crval[0]} CRVAL2 = {spximg_input.wcs.wcs.crval[1]}\n"
+                f"SCAMP solution has shift: RA = {ra_shift:.1f}\"  DEC = {dec_shift:.1f}\"\n"
+                f"detections_loaded = {detections_loaded}\n"
+                f"standards loaded = {standards_loaded}\n"
+                f"SExtractor detect thresh = {detect_thresh}\n"
+                f"nstars matched = {nstars}\n")
+
+            spximg_temp = copy.deepcopy(spximg)
+
+            if loop_solution is not None:
+                scamp_wcs = loop_solution["wcs"]
+            else:
+                #head_path = img_ldac[:-4] + "head"
+                #scamp_wcs = wcs_from_head(head_path)
+                head_path = img_ldac[:-4] + "head"
+                scamp_wcs = wcs_from_head(head_path)
+
+            print(">>>> SCAMP_WCS <<<")
+            print(scamp_wcs)
+
+            scamp_hdr = scamp_wcs.to_header(relax=True)
+            spximg_temp.wcs = scamp_wcs
+            spximg_temp.header = scamp_hdr
+
+            print(spximg_temp.wcs.to_header(relax=True))
+
+            # variables for temp file absolute paths
+            img_path3 = write_temp_img(spximg_temp, obsid, array_id)
+            ###############################################################
+            # Select bright sources on given exposure w/ SExtracotr.
+            ###############################################################
+            # Define the output catalog name
+            img_ldac = get_temp_path(prefix="imgcat2_", suffix=".ldac")
+            detect_thresh = se_thresh / 1.5
+            _ = se_run(img_path3,
+                       img_ldac,
+                       num_ref_cat=len(ref_cat),
+                       detect_thresh=str(se_thresh/1.5),
+                       detect_minarea=self.config.detect_minarea[array_id],
+                       detect_maxarea=self.config.detect_maxarea[array_id],
+                       verbose=True,
+                       override_loop=True)
+
+            sextracted_sources_count = len(Table.read(img_ldac, hdu=2))
+            logger.info("Number of extracted sources:{}".format(sextracted_sources_count))
+
+            # RUN SCAMP AGAIN!
+            print('RUN SCAMP AGAIN!')
+            scamp_out = get_temp_path(prefix="fulloutcat2_", suffix=".fits")
+            if np.abs(beta) > 10:
+                cross_radius = self.config.cross_radius_hib[array_id]
+                self.log.info(f"hi |b|>10 cross radius used: {cross_radius}")
+            else:
+                cross_radius = self.config.cross_radius_lowb[array_id]
+                self.log.info(f"hi |b|<=10 cross radius used: {cross_radius}")
+            try:
+                print(f"astrclip_nsigma = {self.config.astrclip_nsigma}")
+                print(">>>>> SECOND SCAMP <<<<<")
+                (contrast,
+                 detections_loaded,
+                 standards_loaded,
+                 ra_shift,
+                 dec_shift,
+                 daxis1,
+                 daxis2,
+                 nstars, n_sn) = scamp_run(img_ldac,
+                                           refcat_ldac,
+                                           scamp_out,
+                                           verbose=True,
+                                           position_maxerr=position_maxerr,
+                                           posangle_maxerr=posangle_maxerr,
+                                           pixscale_maxerr=pixscale_maxerr,
+                                           cross_radius=cross_radius,
+                                           astrclip_nsigma=astrclip_nsigma,
+                                           distort_degrees=distort_degrees)
+            except subprocess.CalledProcessError as e:
+                self.log.error(f"SCAMP error {e.stderr}.")
+                raise ValueError(f"SCAMP error {e.stderr}.")
+            # finally:
+            #     clean(img_path3, img_ldac, refcat_ldac, scamp_out)
+
+            second_head_path = img_ldac[:-4] + "head"
+            second_scamp_wcs = wcs_from_head(second_head_path)
+
+            second_solution = {
+                "label": "second",
+                "wcs": copy.deepcopy(second_scamp_wcs),
+                "scamp_out": scamp_out,
+                "contrast": float(contrast),
+                "detections_loaded": detections_loaded,
+                "standards_loaded": standards_loaded,
+                "ra_shift": float(ra_shift),
+                "dec_shift": float(dec_shift),
+                "daxis1": float(daxis1),
+                "daxis2": float(daxis2),
+                "daxis": _daxis_total(daxis1, daxis2),
+                "nstars": nstars,
+                "n_sn": n_sn,
+                "head_path": second_head_path,
+            }
+
+            if loop_solution is None:
+                best_solution = second_solution
+            else:
+                best_solution = max([loop_solution, second_solution], key=_solution_rank)
+
+            print(
+                "[SCAMP SELECTION]\n"
+                f"Loop solution:   contrast={loop_solution['contrast']:.2f}, "
+                f"DAXIS={loop_solution['daxis']:.2f}\", "
+                f"dAXIS1={loop_solution['daxis1']:.2f}\", "
+                f"dAXIS2={loop_solution['daxis2']:.2f}\""
+                if loop_solution is not None else
+                "Loop solution: None"
+            )
+
+            print(
+                f"Second solution: contrast={second_solution['contrast']:.2f}, "
+                f"DAXIS={second_solution['daxis']:.2f}\", "
+                f"dAXIS1={second_solution['daxis1']:.2f}\", "
+                f"dAXIS2={second_solution['daxis2']:.2f}\""
+            )
+
+            print(f"[SCAMP SELECTION] Using {best_solution['label']} solution")
+
+            scamp_wcs = best_solution["wcs"]
+            scamp_out = best_solution["scamp_out"]
+            contrast = best_solution["contrast"]
+            detections_loaded = best_solution["detections_loaded"]
+            standards_loaded = best_solution["standards_loaded"]
+            ra_shift = best_solution["ra_shift"]
+            dec_shift = best_solution["dec_shift"]
+            daxis1 = best_solution["daxis1"]
+            daxis2 = best_solution["daxis2"]
+            nstars = best_solution["nstars"]
+            n_sn = best_solution["n_sn"]
+
+            print(
+                f"2SCAMP contrast ({contrast}).\n"
+                f"SPHEREx image {spximg_input.header['OBSID']}\n"
+                f"CRVAL1 = {spximg_input.wcs.wcs.crval[0]} CRVAL2 = {spximg_input.wcs.wcs.crval[1]}\n"
+                f"SCAMP solution has shift: RA = {ra_shift:.1f}\"  DEC = {dec_shift:.1f}\"\n"
+                f"detections_loaded = {detections_loaded}\n"
+                f"standards loaded = {standards_loaded}\n"
+                f"SExtractor detect thresh = {detect_thresh}\n"
+                f"nstars matched = {nstars}\n")
+
+            if contrast > 2 and daxis1 <= 1.5 and daxis2 <= 1.5:
+                break
+
+        spximg_out = spximg_input
+        # Get SCAMP WCS (aka solved wcs)
+        scamp_hdr = scamp_wcs.to_header(relax=True)
+
+        print(">>>> SCAMP_WCS <<<")
+        print(scamp_wcs)
+
+        # Create New Image
+        hdr_new = copy.deepcopy(spximg_temp.header)
+        hdr_new.update(scamp_hdr)
+
+        # Converstion back to SIP WCS
+        if self.config.pv_to_sip is True:
+            head_file = None
+            sip_wcs_file_output = None
+            try:
+                # Create temporary file paths
+                head_file = get_temp_path(prefix="img_tpv_", suffix=".fits")  # input to wcs-pv2sip
+                sip_wcs_file_output = get_temp_path(prefix="img_sip_", suffix=".fits")  # output header
+                # Save TPV WCS-only FITS file (no data needed)
+                # hdr = wcs_sip.to_header(relax=True)
+                # hdr = spximg_out.wcs.to_header(relax=True)
+                # hdr = spximg_out.header.copy()
+                # wcs_header = spximg_out.wcs.to_header(relax=True)
+                # hdr.update(wcs_header)
+                dummy_data = np.zeros((2040, 2040), dtype=np.float32)
+                hdu = fits.PrimaryHDU(data=dummy_data, header=hdr_new)
+                hdu.writeto(head_file, overwrite=True)
+                # Convert TPV -> SIP
+                try:
+                    exe = self._resolve_wcs_pv2sip_exe()
+                except (FileNotFoundError, RuntimeError, AttributeError):  # pick what your helper raises
+                    exe = "wcs-pv2sip"
+                pv_cmd = [
+                    exe,
+                    "-o", str(self.config.distort_degrees),
+                    "-e", "0",
+                    head_file,
+                    sip_wcs_file_output,
+                ]
+                subprocess.run(pv_cmd, check=True)
+
+                # Get SIP WCS with header
+                with fits.open(sip_wcs_file_output) as hdul:
+                    final_wcs = WCS(hdul[0].header)
+
+                spximg_out.wcs = final_wcs  # SIP
+                print(spximg_out.wcs.to_header(relax=True))
+            except subprocess.CalledProcessError as e:
+                self.log.error(f"wcs-pv2sip error {e.stderr}.")
+                raise ValueError(f"wcs-pv2sip error {e.stderr}.")
+            finally:
+                clean(head_file, sip_wcs_file_output)
+        else:
+            spximg_out.wcs = scamp_wcs
+
+        cdelt = np.array([self.config.pix_scale/3600, self.config.pix_scale/3600])
+        if self.config.pc_formalism:
+            if not hasattr(spximg_out.wcs, 'pc'):  # CD format
+                # it's CD format, change to PC
+                pc = cd_to_pc(spximg_out.wcs.wcs.cd, cdelt)
+                spximg_out.wcs.pc = pc
+                del spximg_out.wcs.wcs.cd
+                spximg_out.wcs.wcs.cdelt = cdelt
+
+        print(">>>> FINAL_WCS <<<")
+        final_wcs = spximg_out.wcs
+        print(final_wcs)
+
+        # Quadrant-based astrometric diagnostics (image-space quadrants)
+        quad_stats = quadrant_astrometry_stats(
+            final_wcs=final_wcs,
+            scamp_out=scamp_out,
+            naxis1=naxis_1,
+            naxis2=naxis_2,
+            min_per_quad=self.config.min_quad_matches,
+        )
+        # Compute Qs_all_nmatch and Qs_nmatch_var
+        total_n = quad_stats.get("TOTAL", {}).get("n", 0)
+        if total_n > 0:
+            per_quad_matches = []
+            for qname in ("Q1", "Q2", "Q3", "Q4"):
+                q = quad_stats.get(qname, {})
+                # quadrants use "n_used" as the match count
+                per_quad_matches.append(int(q.get("n_used", 0)))
+            Qs_all_nmatch = int(total_n)
+            Qs_nmatch_var = float(np.std(per_quad_matches) / Qs_all_nmatch)
+            Qs_min_nmatch = int(min(per_quad_matches))
+        else:
+            Qs_all_nmatch = 0
+            Qs_nmatch_var = np.nan
+            Qs_min_nmatch = 0
+
+        # First print TOTAL metrics
+        total = quad_stats.get("TOTAL", {})
+        print(f"TOTAL: STD = {total.get('std', np.nan):.3f} arcsec, "
+              f"RMS = {total.get('rms', np.nan):.3f} arcsec "
+              f"(N = {total.get('n', 0)})")
+
+        # Then print per-quadrant metrics
+        for qname in ["Q1", "Q2", "Q3", "Q4"]:
+            q = quad_stats.get(qname)
+            if q is None:
+                continue
+
+            std = q["std"]
+            rms = q["rms"]
+            n_used = q["n_used"]
+            sufficient = q["sufficient"]
+
+            if not sufficient:
+                if np.isfinite(rms):
+                    print(
+                        f"Quadrant {qname}: insufficient matches (N = {n_used}); "
+                        f"STD = {std:.3f} arcsec, RMS = {rms:.3f} arcsec "
+                        "(diagnostic only)."
+                    )
+                else:
+                    print(
+                        f"Quadrant {qname}: insufficient matches (N = {n_used}); "
+                        "RMS not computed."
+                    )
+            else:
+                print(
+                    f"Quadrant {qname}: STD = {std:.3f} arcsec, "
+                    f"RMS = {rms:.3f} arcsec (N = {n_used} matches)"
+                )
+
+        # Build Pydantic quadrant stats object for diagnostics
+        def _make_quadrant_stat_from_dict(name: str):
+            q = quad_stats.get(name)
+            if q is None:
+                return None
+
+            # TOTAL uses 'n'; quadrants use 'n_used'
+            if name == "TOTAL":
+                n_matches = int(q.get("n", 0))
+            else:
+                n_matches = int(q.get("n_used", 0))
+
+            std_val = q.get("std", np.nan)
+            rms_val = q.get("rms", np.nan)
+
+            mean_dra = q.get("mean_delta_ra", np.nan)
+            mean_ddec = q.get("mean_delta_dec", np.nan)
+
+            sufficient_raw = q.get("sufficient", None)
+            sufficient_matches = (
+                bool(sufficient_raw) if sufficient_raw is not None else None
+            )
+
+            return QuadrantStat(
+                std_arcsec=float(std_val) if np.isfinite(std_val) else None,
+                rms_arcsec=float(rms_val) if np.isfinite(rms_val) else None,
+                n_matches=n_matches,
+                sufficient_matches=sufficient_matches,
+                mean_delta_ra_arcsec=float(mean_dra) if np.isfinite(mean_dra) else None,
+                mean_delta_dec_arcsec=float(mean_ddec) if np.isfinite(mean_ddec) else None,
+            )
+
+        # TOTAL is required; if for some reason it's missing, we still create a default
+        total_stat = _make_quadrant_stat_from_dict("TOTAL")
+        if total_stat is None:
+            total_stat = QuadrantStat(std_arcsec=None, rms_arcsec=None,
+                                      n_matches=0, sufficient_matches=None)
+
+        quadrant_stats_obj = QuadrantAstrometryStats(
+            TOTAL=total_stat,
+            Q1=_make_quadrant_stat_from_dict("Q1"),
+            Q2=_make_quadrant_stat_from_dict("Q2"),
+            Q3=_make_quadrant_stat_from_dict("Q3"),
+            Q4=_make_quadrant_stat_from_dict("Q4"),
+            Qs_all_nmatch=Qs_all_nmatch,
+            Qs_nmatch_var=Qs_nmatch_var,
+        )
+
+        spximg_out.wcs.array_shape = spximg_out.data.shape
+        # Calculate solid angles with linear WCS solution and current SIPs
+        solid_angle_pixel_map = calculate_solid_angle(final_wcs, array_id, plot=False)
+        # Calculate median and std of solid angle map
+        solid_angle_median, solid_angle_stddev = calculate_median_std_solid_angle(solid_angle_pixel_map)
+        print(f"solid angle = {solid_angle_median}, {solid_angle_stddev}")
+
+
+        if use_astrometric_refcat_flag:
+            spximg_out.header["HIERARCH RETRY_REFCAT"] = "ASTROMETRIC"
+            spximg_out.header.comments["HIERARCH RETRY_REFCAT"] = (
+                "retry used refcat ASTROMETRIC source flag"
+            )
+        else:
+            spximg_out.header["HIERARCH RETRY_REFCAT"] = "ALL"
+            spximg_out.header.comments["HIERARCH RETRY_REFCAT"] = (
+                "retry used refcat without ASTROMETRIC source flag"
+            )
+
+        # Add solid angle median and std dev to L2 image header
+        try:
+            spximg_out.header['HIERARCH OMEGA_MEDIAN'] = solid_angle_median
+            spximg_out.header.comments['HIERARCH OMEGA_MEDIAN'] = " [arcsec**2] solid angle pixel map median"
+            spximg_out.header['HIERARCH OMEGA_STDDEV'] = solid_angle_stddev
+            spximg_out.header.comments['HIERARCH OMEGA_STDDEV'] = " [arcsec**2] solid angle pixel map std"
+        except Exception as e:
+            spximg_out.header['HIERARCH OMEGA_MEDIAN'] = 0
+            spximg_out.header.comments['HIERARCH OMEGA_MEDIAN'] = "error, nan encounterd"
+            spximg_out.header['HIERARCH OMEGA_STDDEV'] = 0
+            spximg_out.header.comments['HIERARCH OMEGA_STDDEV'] = "error, nan encounterd"
+            print(f"Exceptions {e}")
+
+        if contrast > 2:
+            if daxis1 <= 1.5 and daxis2 <= 1.5:
+                spximg_out.header["FINAST"] = 0
+                spximg_out.header.comments["FINAST"] = "good fine-astrometric solution"
+            elif (1.5 < daxis1 < 5.0) or (1.5 < daxis2 < 5.0):
+                spximg_out.header["FINAST"] = 2
+                spximg_out.header.comments["FINAST"] = "poor fine-astrometric solution"
+            elif daxis1 >= 5.0 or daxis2 >= 5.0:
+                spximg_out.header["FINAST"] = 3
+                spximg_out.header.comments["FINAST"] = "bad fine-astrometric solution"
+        else:
+            spximg_out.header["FINAST"] = 4
+            spximg_out.header.comments["FINAST"] = "bad fine-astrometric solution"
+
+
+        # Upgrade a marginal solution if both axes are only slightly above the
+        # FINAST=0 threshold and quadrant matching is uniform.
+        if (
+            spximg_out.header["FINAST"] == 2
+            and contrast > 2
+            and 1.5 < daxis1 < 2.5
+            and 1.5 < daxis2 < 2.5
+            and np.isfinite(Qs_nmatch_var)
+            and Qs_nmatch_var < 0.10
+        ):
+            spximg_out.header["FINAST"] = 1
+            spximg_out.header.comments["FINAST"] = (
+                "marginal astrometry upgraded: 1.5<dAXIS1/2<2.5 and QS_NMATCH_VAR<0.10"
+            )
+
+        # Downgrade a good solution if quadrant-match coverage is poor
+        # or if quadrant-match variance is high/undefined.
+        if spximg_out.header["FINAST"] == 0:
+
+            dax1 = daxis1
+            dax2 = daxis2
+
+            downgrade_to_2_by_low_quad_matches = (
+                Qs_min_nmatch < self.config.min_quad_matches
+            )
+
+            downgrade_to_1_by_qs = (
+                not np.isfinite(Qs_nmatch_var)
+                or Qs_nmatch_var > 0.18
+                or (
+                    Qs_nmatch_var >= 0.15
+                    and (dax1 > 0.9 or dax2 > 0.9)
+                )
+            )
+
+            print(
+                f"[FINAST DEBUG] "
+                f"FINAST={spximg_out.header['FINAST']}, "
+                f"Qs_nmatch_var={Qs_nmatch_var!r}, "
+                f"Qs_min_nmatch={Qs_min_nmatch!r}, "
+                f"min_quad_matches={self.config.min_quad_matches!r}, "
+                f"DAXIS1={dax1!r}, "
+                f"DAXIS2={dax2!r}, "
+                f"isfinite={np.isfinite(Qs_nmatch_var)}, "
+                f"downgrade_to_2_by_low_quad_matches={downgrade_to_2_by_low_quad_matches}, "
+                f"downgrade_to_1_by_nan={not np.isfinite(Qs_nmatch_var)}, "
+                f"downgrade_to_1_by_qs_gt_018={Qs_nmatch_var > 0.18}, "
+                f"downgrade_to_1_by_qs_daxis={Qs_nmatch_var >= 0.15 and (dax1 > 0.9 or dax2 > 0.9)}"
+            )
+
+            if downgrade_to_2_by_low_quad_matches:
+                spximg_out.header["FINAST"] = 2
+                spximg_out.header.comments["FINAST"] = (
+                    "poor astrometry: too few matches in one or more quadrants"
+                )
+
+            elif downgrade_to_1_by_qs:
+                spximg_out.header["FINAST"] = 1
+                spximg_out.header.comments["FINAST"] = (
+                    "good astrometry but uneven quadrant matches "
+                    "(QS_NMATCH_VAR high or DAXIS > 0.9)"
+                )
+
+        # add exposure center and boundary points to the task metadata
+        spximg_out.wcs.array_shape = (naxis_2, naxis_1)
+        add_exposure_boundary_info(self.metadata, spximg_out.wcs)
+        self.log.info(f'spximg_out.wcs = {spximg_out.wcs}')
+
+        # Update SPHEREx image meta
+        spximg_out.wcs.wcs.radesys = "ICRS"
+        if hasattr(spximg_out.wcs.wcs, "equinox"):
+            delattr(spximg_out.wcs.wcs, "equinox")
+        spximg_out.meta.update(spximg_out.wcs.to_header())
+        # Add comment to RADESYS keyword
+        spximg_out.header.set("RADESYS", "ICRS", "Equatorial coordinates referenced to Gaia DR3")
+        spximg_out.header["use_astrometric_refcat_flag"] = use_astrometric_refcat_flag
+
+        final_diagnostics = None
+        # Diagnostics: Assemble final dictionary and add to output
+        if self.config.do_write_diagnostics:
+            # Collect Coarse Astrometry info AS an object
+            coarse_astro_obj = _collect_wcs_diagnostics(spximg_input_2.wcs, CoarseAstrometry)
+            # Build SkyCoord for coarse CRVAL **here**, from the object we just created
+            coarse_crval_skycoord = None
+            if (coarse_astro_obj is not None
+                    and coarse_astro_obj.CRVAL1 is not None
+                    and coarse_astro_obj.CRVAL2 is not None):
+                coarse_crval_skycoord = SkyCoord(
+                    ra=coarse_astro_obj.CRVAL1 * u.deg,
+                    dec=coarse_astro_obj.CRVAL2 * u.deg,
+                    frame="icrs",
+                )
+            # Roll angles and their difference (fine - coarse), wrapped to [-180, 180)
+            coarse_roll_deg = _compute_roll_angle_deg_from_wcs(spximg_input_2.wcs)
+            fine_roll_deg = _compute_roll_angle_deg_from_wcs(final_wcs)
+            delta_roll_deg = _wrap_angle_pm180(fine_roll_deg - coarse_roll_deg)
+
+            # Collect Fine Astrometry info as an object
+            fine_astro_obj = _collect_wcs_diagnostics(final_wcs, FineAstrometry)
+            # Collect SCAMP results as an object
+            scamp_results_obj = ScampResults(
+                dAXIS1_arcsec=float(daxis1),
+                dAXIS2_arcsec=float(daxis2),
+                CONTRAST=float(contrast),
+                match_nstars=nstars,
+                match_nstars_sn=n_sn
+            )
+            # Create Astrometry.net results object
+            astronet_results_obj = None
+            if astronet_run_pass and astronet_pixel_scale is not None:
+                try:
+                    astronet_results_obj = AstrometryNetResults(
+                        num_matches=int(astronet_num_matches),
+                        pixel_scale=float(astronet_pixel_scale),
+                        clip_trans=clip_trans
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create AstrometryNetResults model: {e}")
+            # Compute pix coordinates of the coarse astrometry center using the fine WCS
+            if coarse_crval_skycoord:
+                # astropy's world_to_pixel returns 0-based coordinates.
+                coarse_center_x, coarse_center_y = final_wcs.world_to_pixel(coarse_crval_skycoord)
+
+                coarse_center_dict = {
+                    'x_pixel': float(coarse_center_x),
+                    'y_pixel': float(coarse_center_y),
+                    'coordinate_base': '0-based',
+                    'description': ('The (x,y) pixel location of the coarse WCS CRVAL point, '
+                                    'projected onto the image using the final fine WCS.')
+                }
+                coarse_center_obj = CoarseCenter(**coarse_center_dict)
+
+                spximg_out.header["DAXIS"] = np.sqrt(float(daxis1)**2 + float(daxis2)**2)
+                spximg_out.header["HIERARCH CONTRAST"] = float(contrast)
+                spximg_out.header["HIERARCH MATCH_NSTARS"] = nstars
+                spximg_out.header["HIERARCH QS_NMATCH_VAR"] = Qs_nmatch_var
+                spximg_out.header["HIERARCH ASTRONETSOLVED"] = astronet_run_pass
+            else:
+                coarse_center_obj = None
+
+            # Assemble the final AstrDiag object
+            final_diagnostics = AstrDiag(
+                coarse_astrometry=coarse_astro_obj,
+                n_calibrators=ncalibrators,
+                n_transients=ntransients,
+                fine_astrometry=fine_astro_obj,
+                scamp_results=scamp_results_obj,
+                astrometry_net_results=astronet_results_obj,
+                astronet_solved=astronet_run_pass,
+                FINAST=spximg_out.header.get("FINAST", -1),
+                coarse_center_on_fine_image=coarse_center_obj,
+                roll_angle_difference_deg=float(delta_roll_deg),
+                quadrant_astrometry_stats=quadrant_stats_obj,
+            )
+
+            print(f"[FINAL HEADER BEFORE RETURN] RETRY_WCSMODE = {spximg_out.header.get('RETRY_WCSMODE')!r}")
+
+            output_struct = pipeBase.Struct(spximg_out=spximg_out,
+                                            scamp_wcs=scamp_wcs,
+                                            astrometry_diagnostics=final_diagnostics)
+        else:
+            output_struct = pipeBase.Struct(spximg_out=spximg_out, astrometry_diagnostics=None)
+
+        # Remove temporary output files from subprocesses.
+        if astronet_run_pass:
+            clean(img_path1, img_path2, img_ldac, refcat_ldac,
+                  scamp_out,
+                  img_ldac[:-4] + "head", scamp_out[:-5]+'_1.fits')
+        else:
+            clean(img_path1, img_path2, img_ldac, refcat_ldac,
+                  scamp_out,
+                  img_ldac[:-4] + "head", scamp_out[:-5]+'_1.fits')
+
+        return output_struct
+
+
+    def _sep_extract_sources(self, image_data, sep_thresh=50.0):
+        img = np.asarray(image_data, dtype=np.float32)
+        img_native = img.astype(img.dtype.newbyteorder("="), copy=False)
+
+        bkg = sep.Background(
+            img_native,
+            mask=None,
+            bw=64,
+            bh=64,
+            fw=3,
+            fh=3,
+        )
+
+        img_bksub = img_native - bkg.back()
+
+        sep.set_extract_pixstack(1_000_000)
+
+        src = Table(
+            sep.extract(
+                img_bksub,
+                sep_thresh,
+                err=bkg.globalrms,
+            )
+        )
+
+        return src
+
+
+    def _refine_adjacent_slew_crval_from_donor_image(
+        self,
+        target_spximg,
+        donor_spximg,
+        match_radius_arcsec=12.0,
+        sep_thresh=50.0,
+        min_matches=20,
+    ):
+        """
+        Scientist-style CRVAL refinement:
+
+            SEP(donor image) <-> SEP(target retry image)
+
+        Uses donor_spximg.wcs as the good WCS and target_spximg.wcs as
+        the shifted/seeded retry WCS.
+        """
+        wcs_good = donor_spximg.wcs
+        wcs_bad_fix = target_spximg.wcs
+
+        src_good = self._sep_extract_sources(
+            donor_spximg.data,
+            sep_thresh=sep_thresh,
+        )
+        src_bad = self._sep_extract_sources(
+            target_spximg.data,
+            sep_thresh=sep_thresh,
+        )
+
+        print(
+            "[ADJ-SLEW CRVAL REFINE] SEP detections: "
+            f"{len(src_good)} donor, {len(src_bad)} target"
+        )
+
+        if len(src_good) == 0 or len(src_bad) == 0:
+            print("[ADJ-SLEW CRVAL REFINE] No sources; keeping seed WCS.")
+            return target_spximg.wcs, None, src_bad
+
+        ra_good, dec_good = wcs_good.all_pix2world(src_good["x"], src_good["y"], 0)
+        src_good["ra"] = ra_good.copy()
+        src_good["dec"] = dec_good.copy()
+
+        ra_bad, dec_bad = wcs_bad_fix.all_pix2world(src_bad["x"], src_bad["y"], 0)
+        src_bad["ra"] = ra_bad.copy()
+        src_bad["dec"] = dec_bad.copy()
+
+        c_bad = SkyCoord(
+            ra=np.asarray(src_bad["ra"], dtype=float) * u.deg,
+            dec=np.asarray(src_bad["dec"], dtype=float) * u.deg,
+            frame="icrs",
+        )
+        c_good = SkyCoord(
+            ra=np.asarray(src_good["ra"], dtype=float) * u.deg,
+            dec=np.asarray(src_good["dec"], dtype=float) * u.deg,
+            frame="icrs",
+        )
+
+        idx_good, d2d, _ = c_bad.match_to_catalog_sky(c_good)
+        sep_arcsec = d2d.to(u.arcsec).value
+        sel = np.where(sep_arcsec < match_radius_arcsec)[0]
+
+        print(
+            f"[ADJ-SLEW CRVAL REFINE] Matched {len(sel)} / {len(src_bad)} "
+            f"target detections to donor detections within {match_radius_arcsec:.1f}\""
+        )
+
+        if len(sel) < min_matches:
+            print(
+                f"[ADJ-SLEW CRVAL REFINE] Too few matches "
+                f"({len(sel)} < {min_matches}); keeping seed WCS."
+            )
+            return target_spximg.wcs, None, src_bad
+
+        src_bad_matched = src_bad[sel]
+        src_bad_matched["sep_arcsec"] = sep_arcsec[sel]
+        src_bad_matched["idx_good"] = idx_good[sel]
+        src_bad_matched["ra_good"] = src_good["ra"][src_bad_matched["idx_good"]]
+        src_bad_matched["dec_good"] = src_good["dec"][src_bad_matched["idx_good"]]
+
+        dra_deg = np.nanmedian(src_bad_matched["ra_good"] - src_bad_matched["ra"])
+        ddec_deg = np.nanmedian(src_bad_matched["dec_good"] - src_bad_matched["dec"])
+
+        wcs_refined = copy.deepcopy(wcs_bad_fix)
+        wcs_refined.wcs.crval = [
+            wcs_bad_fix.wcs.crval[0] + dra_deg,
+            wcs_bad_fix.wcs.crval[1] + ddec_deg,
+        ]
+
+        print(
+            "[ADJ-SLEW CRVAL REFINE] Applied donor-image CRVAL shift: "
+            f"dCRVAL1={dra_deg * 3600:.3f}\" "
+            f"dCRVAL2={ddec_deg * 3600:.3f}\""
+        )
+
+        diagnostics = {
+            "n_sep_donor": int(len(src_good)),
+            "n_sep_target": int(len(src_bad)),
+            "n_match": int(len(sel)),
+            "match_radius_arcsec": float(match_radius_arcsec),
+            "median_sep_arcsec": float(np.nanmedian(sep_arcsec[sel])),
+            "dcrval1_arcsec": float(dra_deg * 3600.0),
+            "dcrval2_arcsec": float(ddec_deg * 3600.0),
+        }
+
+        return wcs_refined, diagnostics, src_bad
+
+
     def background_sub(self, spximg):
         # Pre-processing for Estimate Fine Astrometry:
         # Background subtraction
@@ -2586,6 +4136,7 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
         -------
         `int`
             The number of TRANSIENT pixels detected.
+
         """
         mask = (spximg.flags & Flag.TRANSIENT) > 0
         n_transient = int(np.count_nonzero(mask))
@@ -2601,6 +4152,7 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
         * Only activates if the image units are convertible to MJy/sr.
         * Operates in-place on spximg.data.
         * Records a header keyword with a count of clipped pixels.
+
         """
         try:
             unit = u.Unit(spximg.unit) if spximg.unit is not None else None
@@ -2636,6 +4188,7 @@ class EstimateFineAstrometryTask(pipeBase.PipelineTask):
         Raises
         ------
         RuntimeError if nothing is found.
+
         """
         exe_cfg = (self.config.wcs_pv2sip_exe or "").strip()
 

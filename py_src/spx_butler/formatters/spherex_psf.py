@@ -39,8 +39,8 @@ class SPHERExPSFFormatter(FileFormatter):
         data : `object`
             Either data as Python object read from JSON file, or None
             if the file could not be opened.
-        """
 
+        """
         try:
             data = PSFZoneData.read(path)
         except FileNotFoundError:
@@ -60,6 +60,7 @@ class SPHERExPSFFormatter(FileFormatter):
         ------
         Exception
             The file could not be written.
+
         """
         if not isinstance(inMemoryDataset, PSFZoneData):
             raise NotImplementedError("Unable to write this representation of FITS into a file.")

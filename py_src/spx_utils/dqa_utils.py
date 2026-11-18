@@ -18,6 +18,7 @@ def log_dqa_result(module: str, result_dict: dict) -> None:
         Name of the DQA module or check (e.g., 'source_count', 'hot_cold_pixel').
     result_dict : `dict`
         Dictionary with 'result' and 'description'.
+
     """
     prefix = f"DQA L2 [{module}]"
     msg = result_dict["description"]
@@ -29,12 +30,15 @@ def log_dqa_result(module: str, result_dict: dict) -> None:
 
 
 def flags_summary(spximg: SPHERExImage, image_stats_dict: dict):
-    """Outputs flag counts.
+    """Output flag counts.
 
     Parameters
     ----------
-    spximg : `spx_data.SPHERExImage`
+    spximg : `~spx_data.SPHERExImage`
         Level 1 LVF image.
+    image_stats_dict : `dict`
+        Dictionary to store flag count statistics.
+
     """
     for flag in spximg.flag_defs:
         bit_num = spximg.flag_defs[flag]
@@ -45,7 +49,7 @@ def flags_summary(spximg: SPHERExImage, image_stats_dict: dict):
 
 
 def log_threshold_test(logger: Logger, test_dict: dict, warning_message: str):
-    """Outputs results of threshold tests.
+    """Output results of threshold tests.
 
     Parameters
     ----------
@@ -55,6 +59,7 @@ def log_threshold_test(logger: Logger, test_dict: dict, warning_message: str):
         Includes result (pass/fail) and test description.
     warning_message : `str`
         Warning output to user.
+
     """
     logger.info("%s: %s", test_dict["result"], test_dict["description"])
     if test_dict["result"] == "FAIL":
@@ -65,8 +70,7 @@ def _nan_values_flagged(array: np.ndarray,
                         flags: np.ndarray,
                         nan_flags: int,
                         check_inf: bool = True) -> bool:
-    """Helper function to verify that all NaN or Inf values in an array
-       are justified by flags.
+    """Verify that all NaN or Inf values in an array are justified by flags.
 
     Parameters
     ----------
@@ -86,6 +90,7 @@ def _nan_values_flagged(array: np.ndarray,
     result : `bool`
         True if all NaN and Inf values in the array are accompanied
         by valid flags; False otherwise.
+
     """
     problem_mask = np.isnan(array)
     if check_inf:
@@ -119,6 +124,7 @@ def nan_pixels_flagged(data: np.ndarray,
     result : `bool`
         True if all NaN and Inf pixels are accompanied by a valid flag;
         False otherwise.
+
     """
     return _nan_values_flagged(data, flags, nan_flags, check_inf)
 
@@ -146,5 +152,6 @@ def nan_variance_flagged(variance: np.ndarray,
     result : `bool`
         True if all NaN and Inf values in the variance array are accompanied
         by a valid flag; False otherwise.
+
     """
     return _nan_values_flagged(variance, flags, nan_flags, check_inf)

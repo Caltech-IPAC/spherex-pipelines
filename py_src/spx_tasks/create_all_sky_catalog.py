@@ -6,6 +6,7 @@ from typing import Literal
 
 # Related third party imports
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 from astropy.table import meta, Column
 from lsst.pex.config import ListField, ChoiceField, Field
@@ -15,6 +16,7 @@ import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 
 # Local application/library specific imports
+from spx_data import FluxCorrectionsCube
 from spx_butler import REFCAT_SKYPIX_NAME
 from spherex_parameters import load_spherex_parameters
 from spx_data.spx_version import SSDC_PIPELINES_VERSION
@@ -26,9 +28,26 @@ params = load_spherex_parameters()
 META_YAML_TYPE_TAG = "meta: !!omap"  # ordered mapping for YAML parsers
 
 
-def compute_nyquist_metric(wavelengths, params) -> float:
-    """Computes the Nyquist completeness metric based on the number
-       of spectral channels containing at least two measurements.
+def _as_array(x):
+    if hasattr(x, "value"):
+        x = x.value
+    return np.asarray(x)
+
+
+def _get_spectral_channel_arrays(params):
+    """Extract spectral channel arrays from params."""
+    wave_min = _as_array(params["spectral_channel"]["lmin"]["quantity"])
+    wave_max = _as_array(params["spectral_channel"]["lmax"]["quantity"])
+    wave_mean = _as_array(params["spectral_channel"]["lmean"]["quantity"])
+    resolution = _as_array(params["spectral_channel"]["R"]["quantity"])
+
+    channel_sizes = wave_mean / resolution
+    return wave_min, wave_max, channel_sizes
+
+
+def compute_nyquist_metric(wavelengths: list[float], params: dict) -> float:
+    """Compute Nyquist completeness as fraction of spectral channels
+    containing at least two measurements.
 
     Parameters
     ----------
@@ -42,34 +61,106 @@ def compute_nyquist_metric(wavelengths, params) -> float:
     `float`
         Nyquist sampling metric in the range (0,1),
         where 1 indicates complete sampling.
+
+    Notes
+    -----
+    This is the production metric used for nyquist_computation.
     """
+    wavelengths = np.asarray(wavelengths)
     if len(wavelengths) < 2:
-        return 0.0  # Not enough data points to define a metric
+        return 0.0
+    wave_min, wave_max, _ = _get_spectral_channel_arrays(params)
+    n_channels = len(wave_min)
+    # Assign each wavelength to a spectral channel.
+    chan = np.searchsorted(wave_max, wavelengths, side="right")
 
-    num_channels_covered = 0
+    in_range = (chan >= 0) & (chan < n_channels)
+    valid = np.zeros(len(wavelengths), dtype=bool)
 
-    # Define channel properties
-    channel_sizes = (params["spectral_channel"]["lmean"]["quantity"].value
-                     / params["spectral_channel"]["R"]["quantity"])
-    channel_maxes = params["spectral_channel"]["lmax"]["quantity"].value
+    chan_in_range = chan[in_range]
+    wavelengths_in_range = wavelengths[in_range]
 
-    # Assign wavelengths to channels
-    channel_assignment = np.digitize(wavelengths, channel_maxes)
+    valid[in_range] = (
+        (wavelengths_in_range >= wave_min[chan_in_range])
+        & (wavelengths_in_range < wave_max[chan_in_range])
+    )
+    chan_valid = chan[valid]
+    if len(chan_valid) < 2:
+        return 0.0
+    counts = np.bincount(chan_valid, minlength=n_channels)
+    good = counts >= 2
+    nyquist_metric = np.sum(good) / n_channels
+    return float(np.clip(nyquist_metric, 0.0, 1.0))
 
-    # Iterate over all channels
-    for channel_idx in range(len(channel_maxes)):
-        meas_in_channel = wavelengths[np.where(channel_assignment == channel_idx)[0]]
-        if len(meas_in_channel) > 1:
-            spread_in_channel = np.max(meas_in_channel) - np.min(meas_in_channel)
-            if spread_in_channel > 0.33 * channel_sizes[channel_idx]:
-                num_channels_covered += 1
+def compute_nyquist_diagnostics(wavelengths, params):
+    """Compute diagnostic information for testing Nyquist spread behavior.
 
-    # Normalize metric by total number of channels (assumed 102)
-    print(f"n channels = {len(channel_maxes)}")
-    nyquist_metric = num_channels_covered / len(channel_maxes)
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - counts_per_channel
+        - spread_per_channel
+        - spread_fraction_per_channel
+        - frac_bins_with_1plus
+        - frac_bins_with_2plus
+        - frac_bins_with_spread_005
+        - frac_bins_with_spread_015
+        - frac_bins_with_spread_033
+        - frac_bins_with_spread_050
+    """
+    wavelengths = np.asarray(wavelengths)
+    wave_min, wave_max, channel_sizes = _get_spectral_channel_arrays(params)
+    n_channels = len(wave_min)
+    counts = np.zeros(n_channels, dtype=int)
+    spread = np.full(n_channels, np.nan)
+    spread_fraction = np.full(n_channels, np.nan)
+    if len(wavelengths) == 0:
+        return {
+            "counts_per_channel": counts,
+            "spread_per_channel": spread,
+            "spread_fraction_per_channel": spread_fraction,
+            "frac_bins_with_1plus": 0.0,
+            "frac_bins_with_2plus": 0.0,
+            "frac_bins_with_spread_005": 0.0,
+            "frac_bins_with_spread_015": 0.0,
+            "frac_bins_with_spread_033": 0.0,
+            "frac_bins_with_spread_050": 0.0,
+        }
+    chan = np.searchsorted(wave_max, wavelengths, side="right")
 
-    return max(0, min(1, nyquist_metric))
+    in_range = (chan >= 0) & (chan < n_channels)
+    valid = np.zeros(len(wavelengths), dtype=bool)
 
+    chan_in_range = chan[in_range]
+    wavelengths_in_range = wavelengths[in_range]
+
+    valid[in_range] = (
+        (wavelengths_in_range >= wave_min[chan_in_range])
+        & (wavelengths_in_range < wave_max[chan_in_range])
+    )
+    wavelengths_valid = wavelengths[valid]
+    chan_valid = chan[valid]
+    if len(chan_valid) > 0:
+        counts = np.bincount(chan_valid, minlength=n_channels)
+    for channel_idx in np.where(counts >= 2)[0]:
+        w = wavelengths_valid[chan_valid == channel_idx]
+        spread[channel_idx] = np.max(w) - np.min(w)
+        spread_fraction[channel_idx] = spread[channel_idx] / channel_sizes[channel_idx]
+    def frac_with_spread(threshold):
+        good = (counts >= 2) & (spread_fraction >= threshold)
+        return float(np.sum(good) / n_channels)
+    return {
+        "counts_per_channel": counts,
+        "spread_per_channel": spread,
+        "spread_fraction_per_channel": spread_fraction,
+        "frac_bins_with_1plus": float(np.sum(counts >= 1) / n_channels),
+        "frac_bins_with_2plus": float(np.sum(counts >= 2) / n_channels),
+        "frac_bins_with_spread_005": frac_with_spread(0.05),
+        "frac_bins_with_spread_015": frac_with_spread(0.15),
+        "frac_bins_with_spread_033": frac_with_spread(0.33),
+        "frac_bins_with_spread_050": frac_with_spread(0.50),
+    }
 
 def add_meta_yaml(meta_yaml: list, mode: Literal["field", "version"], field_dict: dict | None = None):
     """Add field or version metadata to a list of text lines with YAML header
@@ -89,6 +180,7 @@ def add_meta_yaml(meta_yaml: list, mode: Literal["field", "version"], field_dict
     Returns
     -------
     None
+
     """
     if mode == "field" and field_dict is not None:
         if "unit" in field_dict.keys():
@@ -126,6 +218,7 @@ def hips6_to_hips5(hips6: int) -> int:
     -------
     `int`
         Corresponding parent HiPS 5 ID.
+
     """
     parent_order = 5
     child_order = 6
@@ -151,6 +244,22 @@ class CreateAllSkyCatalogConnections(pipeBase.PipelineTaskConnections,
         deferLoad=True,
         multiple=True,
         minimum=1)
+    l3_flux_corrections = cT.PrerequisiteInput(
+        name="l3_flux_corrections",
+        doc="Gain maps to apply for flux correction.",
+        storageClass="SPHERExImage",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        deferLoad=True,
+        multiple=True,
+        minimum=6)
+    special_ids = cT.PrerequisiteInput(
+        name="special_ids",
+        doc="List of source IDs to include in the output catalog.",
+        storageClass="NumpyArray",
+        dimensions=["instrument"],
+        isCalibration=False
+    )
     allsky_cat = cT.Output(
         name="allsky_cat",
         doc="Filtered all sky catalog per HEALPix.",
@@ -163,8 +272,14 @@ class CreateAllSkyCatalogConnections(pipeBase.PipelineTaskConnections,
         if not config.merge_refcat:
             del self.refcat
 
+        if not config.apply_flux_corrections:
+            del self.l3_flux_corrections
+
+        if not config.filter_by_ids:
+            del self.special_ids
+
     def adjustQuantum(self, inputs: dict, outputs: Mapping, label: str, data_id: DataCoordinate):
-        """Filters out input reference catalog shards if they do not overlap
+        """Filter out input reference catalog shards if they do not overlap
         with the corresponding input photometry measurement tables.
         """
         # Only need to adjust if using reference catalog
@@ -194,13 +309,15 @@ class CreateAllSkyCatalogConnections(pipeBase.PipelineTaskConnections,
 
 class CreateAllSkyCatalogConfig(pipeBase.PipelineTaskConfig,
                                 pipelineConnections=CreateAllSkyCatalogConnections):
+    """Configuration for CreateAllSkyCatalog task."""
+
     list_items = ListField(
         doc="Measurements for sources to be recorded in a list format. This is to"
         " be able to store multiple measurements for a single source in"
         " parquet.",
         dtype=str,
-        default=("x_image", "y_image", "mjd", "lambda", "lambda_width", "flux", "flux_err", "flux_bkg",
-                 "local_bkg_flg", "flags", "fit_ql", "deep_flg", "lvf_id", "det_id"))
+        default=("x_image", "y_image", "mjd", "lambda", "lambda_width", "flux", "flux_err",
+                 "flux_err_tractor", "flux_bkg", "flags", "fit_ql", "deep_flg", "lvf_id", "det_id"))
 
     sort_on = ChoiceField(
         doc="Column to use to sort additional measurements stored as arrays.",
@@ -227,6 +344,39 @@ class CreateAllSkyCatalogConfig(pipeBase.PipelineTaskConfig,
         dtype=str,
         default=["coord_src", "spherex_class", "pmra", "pmdec", "parallax", "ra", "dec"])
 
+    apply_flux_corrections = Field(
+        doc="If True, applies gain ratios to 'flux' and 'flux_err' measurements. Default is False.",
+        dtype=bool,
+        default=False)
+
+    apply_variance_boost = Field(
+        doc="If True, reports the raw Tractor error and a fraction of the flux added in quadrature. Default"
+            " is True.",
+        dtype=bool,
+        default=True)
+
+    var_boost_frac = Field(
+        doc="The fraction of the flux to add in quadrature to the raw Tractor error when"
+            " `apply_variance_boost` is True. Default is 0.03.",
+        dtype=float,
+        default=0.03)
+
+    phot_tool_mode = Field(
+        doc="If true, this piepline is being run as part of the photometry tool.",
+        dtype=bool,
+        default=False)
+
+    enable_nyquist_diagnostics = Field(
+        doc="If True, compute additional Nyquist diagnostic columns; Default is False.",
+        dtype=bool,
+        default=False)
+
+    filter_by_ids = Field(
+        doc="If True, only write table if 1 or more IDs are in the `special_ids` input list."
+            "If False, do not apply filtering by IDs. Default is False.",
+        dtype=bool,
+        default=False)
+
     def update(self, **kw):
         """Override default update method to validate upon field changes.
         """
@@ -241,6 +391,22 @@ class CreateAllSkyCatalogConfig(pipeBase.PipelineTaskConfig,
         # If merging refcat data,  1+ pass-through columns must be specified
         if self.merge_refcat and (len(self.pass_thru_cols) == 0):
             raise ValueError("To merge data from the refcat, 1+ pass-through columns must be specified.")
+
+        if self.apply_variance_boost and (self.var_boost_frac <= 0):
+            raise ValueError("To apply the variance boost, the boosted flux fraction must be > 0.")
+
+        if (
+            (self.apply_variance_boost and ("flux_err_tractor" not in self.list_items))
+            or (not self.apply_variance_boost and ("flux_err_tractor" in self.list_items))
+        ):
+            raise ValueError("To report both the raw and boosted flux errors, 'flux_err_tractor' must be"
+                             " included in 'list_items' and 'apply_variance_boost' must be True.")
+
+        valid_pass_thru = {"coord_src", "spherex_class", "pmra", "pmdec", "parallax", "ra", "dec", "name"}
+        for c in self.pass_thru_cols:
+            if c not in valid_pass_thru:
+                raise ValueError(f"Unsupported pass-through column '{c}' requested. Supported columns are:"
+                                 f" {valid_pass_thru}.")
 
 
 class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
@@ -263,6 +429,7 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
     -----
     - Use config to customize algorithm parameters.
     - Pass module inputs as arguments of the ``run`` method.
+
     """
 
     _DefaultName = "create-all-sky-catalog"
@@ -274,27 +441,59 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
+    def runQuantum(self, butlerQC, inputRefs, outputRefs):
+        if not self.config.apply_flux_corrections:
+            flux_corr_run = None
+            l3_flux_corrections = None
+        else:
+            # Fetch flux corrections calibration run name for cache key
+            flux_corr_handle = butlerQC.get(inputRefs.l3_flux_corrections[0])
+            dsref = getattr(flux_corr_handle, "ref", None)
+            if dsref is None:
+                raise RuntimeError("Could not access DatasetRef from DeferredDatasetHandle.")
+            flux_corr_run = getattr(dsref.run, "name", str(dsref.run))
+            l3_flux_corrections = butlerQC.get(inputRefs.l3_flux_corrections)
+
+        # Collate data in measurement tables and save output to butler
+        result = self.run(
+            meas_table_list=butlerQC.get(inputRefs.meas_table_list),
+            l3_flux_corrections=l3_flux_corrections,
+            flux_corr_run=flux_corr_run,
+            refcat=butlerQC.get(inputRefs.refcat) if self.config.merge_refcat else None,
+            special_ids=butlerQC.get(inputRefs.special_ids) if self.config.filter_by_ids else None
+        )
+        if result.allsky_cat is not None:
+            butlerQC.put(result.allsky_cat, outputRefs.allsky_cat)
+
     def run(self, meas_table_list: list[DeferredDatasetHandle],
-            refcat: DeferredDatasetHandle = None) -> pipeBase.Struct:
-        """Returns a condensed table of all source measurements for one
+            l3_flux_corrections: list[DeferredDatasetHandle] = None, flux_corr_run: str = None,
+            refcat: DeferredDatasetHandle = None, special_ids: np.ndarray = None) -> pipeBase.Struct:
+        """Return a condensed table of all source measurements for one
         HEALPix.
 
         Parameters
         ----------
-        meas_table_list
+        meas_table_list : `list` of `~lsst.daf.butler.DeferredDatasetHandle`
             List of deferred `~astropy.table.Table` with source measurements
             for a HEALPix.
+        l3_flux_corrections : `list` of
+        `~lsst.daf.butler.DeferredDatasetHandle`, optional
+            List of deferred `spx_data.SPHERExImage` gain maps to apply for
+            flux correction. Default is None.
+        flux_corr_run : `str`, optional
+            The run name for the flux corrections. Default is None.
+        refcat : `~lsst.daf.butler.DeferredDatasetHandle`, optional
+            Reference catalog for cross-matching. Default is None.
+        special_ids : `numpy.ndarray`, optional
+            Array of source IDs to filter the output catalog. Default is None.
 
         Returns
         -------
         output: `lsst.pipe.base.Struct`
             Output with component:
-
             - ``allsky_cat`` : `pyarrow.Table`
                 Contains a condensed `pyarrow.Table` with one row per source
                 with array columns for multiple measurements.
-            - ``primary_calibrators`` : `pyarrow.Table`
-                Contains a filtered catalog of primary calibrator sources.
 
         Notes
         -----
@@ -302,14 +501,26 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
         - PHOTOMETRIC_FLAG = 1 << 2  # Bit 2 = 4  Primary calibrators
         - CALSPEC_FLAG = 1 << 3      # Bit 3 = 8  Calspec sources
         - SECONDARY_FLAG = 1 << 8    # Bit 8 = 256  Secondary calibrators
+
         """
         num_tables = len(meas_table_list)
         self.log.debug(f"Number of input tables: {num_tables}")
 
+        # Prevent silent failure due to mismatch between config and run args
+        if self.config.apply_flux_corrections and l3_flux_corrections is None:
+            raise ValueError("`apply_flux_corrections` is True but `l3_flux_corrections` input was not"
+                             " provided.")
+        if self.config.merge_refcat and refcat is None:
+            raise ValueError("`merge_refcat` is True but `refcat` input was not provided.")
+        if self.config.filter_by_ids and special_ids is None:
+            raise ValueError("`filter_by_ids` is True but `special_ids` input was not provided.")
+
         # If using reference catalog, get the data and prepare indexing
-        if refcat is not None:
+        if self.config.merge_refcat and refcat is not None:
             # Fetch reference catalog data and validate
-            refcat = refcat[0].get()  # TODO: can reading this be filtered in QR2 butler?
+            refcat = refcat[0].get()
+            refcat.keep_columns(
+                ["SPHERExRefID"] + list(self.config.pass_thru_cols))  # discard excess cols to save memory
             uniq_ref_ids, counts = np.unique(refcat["SPHERExRefID"].data, return_counts=True)
             if len(uniq_ref_ids) != len(refcat):
                 dup_ids = uniq_ref_ids[counts > 1]
@@ -387,15 +598,19 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
                 },
             }
 
-        # Fetch data from measurement tables
-        done = {}  # Store source IDs and index so can quickly append measurements
-        rows = []  # Only doing this task for one HEALPix at a time
+        # If filtering by source IDs, pre-sort for efficient lookups in loop
+        if self.config.filter_by_ids and special_ids is not None:
+            special_ids_sorted = np.sort(special_ids)
+
+        # Fetch data from measurement tables.
+        # we collect processed tables as
+        # pandas DataFrames and aggregate them all at once after the loop.
+        processed_tables = []
         ref_ver = None  # Keep a local copy for reuse when writing parquet metadata
         meas_table = None  # Keep a copy for getting field-level metadata
+        colnames = None  # Keep track of column names after possible addition of pass-through columns
         for deferred_meas_table in meas_table_list:
-            # Get the data and colnames
             meas_table = deferred_meas_table.get()
-            colnames = meas_table.colnames
 
             # Extract refcat provenance (version) once from the 1st table.
             # Stash it and later add it into the output Parquet metadata.
@@ -420,17 +635,22 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
                     self.metadata.add("refcat_version", ref_ver)  # and in task metadata
 
             # If requested, add pass-through columns from refcat
-            if self.config.merge_refcat:
-                # Double check all source IDs have a match
-                if not np.all(np.isin(meas_table["source_id"], refcat_ids)):
+            if self.config.merge_refcat and refcat is not None:
+                # Find matches
+                matched_idx = np.searchsorted(refcat_sorted["SPHERExRefID"], meas_table["source_id"])
+
+                # Double check all matches are valid
+                out_of_bounds = (matched_idx >= len(refcat_sorted))  # indices pointing past end of array
+                safe_idx = np.clip(matched_idx, 0, len(refcat_sorted) - 1)  # valid range for next check
+                mismatched = refcat_sorted["SPHERExRefID"][safe_idx] != meas_table["source_id"]
+                if np.any(out_of_bounds | mismatched):
                     missing_in_refcat = list(set(meas_table["source_id"]) - set(refcat_ids))
                     raise ValueError(f"1+ photometered sources were not found in the reference catalog:"
                                      f" {missing_in_refcat}")
 
-                # Find matches and add columns
-                matched_idx = np.searchsorted(refcat_sorted["SPHERExRefID"], meas_table["source_id"])
+                # Add columns
                 # NOTE: Double check "spherex_class", which can be pass-through
-                #       in PFP or CASC.
+                #       in Perform Forced Photometry or Create All-Sky Catalog.
                 if (
                     ("spherex_class" in self.config.pass_thru_cols)
                     and ("spherex_class" in meas_table.colnames)
@@ -460,53 +680,227 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
                         if col == "spherex_class":
                             meas_table["spherex_class"].format = None
 
-            # Fetch colnames after possible addition of pass-through columns
-            colnames = meas_table.colnames
-
             # Apply filtering efficiently using NumPy bitwise operations
             if self.config.filter_spherex_class > 0:
-                meas_table = meas_table[meas_table["spherex_class"] & self.config.filter_spherex_class > 0]
+                meas_table = meas_table[(meas_table["spherex_class"] & self.config.filter_spherex_class) > 0]
+
+            # Apply source ID filtering
+            if self.config.filter_by_ids and special_ids is not None:
+                ids = meas_table["source_id"].data
+                idx = np.searchsorted(special_ids_sorted, ids)
+                idx = np.clip(idx, 0, len(special_ids_sorted) - 1)  # prevent out-of-bounds indices
+                mask = special_ids_sorted[idx] == ids
+                meas_table = meas_table[mask]
 
             # If no sources remain after filtering, continue to next table
             if len(meas_table) == 0:
                 continue
 
-            # Loop over photometry measurements
-            for meas in meas_table:
-                source_id = meas["source_id"]
+            # Fetch colnames after possible addition of pass-through columns
+            # and variance-boosted flux error
+            if colnames is None:
+                colnames = meas_table.colnames
 
-                # Check to see if source has already been recorded
-                index = done.get(source_id, None)
-                if index is not None:
-                    # Append measurements to list items
-                    for item in self.config.list_items:
-                        if meas[item] != np.ma.core.MaskedConstant:
-                            rows[index][item].append(meas[item])
-                    # Move on to next measurement
-                    continue
+            # Collect the per-exposure frame. Before converting to pandas,
+            # stash the astropy mask for each list column as a companion
+            # boolean column so we can replicate main-branch masking semantics
+            # exactly: drop masked values, keep unmasked NaNs.
+            for item in self.config.list_items:
+                col_name = "flux_err" if item == "flux_err_tractor" else item
+                col_data = meas_table[col_name].data
+                if np.ma.is_masked(col_data):
+                    mask_vals = np.ma.getmaskarray(col_data)
+                else:
+                    mask_vals = np.zeros(len(meas_table), dtype=bool)
+                meas_table[f"__mask__{item}"] = mask_vals
+            processed_tables.append(meas_table.to_pandas())
 
-                # Convert specific items to a list for storage if first time
-                row = {}
-                for index, item in enumerate(meas):
-                    colname = colnames[index]
-                    if colname in self.config.list_items:
-                        row[colname] = []
-                        if item != np.ma.core.MaskedConstant:
-                            row[colname].append(item)
-                    else:
-                        row[colname] = item
+        # Free refcat objects immediately after the loop — they are no longer
+        # needed
+        if self.config.merge_refcat and refcat is not None:
+            del refcat, refcat_sorted, refcat_ids, sorted_idx
 
-                # Compute Nyquist completeness
-                row["nyquist_comp"] = compute_nyquist_metric(row["lambda"], params)
+        # If applying variance boost, update sample astropy table metadata and
+        # column names
+        if self.config.apply_variance_boost:
+            meas_table = meas_table.copy()  # avoid mutating converted pandas DataFrame
+            meas_table.rename_column("flux_err", "flux_err_tractor")
+            meas_table["flux_err_tractor"].description = "SPHEREx flux error reported by Tractor"
+            meas_table.add_column(Column(
+                name="flux_err",
+                data=np.ones(len(meas_table), dtype=np.float32),  # real values computed on combined DF below
+                description="SPHEREx flux error best estimate",
+                dtype=meas_table["flux_err_tractor"].dtype,
+                unit=meas_table["flux_err_tractor"].unit,
+                format=meas_table["flux_err_tractor"].format
+            ), index=meas_table.colnames.index("flux_err_tractor") - 1)
+            colnames = [c for c in meas_table.colnames if not c.startswith("__mask__")]
 
-                # Append the meas and store the index for quick updating
-                rows.append(row)
-                done[source_id] = len(rows) - 1
+        # We build pyarrow ListArrays directly from the dense flat column
+        # buffers plus per-source offsets arrays.
+        # If `combined` is sorted by [source_id, sort_on],
+        # each source's rows are contiguous in the buffer.
+        if processed_tables:
+            combined = pd.concat(processed_tables, ignore_index=True)
+            del processed_tables  # free the per-table frames as soon as we've concatenated
 
-                # Append metadata
+            # Vectorized application of flux corrections and variance boost
+            if self.config.apply_flux_corrections and l3_flux_corrections is not None:
+                flux_ratios = FluxCorrectionsCube(l3_flux_corrections, run_cache_key=flux_corr_run).cube
+                idx_ax0 = combined["det_id"] - 1  # detector
+                idx_ax1 = combined["y_image"].astype(int)  # y pixel
+                idx_ax2 = combined["x_image"].astype(int)  # x pixel
+                factors = flux_ratios[idx_ax0, idx_ax1, idx_ax2]
+                combined["flux"] *= factors
+                combined["flux_err"] *= factors
+                combined["flux_bkg"] *= factors
+            if self.config.apply_variance_boost:
+                combined.drop(columns=["__mask__flux_err"], inplace=True)  # avoid orphan mask col
+                combined.rename(columns={"flux_err": "flux_err_tractor"}, inplace=True)
+                boost = self.config.var_boost_frac * combined["flux"]
+                combined.insert(loc=combined.columns.get_loc("flux_err_tractor") - 1, column="flux_err",
+                                value=np.sqrt(combined["flux_err_tractor"]**2 + boost**2))
+                combined["__mask__flux_err"] = False  # always valid; fxn of valid flux and flux_err_tractor
 
-        # If no sources were selected, return an empty table
-        if len(rows) == 0:
+            # Sort by source_id PRIMARY (so each source's rows are contiguous
+            # in the buffer) and by `sort_on` SECONDARY (so within a source
+            # the rows are ordered as required). Stable sort preserves the
+            # within-source order on equal `sort_on` values.
+            combined.sort_values(["source_id", self.config.sort_on], inplace=True, kind="stable")
+            combined.reset_index(drop=True, inplace=True)
+
+            list_items = list(self.config.list_items)
+            mask_col_names = {item: f"__mask__{item}" for item in list_items}
+            scalar_cols_no_id = [c for c in colnames
+                                 if c not in self.config.list_items and c != "source_id"]
+
+            # Compute per-source row offsets directly from the sorted
+            # source_id column. `offsets_np` has shape (n_sources + 1,) with
+            # offsets_np[0] == 0 and offsets_np[-1] == len(combined). Each
+            # source occupies rows [offsets_np[i] : offsets_np[i+1]].
+            sid_arr = combined["source_id"].to_numpy()
+            change_points = np.flatnonzero(np.diff(sid_arr)) + 1
+            offsets_np = np.empty(len(change_points) + 2, dtype=np.int32)
+            offsets_np[0] = 0
+            offsets_np[1:-1] = change_points
+            offsets_np[-1] = len(sid_arr)
+            n_sources = len(offsets_np) - 1
+
+            # First row of each source -- gives unique source_ids in order
+            # AND the value to take for each per-source scalar (refcat-derived
+            # columns are constant within a source).
+            first_row_idx = offsets_np[:-1]
+            uniq_source_ids = sid_arr[first_row_idx]
+
+            # Compute Nyquist per source by slicing the dense lambda buffer.
+            # Slices are zero-copy numpy views, so this loop has effectively
+            # no allocation cost beyond the small nyquist_vals output array.
+            lambda_data = combined["lambda"].to_numpy()
+            nyquist_vals = np.empty(n_sources, dtype=np.float32)
+
+            if self.config.enable_nyquist_diagnostics:
+                diag_frac_1plus = np.empty(n_sources, dtype=np.float32)
+                diag_frac_2plus = np.empty(n_sources, dtype=np.float32)
+                diag_spread_005 = np.empty(n_sources, dtype=np.float32)
+                diag_spread_015 = np.empty(n_sources, dtype=np.float32)
+                diag_spread_033 = np.empty(n_sources, dtype=np.float32)
+                diag_spread_050 = np.empty(n_sources, dtype=np.float32)
+
+            for i in range(n_sources):
+                wls = lambda_data[offsets_np[i]:offsets_np[i + 1]]
+                nyquist_vals[i] = compute_nyquist_metric(wls, params)
+                if self.config.enable_nyquist_diagnostics:
+                    diag = compute_nyquist_diagnostics(wls, params)
+                    diag_frac_1plus[i] = diag["frac_bins_with_1plus"]
+                    diag_frac_2plus[i] = diag["frac_bins_with_2plus"]
+                    diag_spread_005[i] = diag["frac_bins_with_spread_005"]
+                    diag_spread_015[i] = diag["frac_bins_with_spread_015"]
+                    diag_spread_033[i] = diag["frac_bins_with_spread_033"]
+                    diag_spread_050[i] = diag["frac_bins_with_spread_050"]
+
+            del lambda_data
+
+            # Build pyarrow arrays directly, column by column.
+            arrays_by_name = {
+                "source_id": pa.array(uniq_source_ids, type=pa.int64()),
+                "nyquist_comp": pa.array(nyquist_vals, type=pa.float32()),
+            }
+
+            if self.config.enable_nyquist_diagnostics:
+                arrays_by_name.update({
+                    "nyquist_frac_1plus": pa.array(diag_frac_1plus, type=pa.float32()),
+                    "nyquist_frac_2plus": pa.array(diag_frac_2plus, type=pa.float32()),
+                    "nyquist_spread_005": pa.array(diag_spread_005, type=pa.float32()),
+                    "nyquist_spread_015": pa.array(diag_spread_015, type=pa.float32()),
+                    "nyquist_spread_033": pa.array(diag_spread_033, type=pa.float32()),
+                    "nyquist_spread_050": pa.array(diag_spread_050, type=pa.float32()),
+                })
+
+            del nyquist_vals
+
+            if self.config.enable_nyquist_diagnostics:
+                del (
+                    diag_frac_1plus,
+                    diag_frac_2plus,
+                    diag_spread_005,
+                    diag_spread_015,
+                    diag_spread_033,
+                    diag_spread_050,
+                )
+
+            # Per-source scalar columns: index the flat buffer at the first
+            # row of each group. Drop each column from combined immediately
+            # after use to reduce peak memory while arrays_by_name grows.
+            for col in scalar_cols_no_id:
+                col_data = combined[col].to_numpy()
+                arrays_by_name[col] = pa.array(col_data[first_row_idx])
+                combined.drop(columns=[col], inplace=True)
+
+            # Per-measurement list columns: drop only astropy-masked values,
+            # matching main-branch behaviour exactly.
+            flux_valid_counts = None  # used below to drop no-flux sources
+            for col in list_items:
+                col_series = combined[col]
+                valid_mask = ~combined[mask_col_names[col]].to_numpy().astype(bool)
+
+                valid_counts = np.add.reduceat(
+                    valid_mask.astype(np.int32), offsets_np[:-1]
+                )
+                if col == "flux":
+                    flux_valid_counts = valid_counts
+
+                col_offsets = np.empty(n_sources + 1, dtype=np.int32)
+                col_offsets[0] = 0
+                col_offsets[1:] = np.cumsum(valid_counts)
+
+                flat_valid = pa.Array.from_pandas(col_series.to_numpy()[valid_mask])
+                arrays_by_name[col] = pa.ListArray.from_arrays(
+                    pa.array(col_offsets, type=pa.int32()), flat_valid
+                )
+                combined.drop(columns=[col, mask_col_names[col]], inplace=True)
+
+            # Drop sources that have no valid flux measurements. Such sources
+            # carry no science value and would produce confusing rows with
+            # empty flux/flux_err lists alongside non-empty lambda/mjd lists.
+            keep = flux_valid_counts > 0
+            if not np.all(keep):
+                n_dropped = int((~keep).sum())
+                self.log.debug(f"Dropping {n_dropped} source(s) with no valid flux measurements.")
+                keep_indices = pa.array(np.flatnonzero(keep), type=pa.int64())
+                arrays_by_name = {
+                    name: arr.take(keep_indices)
+                    for name, arr in arrays_by_name.items()
+                }
+                n_sources = int(keep.sum())
+
+            del combined, sid_arr, change_points
+        else:
+            arrays_by_name = None
+            n_sources = 0
+
+        # If no sources were selected, log a warning. The empty-table path
+        # is handled below in pyarrow construction.
+        if n_sources == 0:
             self.log.warning("No sources matched the filter criteria. Writing an empty table.")
 
         # columns metadata (units, descriptions) in format understood by
@@ -523,17 +917,9 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
             astropy_cols = meas_table.columns
             if ref_ver:
                 metadata["refcat_version"] = ref_ver
-
-        # Sorting measurements based on configured criteria
-        self.log.debug(f"Sorting array columns by '{self.config.sort_on}'")
-        for source in rows:
-            # Get the order to sort all list_items by increasing `sort_on`
-            order = np.argsort(source[self.config.sort_on])
-            # Apply to every item in list_items
-            for item in self.config.list_items:
-                # Can only index like this with np.array, return list
-                if len(source[item]) > 0:
-                    source[item] = np.array(source[item])[order].tolist()
+        # We pre-sort `combined` by [source_id, sort_on](stable sort) before computing
+        # offsets, so the aggregated lists are already in the desired order.
+        self.log.debug(f"Array columns are pre-sorted by '{self.config.sort_on}' via offset buckets")
 
         # Define lists of types for parquet library
         lfloat64 = pa.list_(pa.float64())
@@ -542,9 +928,6 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
         lint64 = pa.list_(pa.int64())
         luint8 = pa.list_(pa.uint8())
 
-        # ex. field with metadata:
-        # pa.field("flux", lfloat32,
-        #           metadata={"unit": "uJy", "description": "Measured Flux"}),
         pa_flds = [
             ("source_id", pa.int64()),
             ("ra", pa.float64()),
@@ -557,27 +940,55 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
             ("flux", lfloat32),
             ("flux_err", lfloat32),
             ("flux_bkg", lfloat32),
-            ("local_bkg_flg", lbool),
             ("ext_flg", pa.bool_()),
             ("flags", lint64),
             ("fit_ql", lfloat32),
             ("deep_flg", lbool),
             ("lvf_id", lint64),
             ("det_id", luint8),
-            ("nyquist_comp", pa.float32()),
+            ("nyquist_comp", pa.float32())
         ]
 
-        # If requested, add pass-through columns to fields for pyarrow schema
-        if self.config.pass_thru_cols:
+        if self.config.enable_nyquist_diagnostics:
+            pa_flds.extend([
+                ("nyquist_frac_1plus", pa.float32()),
+                ("nyquist_frac_2plus", pa.float32()),
+                ("nyquist_spread_005", pa.float32()),
+                ("nyquist_spread_015", pa.float32()),
+                ("nyquist_spread_033", pa.float32()),
+                ("nyquist_spread_050", pa.float32()),
+            ])
+
+        if self.config.phot_tool_mode:
+            pa_flds.append(("data_collection", pa.list_(pa.string())))
+            # Record numpy string width so the parquet round-trip restores the
+            # correct fixed-width dtype.
+            metadata["table::len::data_collection"] = str(
+                astropy_cols.get("data_collection").dtype.itemsize // 4)
+
+        # If requested, add pass-through columns to fields for pyarrow schema.
+        # Guard on colnames so we only insert columns that were actually added
+        # to the measurement table (e.g. skip refcat-derived columns when
+        # refcat=None was passed to run()).
+        if self.config.pass_thru_cols and colnames is not None:
             for col_name in self.config.pass_thru_cols:
                 if col_name not in ("ra", "dec"):  # 'ra', 'dec' replace existing columns
+                    final_name = pass_thru_lookup[col_name]["final_name"]
+                    if final_name not in colnames:
+                        continue
                     pa_flds.insert(
                         pass_thru_lookup[col_name]["final_idx"],
-                        (pass_thru_lookup[col_name]["final_name"], pass_thru_lookup[col_name]["pa_type"]))
+                        (final_name, pass_thru_lookup[col_name]["pa_type"]))
                     if col_name in ("external_source_id", "name"):
                         # Add numpy string length to metadata
                         metadata[f"table::len::{col_name}"] = str(
                             astropy_cols.get(col_name).dtype.itemsize // 4)
+
+        # If applying variance boost, add Tractor flux error to pyarrow schema
+        if self.config.apply_variance_boost:
+            pa_flds.insert(
+                pa_flds.index(("flux_err", lfloat32)) + 1,
+                ("flux_err_tractor", lfloat32))
 
         # function to create field with metadata
         def create_pa_fld(name, pa_type):
@@ -597,11 +1008,28 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
 
         schema = pa.schema([create_pa_fld(t[0], t[1]) for t in pa_flds], metadata=metadata)
 
-        # Create pyarrow table with schema and rows
-        allsky_cat = pa.Table.from_pylist(rows, schema=schema)
+        # Build the output table from pyarrow arrays
+        # directly. Each column array is cast to its declared schema
+        # type if needed; thecast is vectorized and effectively free
+        # when types already match.
+        if arrays_by_name is not None:
+            columns = []
+            for field in schema:
+                arr = arrays_by_name[field.name]
+                if arr.type != field.type:
+                    arr = arr.cast(field.type)
+                columns.append(arr)
+            allsky_cat = pa.Table.from_arrays(columns, schema=schema)
+            del arrays_by_name, columns
+            num_sources = len(allsky_cat)
+        else:
+            # Empty table path -- no sources matched the filter
+            self.log.warning(f"No sources matched the class filter bit value"
+                             f" {self.config.filter_spherex_class}.")
+            allsky_cat = None
+            num_sources = 0
 
         # Metadata are saved in Butler repository
-        num_sources = len(allsky_cat)
         self.log.debug(f"Number of sources in final table: {num_sources}")
         self.metadata.add("num_sources", num_sources)
         self.metadata.add("num_tables", num_tables)

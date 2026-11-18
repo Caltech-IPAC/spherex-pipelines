@@ -13,7 +13,7 @@ from spx_tests import MockDeferredImageHandle
 from astropy.io import fits
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 np.random.seed(111)
 image_size = (100, 100)
@@ -50,6 +50,41 @@ def prepare_mock_lvf_fits(array_id=1, shape=(2040, 2040)):
     return tmpdir, fits_path
 
 
+def mock_spectral_wcs(shape=(100, 100), wl_min=0.75, wl_max=1.0):
+    """Create a lightweight mock spectral_wcs HDUList for testing.
+
+    Parameters
+    ----------
+    shape : tuple
+        Shape of the wavelength array (ny, nx).
+    wl_min : float
+        Minimum wavelength in microns.
+    wl_max : float
+        Maximum wavelength in microns.
+
+    Returns
+    -------
+    mock_hdul : MagicMock
+        Mock HDUList with CWAVE extension containing wavelength data.
+
+    """
+    # Create a simple wavelength gradient across the image
+    # Wavelength varies along y-axis (row direction) like real LVF
+    ny, nx = shape
+    wl_gradient = np.linspace(wl_min, wl_max, ny)
+    wl_array = np.tile(wl_gradient[:, np.newaxis], (1, nx)).astype(np.float32)
+
+    # Create mock HDU for CWAVE extension
+    mock_cwave_hdu = MagicMock()
+    mock_cwave_hdu.data = wl_array
+
+    # Create mock HDUList that supports indexing by extension name
+    mock_hdul = MagicMock()
+    mock_hdul.__getitem__ = lambda self, key: mock_cwave_hdu if key == "CWAVE" else None
+
+    return mock_hdul
+
+
 class MockSPHERExImage:
     def __init__(self, data, galactic_latitude, latitude, longitude):
         self.data = data
@@ -65,6 +100,8 @@ class MockSPHERExImage:
         self.exposure_start_time = Time("2024-01-01T00:00:00", format="isot", scale="utc")
 
     class MockWCS(WCS):
+        """Mock WCS for testing with configurable coordinates."""
+
         def __init__(self, latitude, longitude):
             super().__init__(naxis=2)
             self.latitude = latitude
@@ -167,8 +204,15 @@ class TestEstFF(unittest.TestCase):
                                          dataid=self.mockDataId(i)) for i in range(len(mock_images))]
 
             config = EstimateAbsGainMatrixConfig()
+            # Use smaller region counts appropriate for 100x100 test images
+            config.num_regions = 10        # 100 rows / 10 = ~10 pixels per region
+            config.num_regions_fine = 20   # 100 rows / 20 = ~5 pixels per region
             task = EstimateAbsGainMatrixTask(config=config)
-            output = task.run(dataset=image_handles, abs_cal=abs_cal, photo_calib=spx_binned_cal)
+            spectral_wcs = mock_spectral_wcs(shape=image_size)
+            output = task.run(dataset=image_handles,
+                              abs_cal=abs_cal,
+                              photo_calib=spx_binned_cal,
+                              spectral_wcs=spectral_wcs)
             assert output is not None
             assert output.array_id == 5
             assert output.abs_gain_matrix.shape == output.ff_est.shape

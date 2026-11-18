@@ -45,7 +45,7 @@ def calculate_distortion_map(imageHandles: list[DeferredDatasetHandle],
                              plot: bool = False,
                              logger: logging.Logger = logging.getLogger(__name__)
                              ) -> tuple:
-    """Calculates the distortion between detected object positions
+    """Calculate the distortion between detected object positions
        in the images and predicted positions from the catalog
        using WCS with and without SIP.
 
@@ -76,6 +76,7 @@ def calculate_distortion_map(imageHandles: list[DeferredDatasetHandle],
     cat_xs_with_sip, cat_ys_with_sip : catalog sources with SIP
     dist_xs, dist_ys : difference between distorted sources and catalog with no SIP
     res_xs, res_ys : difference between distorted sources and catalog with SIP
+
     """
     det_xs = []
     det_ys = []
@@ -195,7 +196,7 @@ def create_residual_map(residuals_x: np.ndarray,
                         cat_y: np.ndarray,
                         image_shape: tuple,
                         plot: bool):
-    """Creates a residual map using displacement vectors.
+    """Create a residual map using displacement vectors.
 
     Parameters
     ----------
@@ -222,6 +223,7 @@ def create_residual_map(residuals_x: np.ndarray,
     This function interpolates the provided x and y displacement values
     over a regular grid corresponding to the image dimensions.
     The interpolation is done using a 'cubic' method.
+
     """
     grid_x, grid_y = np.mgrid[0:image_shape[1], 0:image_shape[0]]
     if len(residuals_x) > 3:  # Ensure enough points for interpolation
@@ -232,8 +234,7 @@ def create_residual_map(residuals_x: np.ndarray,
     map_dx = griddata((cat_x, cat_y), residuals_x, (grid_x, grid_y), method=method)
     map_dy = griddata((cat_x, cat_y), residuals_y, (grid_x, grid_y), method=method)
 
-    plot = True
-    if plot is True:
+    if plot:
         # Determine color scale limits based on a robust method
         vmax_dx = np.percentile(map_dx[~np.isnan(map_dx)], 98)  # 98th percentile
         vmin_dx = np.percentile(map_dx[~np.isnan(map_dx)], 2)   # 2nd percentile
@@ -264,6 +265,8 @@ def create_residual_map(residuals_x: np.ndarray,
 class UpdateFieldDistortionConnections(pipeBase.PipelineTaskConnections,
                                        dimensions={"instrument", "detector"},
                                        defaultTemplates={}):
+    """Pipeline connections for UpdateFieldDistortion task."""
+
     imageHandles = cT.Input(
         name="intype",  # default dataset type for input
         doc="Input image.",
@@ -301,6 +304,8 @@ class UpdateFieldDistortionConnections(pipeBase.PipelineTaskConnections,
 
 class UpdateFieldDistortionConfig(pipeBase.PipelineTaskConfig,
                                   pipelineConnections=UpdateFieldDistortionConnections):
+    """Configuration for UpdateFieldDistortion task."""
+
     n_edge_pix = Field(
         doc="Number of edge pixels to be ignored.",
         dtype=int,
@@ -349,6 +354,7 @@ class UpdateFieldDistortionTask(pipeBase.PipelineTask):
     """Get SIP coefficients describing distortion.
 
     """
+
     _DefaultName = "update-field-distortion"
     ConfigClass = UpdateFieldDistortionConfig
     full_name = "Update Field Distortion"
@@ -412,6 +418,7 @@ class UpdateFieldDistortionTask(pipeBase.PipelineTask):
             Residual map, dy.
         ``solid_angle_pixel_map`` : `np.ndarray`
             Solid angle pixel map.
+
         """
         if len(imageHandles) < 1:
             raise ValueError("No images to estimate SIP")
@@ -478,6 +485,7 @@ def main(data_path):
     ----------
     data_path : `~pathlib.Path`
         Path to SPHERExImages of the SAME detector.
+
     """
     from spx_tests.mock_dataset import mockImageCatalogHandles
 

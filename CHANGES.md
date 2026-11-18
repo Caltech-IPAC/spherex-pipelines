@@ -1,4 +1,193 @@
-## SPHEREx Pipelines  (2026-05-13)
+## SPHEREx Pipelines 7.0.2 (2026-07-13)
+
+### Bug Fixes
+
+- Handled planning periods with more than four small slews. Slew groups beyond the expected 1 through 4 occur only during IOC, where these shifts are not needed since the data is used only for persistence bootstrapping. They now fall back to a shift of 0.0 with a warning. [[#SP-2257](https://jira.ipac.caltech.edu/browse/SP-2257)]
+- Fixed a Level 1 Correct Preamplifier failure ("Ref pixels must be flagged") on exposures with missing reference pixels.
+  Reference pixels flagged `MISSING_DATA` are now accepted and, like missing phantom pixels, excluded from the correction statistics.
+  Active pixels that cannot be corrected because a readout channel has no valid reference pixels are set to `NaN` and flagged `PHANMISS`, consistent with the phantom correction behavior. [[#SP-2259](https://jira.ipac.caltech.edu/browse/SP-2259)]
+
+
+## SPHEREx Pipelines 7.0.1 (2026-07-10)
+
+### Bug Fixes
+
+- Fixed Level 1 and Level 2a processing of non-survey IOC planning periods by setting out-of-bounds target IDs to 0 when constructing CAOM target names. [[#SP-2256](https://jira.ipac.caltech.edu/browse/SP-2256)]
+
+
+## SPHEREx Pipelines 7.0.0 (2026-07-06)
+
+
+### New Features
+
+- Solar System Objects pipeline:
+  - Implemented the Solar System Object computation pipeline. [[#SP-1910](https://jira.ipac.caltech.edu/browse/SP-1910)]
+- Spectral channels:
+  - Defined a generic interface for spectral channel definitions and added an implementation based on the 17-channel LVF contour template. [[#SP-1950](https://jira.ipac.caltech.edu/browse/SP-1950)]
+- Mosaic Tool:
+  - Added the initial implementation of the mosaic generation algorithm. [[#SP-1953](https://jira.ipac.caltech.edu/browse/SP-1953)]
+  - Added support for propagating and combining `FLAGS` values from contributing input pixels during mosaic generation. [[#SP-1976](https://jira.ipac.caltech.edu/browse/SP-1976)]
+  - Added an option to write compressed `.fits.gz` output files. [[#SP-2028](https://jira.ipac.caltech.edu/browse/SP-2028)]
+  - Updated mosaic cube `FLAGS` storage to use `int32`, matching Level 2 image products. [[#SP-2070](https://jira.ipac.caltech.edu/browse/SP-2070)]
+  - Added an option to use spectral interpolation to reduce striping artifacts in mosaics of extended sources with strong spectral features. [[#SP-2078](https://jira.ipac.caltech.edu/browse/SP-2078)]
+- Photometry Tool:
+  - Added an option to exclude deep field observations from photometry and mosaic processing. [[#SP-2147](https://jira.ipac.caltech.edu/browse/SP-2147)]
+  - Added data version information for individual measurements in VOTable outputs. [[#SP-2150](https://jira.ipac.caltech.edu/browse/SP-2150)]
+  - Added boosted-variance array columns to spectral VOTable outputs and updated quantum graph compatibility. [[#SP-2156](https://jira.ipac.caltech.edu/browse/SP-2156)]
+  - Updated VOTable column ordering and added new columns for the v14 photometry release. [[#SP-2160](https://jira.ipac.caltech.edu/browse/SP-2160)]
+- Calibration metadata:
+  - Added a utility to standardize calibration headers with SSDC metadata without modifying the underlying data products. [[#SP-1940](https://jira.ipac.caltech.edu/browse/SP-1940)]
+- IRSA delivery:
+  - Added an automated workflow orchestrator for IRSA load deliveries. [[#SP-1948](https://jira.ipac.caltech.edu/browse/SP-1948)]
+
+
+### Changes
+
+- Effective Point Spread Function (EPSF) support:
+  - Attached EPSF metadata tables to Level 2 products in place of PSF cubes. [[#SP-1682](https://jira.ipac.caltech.edu/browse/SP-1682)] [[#SP-2249](https://jira.ipac.caltech.edu/browse/SP-SP-2249)]
+  - Added formal support for EPSF models in Level 3 processing and photometry workflows. [[#SP-2082](https://jira.ipac.caltech.edu/browse/SP-2082)]
+  - Added support for fitting source shapes using EPSF object representations during forced photometry. [[#SP-2143](https://jira.ipac.caltech.edu/browse/SP-2143)]
+- Background and airglow modeling:
+  - Updated Estimate Diffuse Background to only globally estimate the spectral background component; the diffuse component is now always estimated locally by Tractor during Perform Forced Photometry. [[#SP-1921](https://jira.ipac.caltech.edu/browse/SP-1921)]
+  - Added support for fitting and subtracting He I airglow contamination. [[#SP-1909](https://jira.ipac.caltech.edu/browse/SP-1909)]
+  - Added He I airglow as a component of the global background model. [[#SP-1987](https://jira.ipac.caltech.edu/browse/SP-1987)]
+  - Added aurora and shuttle-glow contamination metrics to image headers. [[#SP-1929](https://jira.ipac.caltech.edu/browse/SP-1929)]
+  - Updated contamination thresholds and exposed them as configuration parameters. [[#SP-2221](https://jira.ipac.caltech.edu/browse/SP-2221)]
+  - Updated airglow modeling to read calibration parameters from dedicated calibration products. [[#SP-2022](https://jira.ipac.caltech.edu/browse/SP-2022)]
+- Artifact detection and masking:
+  - Added giant planet masking based on brightness-dependent exclusion radii. See the [Giant Planet Masking in Level 2](https://rigel.caltech.edu/calibration_analysis_logbook/20251111_planetflagging/) for details. [[#SP-1907](https://jira.ipac.caltech.edu/browse/SP-1907)]
+  - Added satellite streak detection based on the ZTF algorithm. [[#SP-1908](https://jira.ipac.caltech.edu/browse/SP-1908)]
+  - Combined satellite streak detections with existing SPHEREx artifact masks. [[#SP-2086](https://jira.ipac.caltech.edu/browse/SP-2086)]
+  - Improved satellite streak detection performance and robustness for long and variable-brightness streaks. [[#SP-2131](https://jira.ipac.caltech.edu/browse/SP-2131)] [[#SP-2164](https://jira.ipac.caltech.edu/browse/SP-2164)] [[#SP-2217](https://jira.ipac.caltech.edu/browse/SP-2217)] [[#SP-2231](https://jira.ipac.caltech.edu/browse/SP-2231)]
+  - Increased bloom and snowball halo detection limits to improve artifact masking around bright sources. [[#SP-1927](https://jira.ipac.caltech.edu/browse/SP-1927)]
+- Fine Astrometry:
+  - Added retry workflows for failed fine astrometry solutions using nearby observations as WCS seeds. [[#SP-1981](https://jira.ipac.caltech.edu/browse/SP-1981)], [[#SP-2225](https://jira.ipac.caltech.edu/browse/SP-2225)]
+  - Updated retry processing to retain existing solutions unless the retry result improves the astrometric quality. [[#SP-2081](https://jira.ipac.caltech.edu/browse/SP-2081)]
+  - Refined the definition of the `FINAST` quality flag. [[#SP-2106](https://jira.ipac.caltech.edu/browse/SP-2106)]
+- Perform Forced Photometry:
+  - Added variance boosting to improve handling of underestimated uncertainties for bright sources. [[#SP-1933](https://jira.ipac.caltech.edu/browse/SP-1933)]
+  - Added configurable catalog-level variance boosting and reporting of variance-adjusted uncertainties. [[#SP-2119](https://jira.ipac.caltech.edu/browse/SP-2119)]
+  - Added support for Solar System Object photometry. [[#SP-2013](https://jira.ipac.caltech.edu/browse/SP-2013)]
+  - Added support for filtering photometry windows by source identifier. [[#SP-2055](https://jira.ipac.caltech.edu/browse/SP-2055)]
+  - Added support for deterministic flux initialization during source fitting. [[#SP-2205](https://jira.ipac.caltech.edu/browse/SP-2205)]
+  - Relaxed Nyquist sampling requirements for photometric measurements. [[#SP-2148](https://jira.ipac.caltech.edu/browse/SP-2148)]
+- Query Reference Catalog:
+  - Added support for cosmology and high-density selection masks in the reference catalog pipeline. Renamed the `for_l3_phot` output column to `do_phot` and added `do_mask_swir` and `do_mask_mwir` output columns. [[#SP-1988](https://jira.ipac.caltech.edu/browse/SP-1988)]
+  - Added support for prioritizing selected source identifiers regardless of standard selection criteria. [[#SP-2197](https://jira.ipac.caltech.edu/browse/SP-2197)]
+  - Added support for SPHEREx Reference Catalog v1.1. [[#SP-2041](https://jira.ipac.caltech.edu/browse/SP-2041)]
+  - Added support for SPHEREx Reference Catalog v2.0. [[#SP-2240](https://jira.ipac.caltech.edu/browse/SP-2240)]
+- Header and metadata updates:
+  - Added the `DETCOORD` header keyword to Level 1 image products to explicitly identify the detector coordinate system. [[#SP-1896](https://jira.ipac.caltech.edu/browse/SP-1896)]
+  - Consolidated `FLAGS` summary keywords to the primary image header to avoid inconsistencies between extensions. [[#SP-1719](https://jira.ipac.caltech.edu/browse/SP-1719)]
+  - Added BSH quality metrics and contamination statistics to Level 2b image headers. [[#SP-2025](https://jira.ipac.caltech.edu/browse/SP-2025)]
+  - Updated FITS mask definition keywords to the Rubin-compatible `MSK*` format. [[#SP-2178](https://jira.ipac.caltech.edu/browse/SP-2178)]
+  - Updated header keywords associated with satellite streak and bloom contamination metrics. [[#SP-2179](https://jira.ipac.caltech.edu/browse/SP-2179)]
+  - Updated the `ZODIMDL` keyword to better describe zodiacal light model scaling. [[#SP-2111](https://jira.ipac.caltech.edu/browse/SP-2111)]
+  - Removed obsolete BSH-related keywords from Level 2b headers. [[#SP-2121](https://jira.ipac.caltech.edu/browse/SP-2121)]
+- Calibration products:
+  - Migrated to an 8-layer bad pixel map calibration product that preserves the reason each pixel was flagged as bad. [[#SP-1866](https://jira.ipac.caltech.edu/browse/SP-1866)]
+  - Added the `zodi_scaling` dataset type and `ZodiScaling` storage class for ingesting 1D zodiacal light scaling corrections as calibration products. [[#SP-2042](https://jira.ipac.caltech.edu/browse/SP-2042)]
+  - Added the `l3_flux_corrections` calibration product and implemented optional per-detector flux corrections during the Create All Sky Catalog module. [[#SP-2083](https://jira.ipac.caltech.edu/browse/SP-2083)]
+  - Added the `spectral_channels` calibration product, which provides channel masks (templates) and precomputed metadata for the 102 standard spectral channels, including per-channel wavelength and bandwidth. [[#SP-1975](https://jira.ipac.caltech.edu/browse/SP-1975)]
+  - Updated the R7 calibration documentation and ingestion scripts. [[#SP-2112](https://jira.ipac.caltech.edu/browse/SP-2112)]
+- Data products and compression:
+  - Added `HCOMPRESS` compression for persistence images to reduce storage requirements. [[#SP-2053](https://jira.ipac.caltech.edu/browse/SP-2053)]
+  - Added `RICE_1` lossless compression for integer flags. [[#SP-2057](https://jira.ipac.caltech.edu/browse/SP-2057)]
+- Pipeline utilities:
+  - Added support for generating ODIR products independently of full Level 1 image generation. [[#SP-2058](https://jira.ipac.caltech.edu/browse/SP-2058)]
+- IRSA exports:
+  - Organized IRSA export scripts and added documentation for preparing and delivering IRSA loads. [[#SP-1673](https://jira.ipac.caltech.edu/browse/SP-1673)]
+  - Added support for orchestrated IRSA load delivery workflows and additional destinations, including TACC. [[#SP-1966](https://jira.ipac.caltech.edu/browse/SP-1966)]
+- CAOM metadata:
+  - Added spectral channel metadata to CAOM exports. [[#SP-2090](https://jira.ipac.caltech.edu/browse/SP-2090)]
+  - Updated CAOM metadata for the `dark`, `abs_gain_matrix`, and `solid_angle_pixel_map` calibration products to better describe processing provenance. [[#SP-2091](https://jira.ipac.caltech.edu/browse/SP-2091)]
+- Go-back observations:
+  - Added survey-aware target identifiers to planned observations to support go-back processing. [[#SP-2174](https://jira.ipac.caltech.edu/browse/SP-2174)]
+  - Updated CAOM target names to include survey identifiers. [[#SP-2177](https://jira.ipac.caltech.edu/browse/SP-2177)]
+
+
+### Bug Fixes
+
+- Mosaic Tool:
+  - Fixed multiple CLI issues. [[#SP-1936](https://jira.ipac.caltech.edu/browse/SP-1936)] [[#SP-1977](https://jira.ipac.caltech.edu/browse/SP-1977)]
+- Photometry Tool:
+  - Fixed CLI handling for `--help`. [[#SP-1949](https://jira.ipac.caltech.edu/browse/SP-1949)]
+  - Enabled flux corrections by default. [[#SP-2184](https://jira.ipac.caltech.edu/browse/SP-2184)]
+  - Fixed VOTable generation for array-valued columns with a single element. [[#SP-2188](https://jira.ipac.caltech.edu/browse/SP-2188)]
+- Photometry: 
+  - Added output connection to hold measurements from high proper motion sources and created afterburner script to split `exceptions` table by unique HEALPix tiles. [[#SP-2020](https://jira.ipac.caltech.edu/browse/SP-2020)]
+  - Fixed cutout center calculation and subpixel shift. [[#SP-2063](https://jira.ipac.caltech.edu/browse/SP-2063)]
+  - Fixed PSF convolution to use original image coordinates instead of local coordinates. [[#SP-2064](https://jira.ipac.caltech.edu/browse/SP-2064)]
+  - Fixed `if` statement selecting input position columns to calculate source HEALPix tiles. [[#SP-2159](https://jira.ipac.caltech.edu/browse/SP-2159)]
+- BSH Flagging:
+  - Corrected placement of header keyword updates (`NSNOWSRC`, `NBLM5SCS`, `NBLMPIX`, `NHALOPIX`) and redefined snowball count keywords (`SNW7-5CT`, `SNW3-1CT`, `SNW2-5CT`, `SNW6-5CT`) to count instances instead of pixels. [[#SP-2023](https://jira.ipac.caltech.edu/browse/SP-2023)]
+- He I airglow:
+  - Updated He I fit header keywords to be consistent with science team agreement. [[#SP-2088](https://jira.ipac.caltech.edu/browse/SP-2088)]
+  - Fixed Estimate Diffuse Background to calculate He I airglow fit parameters if not already present in Level 2 image header. [[#SP-2153](https://jira.ipac.caltech.edu/browse/SP-2153)]
+- Source masking and flagging:
+  - Fixed percent source mask calculation to use `SOURCE` flagged pixels directly. [[#SP-2085](https://jira.ipac.caltech.edu/browse/SP-2085)]
+  - Fixed crosstalk masking to convert images to e-/s before applying threshold. [[#SP-2087](https://jira.ipac.caltech.edu/browse/SP-2087)]
+- Create Variance Map:
+  - Fixed DQA for reference pixels to exclude Poisson noise (not photosensitive) and compare reference stddev to reference sqrt variance. [[#SP-2206](https://jira.ipac.caltech.edu/browse/SP-2206)]
+- Create All Sky Catalog:
+  - Corrected bitwise class filtering and fixed empty table write. [[#SP-2208](https://jira.ipac.caltech.edu/browse/SP-2208)]
+- Solar System Objects:
+  - Fixed pyarrow compatibility issue. [[#SP-2227](https://jira.ipac.caltech.edu/browse/SP-2227)]
+  - Changed spacecraft state vector coordinate frame from ecliptic to equatorial. [[#SP-2230](https://jira.ipac.caltech.edu/browse/SP-2230)]
+  - Added support for observations with no detections in the Solar System Object pipeline. [[SP-2247](https://jira.ipac.caltech.edu/browse/SP-2247)]
+- Pipeline definitions:
+  - Added missing `he_template`, `cosmo_mask`, and `hi_density_mask` connections to Query Reference Catalog and L3a pipeline definition files. [[#SP-1988](https://jira.ipac.caltech.edu/browse/SP-1988)]
+- IRSA delivery:
+  - Fixed destination volume mismatch in email notifications. [[#SP-2046](https://jira.ipac.caltech.edu/browse/SP-2046)]
+
+
+### Enhancements
+
+- Mosaic Tool:
+  - Added multithreading support. [[#SP-2000](https://jira.ipac.caltech.edu/browse/SP-2000)]
+  - Improved memory usage and multithreading queue buffer. [[#SP-2062](https://jira.ipac.caltech.edu/browse/SP-2062)]
+  - Added JIT compilation, low memory allocation, and improved compression and mosaic cube generation. [[#SP-2072](https://jira.ipac.caltech.edu/browse/SP-2072)]
+- Perform Forced Photometry [[#SP-2017](https://jira.ipac.caltech.edu/browse/SP-2017)]:
+  - Vectorized WCS transforms and optimized numpy array usage in photometry loop.
+  - Refactored `manual_dot` to eliminate `np.array` allocation overhead and reversed byteorder for `PSFZoneData`.
+  - Optimized Tractor fitting to call `getModelImage` once per fit instead of per source.
+  - Improved `getPointSourcePatch` numpy indexing performance.
+  - Added caching for `getUnitFluxModelPatchSPHEREx` and `getPointSourcePatch` models.
+- Create All Sky Catalog [[#SP-2136](https://jira.ipac.caltech.edu/browse/SP-2136)]:
+  - Improved performance and memory usage by dropping sources with no valid flux values.
+  - Changed `nyquist_comp` to use initial implementation semantics instead of hardcoded value.
+- Tool startup:
+  - Improved startup time by removing unnecessary imports and introducing lazy loading in `spx_tasks` and `spx_utils` packages. [[#SP-1999](https://jira.ipac.caltech.edu/browse/SP-1999)]
+
+
+### Other
+
+- Infrastructure:
+  - Updated the SPHEREx container base image to `mambaorg/micromamba:ubuntu22.04` to maintain backward compatibility with the photometry tools. [[#SP-2050](https://jira.ipac.caltech.edu/browse/SP-2050)]
+- Dependencies:
+  - Unpinned `photutils` to be compatible with the latest stable release. [[#SP-1944](https://jira.ipac.caltech.edu/browse/SP-1944)]
+  - Unpinned Parsl to maintain compatibility with LSST's `ctrl_bps_parsl`. [[#SP-2124](https://jira.ipac.caltech.edu/browse/SP-2124)]
+  - Replaced vendored Tractor utility functions with modified functions imported from the `IPAC-SW/tractor` fork. [[#SP-2187](https://jira.ipac.caltech.edu/browse/SP-2187)]
+- Build:
+  - Fixed Photometry Tool `pyproject.toml` build configuration. [[#SP-2047](https://jira.ipac.caltech.edu/browse/SP-2047)]
+- Code quality:
+  - Replaced `flake8` with `ruff` and partially adopted the Rubin coding style guide. [[#SP-1982](https://jira.ipac.caltech.edu/browse/SP-1982)]
+  - Enabled Ruff pydocstyle linting and updated non-compliant docstrings. [[#SP-1986](https://jira.ipac.caltech.edu/browse/SP-1986)]
+  - Consolidated flag header writing and reading. [[#SP-2115](https://jira.ipac.caltech.edu/browse/SP-2115)]
+  - Fixed pytest warnings and potential bugs in Non-Linearity module. [[#SP-2098](https://jira.ipac.caltech.edu/browse/SP-2098)]
+  - Minor formatting and column changes to SSO module and Create Source Mask. [[#SP-1971](https://jira.ipac.caltech.edu/browse/SP-1971)]
+  - Removed obsolete PSF utilities. [[#SP-1994](https://jira.ipac.caltech.edu/browse/SP-1994)]
+  - Moved the CAOM notebook from `spherex-pipelines` to `spherex-analysis`. [[#SP-1985](https://jira.ipac.caltech.edu/browse/SP-1985)]
+- Documentation:
+  - Updated for public release of `spherex-pipelines` source code. [[#SP-1954](https://jira.ipac.caltech.edu/browse/SP-1954)]
+  - Updated README to be appropriate for both internal and external use and added LICENSE. [[#SP-2151](https://jira.ipac.caltech.edu/browse/SP-2151)]
+- Production scripts and workflows:
+  - Finalized production script for L2b retry pipeline. [[#SP-2061](https://jira.ipac.caltech.edu/browse/SP-2061)]
+  - Added SPK workflow for IRSA deliveries on predicted SPK files. [[#SP-2118](https://jira.ipac.caltech.edu/browse/SP-2118)]
+  - Added `--files-from` option to rsync for parallel transfer of L3a products to DTN. [[#SP-2128](https://jira.ipac.caltech.edu/browse/SP-2128)]
+
+
+## SPHEREx Pipelines 6.5.7 (2026-05-13)
 
 
 ### New Features

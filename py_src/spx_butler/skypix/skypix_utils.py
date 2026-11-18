@@ -21,17 +21,19 @@ REFCAT_SKYPIX_NAME = f"hips{REFCAT_HIPS_LEVEL}"
 
 
 def getSPHERExImageRegion(image: SPHERExImage, npixMargin: int = 0):
-    """
-    Get region that represents image with a margin
+    """Get region that represents image with a margin.
 
     Parameters
     ----------
-    image : SPHERExImage
-    npixMargin : int
+    image : `SPHERExImage`
+        The SPHEREx image to get the region for.
+    npixMargin : `int`, optional
         Margin in pixels, can be negative. Default is 0.
 
     Returns
     -------
+    `lsst.sphgeom.ConvexPolygon`
+        The convex polygon region representing the image footprint.
 
     """
     npixX, npixY = image.data.shape
@@ -50,19 +52,20 @@ def getSPHERExImageRegion(image: SPHERExImage, npixMargin: int = 0):
 
 
 def getSkyPixIds(image: SPHERExImage, npixMargin: int = 0) -> list[int]:
-    """
-    Get sky pixel indexes that overlap with a given image
+    """Get sky pixel indexes that overlap with a given image.
 
     Parameters
     ----------
-    image : SPHERExImage
-    npixMargin : int
+    image : `SPHERExImage`
+        The SPHEREx image to get sky pixel IDs for.
+    npixMargin : `int`, optional
         Margin in pixels, can be negative. Default is 0.
 
     Returns
     -------
     skyPixIds : list
         Sky pixel indexes that overlap with the image
+
     """
     region = getSPHERExImageRegion(image, npixMargin)
     # commonSkyPix = butler.registry.dimensions.commonSkyPix
@@ -79,6 +82,7 @@ def getDatasetRefsBySkypixIds(butler: Butler,
                               datasetType: str,
                               collections: str,
                               skyPixIds: list[int]):
+    """Query dataset references by sky pixel IDs from the butler."""
     # commonSkyPix = butler.registry.dimensions.commonSkyPix
     # where = f"{commonSkyPix.name} in ({str(skyPixIds)[1:-1]})"
     where = f"{REFCAT_SKYPIX_NAME} in ({str(skyPixIds)[1:-1]})"
@@ -97,8 +101,7 @@ def getDatasetRefsBySkypixIds(butler: Butler,
 
 
 def ra_dec_to_unit_vector(ra_deg: float, dec_deg: float) -> UnitVector3d:
-    """
-    Convert RA/DEc in degrees to a UnitVector3d for HEALPix indexing.
+    """Convert RA/DEc in degrees to a UnitVector3d for HEALPix indexing.
 
     Parameters
     ----------
@@ -111,6 +114,7 @@ def ra_dec_to_unit_vector(ra_deg: float, dec_deg: float) -> UnitVector3d:
     -------
     `UnitVector3d`
         A 3D unit vector representing the sky position.
+
     """
     ra_rad = np.radians(ra_deg)
     dec_rad = np.radians(dec_deg)

@@ -9,16 +9,34 @@ tasks:
       connections.spectral_wcs: "spectral_wcs"
       connections.phot_meas: "phot_meas"
       connections.phot_meas_combined: "phot_meas_combined"
+      connections.he_template: "he_template"
+      connections.special_ids: "special_ids"
+      connections.epsf: "epsf"
+      connections.ssocat: "ssocat"
+      connections.phot_meas_sso: "phot_meas_sso"
+      connections.phot_exceptions: "phot_exceptions"
+      estimate_diffuse_background.est_he_airglow: true
       perform_forced_photometry.pass_thru_cols: ["name"]
       perform_forced_photometry.merge_srccat: true
+      perform_forced_photometry.filter_by_ids: false
+      perform_forced_photometry.override_epsf: true
+      perform_forced_photometry.fit_shapes: true
       perform_forced_photometry.cat_phot_cols: [
         "input_type", "ra", "dec", "name", "sersic", "ab_ratio", "phi", "shape_r", "SPHERExRefID"]
+      perform_forced_photometry.phot_tool_mode: true
+      perform_forced_photometry.fit_sso: false
   level3b_create_all_sky_catalog:
     class: spx_tasks.CreateAllSkyCatalogTask
     config:
       connections.meas_table_list: "phot_meas"
       connections.allsky_cat: "allsky_cat"
+      connections.refcat: "refcat"
+      connections.l3_flux_corrections: "l3_flux_corrections"
       merge_refcat: false
+      apply_flux_corrections: true
+      phot_tool_mode: true
+      list_items: ["x_image", "y_image", "mjd", "lambda", "lambda_width", "flux", "flux_err", "flux_bkg",
+                   "flux_err_tractor", "flags", "fit_ql", "deep_flg", "lvf_id", "det_id", "data_collection"]
       pass_thru_cols: ["name"]
   level3c_combine_catalog_tiles:
     class: spx_tasks.CombineCatalogTilesTask

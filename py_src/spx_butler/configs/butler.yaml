@@ -6,6 +6,10 @@ datastore:
     NonfuncData: spx_butler.formatters.NonfuncDataFormatter
     NonLinearityParameters: spx_butler.formatters.NonlinearityParametersFormatter
     ReadNoiseParameters: spx_butler.formatters.ReadNoiseParametersFormatter
+    PersistenceImage:
+      formatter: spx_butler.formatters.SPHERExImageFormatter
+      parameters:
+        compress_image_hdu: true
     PersistenceState: spx_butler.formatters.PersistenceStateFormatter
     SPHERExImage:
       formatter: spx_butler.formatters.SPHERExImageFormatter
@@ -13,6 +17,7 @@ datastore:
     AstropySIP: spx_butler.formatters.AstropySIPFormatter
     BackgroundMesh: spx_butler.formatters.BackgroundMeshFormatter
     PyarrowTable: spx_butler.formatters.PyarrowTableFormatter
+    EPSF: spx_butler.formatters.SPHERExImageFormatter
     GainFactors: lsst.daf.butler.formatters.yaml.YamlFormatter
     ImageMetadata: lsst.daf.butler.formatters.yaml.YamlFormatter
     ImageMetadataStats: lsst.daf.butler.formatters.yaml.YamlFormatter
@@ -34,6 +39,8 @@ datastore:
     AstrDiag: lsst.daf.butler.formatters.json.JsonFormatter
     SpxPhotoCalib: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
     SbandMnemonics: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
+    ZodiScaling: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
+    Xtalk: lsst.daf.butler.formatters.astropyTable.AstropyTableFormatter
 
   templates:
     default: '{datasetType}/{spsplan.name:?}/{run}/{detector:?}/{skypix!s:0>2.2s?}/{datasetType}_{sequenceflg:?}_{spsplan.name:?}_{observation.slewgroup:04d?}_{observation.slewgroup_counter:?}_D{exposure.detector|detector:?}_{instrument:?}_{skypix:?}_{run}'

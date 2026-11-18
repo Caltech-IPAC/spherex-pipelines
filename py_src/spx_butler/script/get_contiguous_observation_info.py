@@ -18,6 +18,7 @@ class ContiguityChunk(BaseModel):
         Observation ID of the first observation in the chunk.
     last_id : `int`
         Observation ID of the last observation in the chunk.
+
     """
 
     type: str  # "contiguous" or "missing"
@@ -57,6 +58,7 @@ class ContiguityReport(BaseModel):
         End time (ISO format) of the last available observation.
     spsplans : `List[int]`
         List of SPS Plan IDs (`spsplan`) associated with the available level1 data.
+
     """
 
     contig_chunks: List[ContiguityChunk]
@@ -169,6 +171,7 @@ def get_contiguous_observation_info(repo: str,
 
     will print in this example: 202552223056710 202552223061910
     }
+
     """
     if isinstance(repo, Butler):
         butler = repo

@@ -14,7 +14,7 @@ from .params import FocalPlane
 
 
 def central_coords(plan_tab: Table) -> SkyCoord:
-    """Calculates central coordinates for plan file observations.
+    """Calculate central coordinates for plan file observations.
 
     Parameters
     ----------
@@ -25,6 +25,7 @@ def central_coords(plan_tab: Table) -> SkyCoord:
     -------
     equatorial_coords: `~astropy.coordinates.SkyCoord`
         Equatorial right ascension & declination (degrees)
+
     """
     # Get times
     # (adapted from SPHEREx-Sky-Simulator/py/SPHEREx_ObsSimulator/tools.py)
@@ -45,17 +46,20 @@ def central_coords(plan_tab: Table) -> SkyCoord:
 
 
 def spatial_coverage(plan_tab: Table, equatorial_coords: SkyCoord) -> list:
-    """Calculates polygon string for plan file observations.
+    """Calculate polygon string for plan file observations.
 
     Parameters
     ----------
-    plan_tab: `~astropy.table.Table`
-        Table of plan file observations
+    plan_tab : `~astropy.table.Table`
+        Table of plan file observations.
+    equatorial_coords : `~astropy.coordinates.SkyCoord`
+        Equatorial coordinates for each observation.
 
     Returns
     -------
     polygon_str: `list`
         IVOA Polygon string for each observation
+
     """
     # Convert position angles
     ecliptic_pa = plan_tab['PositionAngle']

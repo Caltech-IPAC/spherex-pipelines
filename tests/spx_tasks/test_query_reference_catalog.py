@@ -1,4 +1,5 @@
 # Standard library imports
+import logging
 import unittest
 
 # Related third party imports
@@ -8,10 +9,14 @@ from astropy.table import Table
 import astropy.units as u
 from astropy.time import Time
 from astropy.wcs import WCS
+from astropy.coordinates import SkyCoord
 
 # Local application/library specific imports
+from spx_butler.defaults.fake_products import fake_selection_mask
 from spx_tasks import QueryReferenceCatalogConfig, QueryReferenceCatalogTask
+from spx_tasks.query_reference_catalog import do_select, DERIVED_INPUTS, PM_CORR_INPUTS
 from spx_utils.image_catalog import SourcePipelineClass
+from spx_utils.refcat_utils import EmptySourceCatalogError
 from spx_butler.defaults.fake_products import initial_distortion
 
 
@@ -34,9 +39,6 @@ def make_simple_tan_wcs(ra_deg: float, dec_deg: float) -> WCS:
 
 class TestQueryReferenceCatalog(unittest.TestCase):
     """Test Query Reference Catalog."""
-    derived_inputs = ["Gaia_DR3_source_id", "LegacySurvey_uid", "PS1_DR1_StackObject_objID",
-                      "CatWISE_source_id", "AllWISE_designation", "2MASS_designation", "shape_e1",
-                      "shape_e2"]
 
     def setUp(self):
         self.dichroic_pair = 2
@@ -62,6 +64,13 @@ class TestQueryReferenceCatalog(unittest.TestCase):
         # Fake run/collection name so _parse_refcat_version -> v0.73
         self.refcat_run_name = "refcat_v073"
 
+        # Base config
+        self.config = QueryReferenceCatalogConfig()
+
+        # Fake selection masks
+        self.cosmo_mask = fake_selection_mask("cosmology", self.config.mask_hips_order)
+        self.hi_density_mask = fake_selection_mask("high_density", self.config.mask_hips_order)
+
     def _assert_user_meta(self, catalog, run_name="refcat_v073", version="SPHEREx_RefCat_v0.73"):
         self.assertIn("user_metadata", catalog.meta)
         um = catalog.meta["user_metadata"]
@@ -81,149 +90,309 @@ class TestQueryReferenceCatalog(unittest.TestCase):
         self.assertIn("T", um["created_utc"])
         self.assertGreaterEqual(len(um["created_utc"]), 19)  # "YYYY-MM-DDTHH:MM:SS"
 
-    def test_QueryReferenceCatalog(self):
-        """Test successful run of QueryReferenceCatalogTask"""
-        config = QueryReferenceCatalogConfig()
-        config.expected_high_b = 0
-        config.expected_low_b = 2
-        config.pixmargin = 0
-        config.extra_cols = ['SPHERExRefID', 'PS1_z', 'WISE_W1', 'WISE_W2', 'Gaia_RP',
-                             'c2', 'spherex_class', 'ref_epoch', 'pmra', 'pmdec', 'parallax', 'for_l3phot']
-        task = QueryReferenceCatalogTask(config=config)
+    def _check_columns(self, catalog):
+        # Start with essential columns (ID/RA/DEC) & empty set to exclude
+        available_in_cols = set([self.config.id_col, self.config.ra_col, self.config.dec_col])
+        expected_out_cols = set([self.config.id_col, self.config.ra_col, self.config.dec_col])
+        excluded_out_cols = set()
 
+        # Selection columns are not pulled from refcat, but always expected
+        expected_out_cols |= set(["do_phot", "do_mask_swir", "do_mask_mwir"])
+
+        # Add extra refcat columns requested
+        available_in_cols |= set(self.config.extra_cols)
+        expected_out_cols |= set(self.config.extra_cols)
+
+        # If subset of derived inputs were included, then shape parameters
+        # should be present too
+        if all(input_col in available_in_cols for input_col in DERIVED_INPUTS):
+            expected_out_cols |= set(["ab_ratio", "phi"])
+        else:
+            excluded_out_cols |= set(["ab_ratio", "phi"])
+
+        # If subset of PM correction inputs were included, then reference
+        # positions should be present too
+        if all(input_col in available_in_cols for input_col in PM_CORR_INPUTS):
+            expected_out_cols |= set(["ref_ra", "ref_dec"])
+            expected_out_cols -= set(["ref_epoch"])  # reference epoch not saved if PM correction occurs
+        else:
+            excluded_out_cols |= set(["ref_ra", "ref_dec"])
+
+        # If requested to remove derived inputs, then none of the derived input
+        # columns should be present
+        if not self.config.save_derived_inputs:
+            expected_out_cols -= set(DERIVED_INPUTS)
+            excluded_out_cols |= set(DERIVED_INPUTS)
+
+        # Check expected columns are present and excluded columns are absent
+        for col in expected_out_cols:
+            self.assertIn(col, catalog.colnames,
+                          f"Expected column '{col}' not found in catalog."
+                          f"\nsave_derived_inputs:{self.config.save_derived_inputs}"
+                          f"\nextra_cols:\n{self.config.extra_cols}")
+        for col in excluded_out_cols:
+            self.assertNotIn(col, catalog.colnames,
+                             f"Excluded column '{col}' found in catalog."
+                             f"\nsave_derived_inputs:{self.config.save_derived_inputs}"
+                             f"\nextra_cols:\n{self.config.extra_cols}")
+
+    def test_QueryReferenceCatalog(self):
+        """Test successful run of QueryReferenceCatalogTask."""
+        # Apply config overrides for this test
+        self.config.expected_high_b = 0
+        self.config.expected_low_b = 2
+        self.config.pixmargin = 0
+        self.config.extra_cols = ['SPHERExRefID', 'PS1_z', 'WISE_W1', 'WISE_W2', 'Gaia_RP',
+                                  'c2', 'spherex_class', 'pmra', 'pmdec', 'parallax']
+
+        # Run the task
+        task = QueryReferenceCatalogTask(config=self.config)
         output = task.run(
             self.wcs_list,
-            [MockDeferredDatasetHandle(None, None, None)],
+            [MockDeferredDatasetHandle()],
             self.dichroic_pair,
             self.slewgroup_mjd_avg,
+            self.cosmo_mask,
+            self.hi_density_mask,
             self.refcat_run_name,
         )
-
         catalog = output.catalog
 
-        self.assertIn("ra", catalog.colnames)
-        self.assertIn("dec", catalog.colnames)
-        self.assertIn("SPHERExRefID", catalog.colnames)
-        self.assertIn("PS1_z", catalog.colnames)
-        self.assertIn("WISE_W1", catalog.colnames)
-        self.assertIn("WISE_W2", catalog.colnames)
-        self.assertIn("Gaia_RP", catalog.colnames)
-        self.assertNotIn("c1", catalog.colnames)   # Column c1 should not be present
-        self.assertNotIn("ab_ratio", catalog.colnames)  # Not added if derived inputs not all present
-        self.assertNotIn("phi", catalog.colnames)       # Not added if derived inputs not all present
+        # Check expected columns, row count, and metadata
+        self._check_columns(catalog)
         self.assertEqual(len(catalog), 3)  # Expecting three valid sources (fourth is far away)
         self._assert_user_meta(catalog, run_name=self.refcat_run_name, version="SPHEREx_RefCat_v0.73")
 
-        # Validate L3 photometry flagging
-        phot_mask = np.nonzero(catalog['for_l3phot'] == 1)[0]
-        self.assertEqual(len(phot_mask), 2)  # Only 2 sources should be flagged for L3 photometry
-
     def test_save_derived_inputs(self):
-        """
-        Test running query reference catalog
+        """Test running query reference catalog
         with/without saving derived column inputs enabled.
         """
-        # Case 1: save the derived inputs
-        config = QueryReferenceCatalogConfig()
-        config.extra_cols = [
+        # Case 1: save the derived inputs -------------------------------------
+        # Apply config overrides for this test
+        self.config.extra_cols = [
             "Gaia_DR3_source_id", "LegacySurvey_uid", "PS1_DR1_StackObject_objID", "CatWISE_source_id",
             "AllWISE_designation", "2MASS_designation", "ra_error", "dec_error", "coord_src", "pmra",
             "pmdec", "parallax", "spherex_class", "Gaia_RP", "sersic", "shape_r", "shape_e1", "shape_e2",
-            "ref_epoch", "for_l3phot"
+            "ref_epoch"
         ]
-        config.save_derived_inputs = True
-        task = QueryReferenceCatalogTask(config=config)
+        self.config.save_derived_inputs = True
 
+        # Run the task
+        task = QueryReferenceCatalogTask(config=self.config)
         output = task.run(
             self.wcs_list,
-            [MockDeferredDatasetHandle(SourcePipelineClass.ASTROMETRIC)],
+            [MockDeferredDatasetHandle()],
             self.dichroic_pair,
             self.slewgroup_mjd_avg,
-            self.refcat_run_name,
+            self.cosmo_mask,
+            self.hi_density_mask,
+            self.refcat_run_name
         )
         catalog = output.catalog
 
-        for col in self.derived_inputs:
-            self.assertIn(col, catalog.colnames)
-        self.assertIn("ab_ratio", catalog.colnames)
-        self.assertIn("phi", catalog.colnames)
-        self.assertIn("ref_ra", catalog.colnames)
-        self.assertIn("ref_dec", catalog.colnames)
-        self.assertIn("pipeline_epoch_mjd", catalog.meta.keys())
+        # Check expected columns, row count, and metadata
         self.assertEqual(len(catalog), 3)
+        self._check_columns(catalog)
+        self.assertIn("pipeline_epoch_mjd", catalog.meta.keys(),
+                      "Expected target epoch to be included in metadata when all PM correction inputs are"
+                      " requested in 'extra_cols' config parameter.")
+        self._assert_user_meta(catalog, run_name=self.refcat_run_name, version="SPHEREx_RefCat_v0.73")
 
-        # Case 2: don't save the derived inputs
-        config = QueryReferenceCatalogConfig()
-        config.extra_cols = [
+        # Case 2: don't save the derived inputs -------------------------------
+        # Apply config overrides for this test
+        self.config.extra_cols = [
             "Gaia_DR3_source_id", "LegacySurvey_uid", "PS1_DR1_StackObject_objID", "CatWISE_source_id",
             "AllWISE_designation", "2MASS_designation", "ra_error", "dec_error", "coord_src", "pmra",
-            "pmdec", "parallax", "spherex_class", "Gaia_RP", "sersic", "shape_r", "shape_e1", "shape_e2",
-            "for_l3phot"
-        ]
-        task = QueryReferenceCatalogTask(config=config)
+            "pmdec", "parallax", "spherex_class", "Gaia_RP", "sersic", "shape_r", "shape_e1", "shape_e2"]
+        self.config.save_derived_inputs = False
+
+        # Run the task
+        task = QueryReferenceCatalogTask(config=self.config)
         output = task.run(
             self.wcs_list,
-            [MockDeferredDatasetHandle(None, None, None)],
+            [MockDeferredDatasetHandle()],
             self.dichroic_pair,
             self.slewgroup_mjd_avg,
-            self.refcat_run_name,
+            self.cosmo_mask,
+            self.hi_density_mask,
+            self.refcat_run_name
         )
         catalog = output.catalog
 
-        for col in self.derived_inputs:
-            self.assertNotIn(col, catalog.colnames)
-        self.assertIn("ab_ratio", catalog.colnames)
-        self.assertIn("phi", catalog.colnames)
+        # Check expected columns, row count, and metadata
+        self._check_columns(catalog)
         self.assertEqual(len(catalog), 3)
+        self.assertNotIn("pipeline_epoch_mjd", catalog.meta.keys(),
+                         "Expected target epoch to be excluded from metadata when not all PM correction"
+                         " inputs are requested in 'extra_cols' config parameter.")
+        self._assert_user_meta(catalog, run_name=self.refcat_run_name, version="SPHEREx_RefCat_v0.73")
 
     def test_incorrect_flags_in_query_reference_catalog(self):
-        """Test incorrect flags handling in QueryReferenceCatalogTask"""
+        """Test incorrect flags handling in QueryReferenceCatalogTask."""
+        self.config.pixmargin = 0
+        self.config.extra_cols = ['SPHERExRefID', 'PS1_z', 'WISE_W1', 'WISE_W2', 'Gaia_RP', 'c2',
+                                  'spherex_class']
+        task = QueryReferenceCatalogTask(config=self.config)
+
+        try:
+            output = task.run(
+                self.wcs_list,
+                [MockIncorrectFlagDatasetHandle(SourcePipelineClass.ASTROMETRIC)],
+                self.dichroic_pair,
+                self.slewgroup_mjd_avg,
+                self.cosmo_mask,
+                self.hi_density_mask,
+                self.refcat_run_name
+            )
+        except Exception:
+            output = None
+        if output is not None:
+            self.assertTrue(hasattr(output, "catalog"))
+            if isinstance(output.catalog, Table):
+                self.assertIn("ra", output.catalog.colnames)
+                self.assertIn("dec", output.catalog.colnames)
+
+        try:
+            output = task.run(
+                self.wcs_list,
+                [MockIncorrectFlagDatasetHandle(SourcePipelineClass.PSF)],
+                self.dichroic_pair,
+                self.slewgroup_mjd_avg,
+                self.cosmo_mask,
+                self.hi_density_mask,
+                self.refcat_run_name
+            )
+        except Exception:
+            output = None
+        if output is not None:
+            self.assertTrue(hasattr(output, "catalog"))
+            if isinstance(output.catalog, Table):
+                self.assertIn("ra", output.catalog.colnames)
+                self.assertIn("dec", output.catalog.colnames)
+
+    def test_allow_empty_catalog(self):
+        """Test that the switch to allow empty catalogs works."""
+        # Move all sources away from WCS center to trigger empty catalogs
+        shard_list = [MockDeferredDatasetHandle(ra=np.array([0., 0., 0., 0.]) * u.deg,
+                                                dec=np.array([0., 0., 0., 0.]) * u.deg)]
+
+        # Case 1: allow empty catalogs & only log a warning -------------------
+        self.config.extra_cols = ['SPHERExRefID', 'PS1_z', 'WISE_W1', 'WISE_W2', 'Gaia_RP',
+                                  'c2', 'spherex_class', 'pmra', 'pmdec', 'parallax']
+        self.config.allow_empty = True
+        task = QueryReferenceCatalogTask(config=self.config)
+        with self.assertLogs(task.log, level=logging.WARNING) as captured:
+            output = task.run(
+                self.wcs_list,
+                shard_list,
+                self.dichroic_pair,
+                self.slewgroup_mjd_avg,
+                self.cosmo_mask,
+                self.hi_density_mask,
+                self.refcat_run_name
+            )
+        self.assertTrue(output.catalog is None,
+                        f"Expected empty catalog when no sources pass selection cuts, but got:"
+                        f"\n{output.catalog}")
+        msgs = [r.getMessage() for r in captured.records]
+        self.assertIn("No reference catalog sources found in bounding box.", msgs)
+
+        # Case 2: don't allow empty catalogs & raise an error -----------------
+        self.config.allow_empty = False
+        task = QueryReferenceCatalogTask(config=self.config)
+        with self.assertRaises(EmptySourceCatalogError, msg="Expected EmptySourceCatalogError when no"
+                               " sources pass selection cuts and 'allow_empty' is False.") as cm:
+            task.run(
+                self.wcs_list,
+                shard_list,
+                self.dichroic_pair,
+                self.slewgroup_mjd_avg,
+                self.cosmo_mask,
+                self.hi_density_mask,
+                self.refcat_run_name
+            )
+        self.assertIn("No refcat sources were found and 'allow_empty' is False.", str(cm.exception))
+
+    def test_do_select(self):
+        """Test selection cuts for various sky positions and source properties.
+        """
+        # Choose sky positions to trigger different selection branches
+        positions = [
+            [270.00000, 66.56071],  # NEP -> in cosmology mask
+            [90.00000, -66.56071],  # SDF -> in cosmology mask
+            [266.41501, -29.00611],  # GC -> in high-density mask
+            [80.89417, -69.75611],  # LMC -> in high-density mask
+            [13.18667, -72.82861],  # SMC -> in high-density mask
+            [86.40499, 28.93617],  # Galactic anti-center -> in neither
+        ]
+        coords = SkyCoord(ra=[p[0] * u.deg for p in positions], dec=[p[1] * u.deg for p in positions],
+                          frame='icrs')
+
+        # For each sky position, make 1 "pass" and 1 "fail" source based on
+        # class, SNR, and bright neighbor criteria
+        pass_class = int(SourcePipelineClass.PHOTOMETRIC)
+        fail_class = int(SourcePipelineClass.ASTROMETRIC | SourcePipelineClass.NO_ICES)
+        pass_snr = 10.0
+        fail_snr = 3.0
+        pass_no_bneighbor = 0
+        fail_no_bneighbor = 1
+        table = Table({
+            'SPHERExRefID': np.arange(1, 13, dtype=int),
+            'ra': [c.ra for c in coords] * 2,
+            'dec': [c.dec for c in coords] * 2,
+            'spherex_class': [pass_class] * 6 + [fail_class] * 6,
+            'SNR_MAX': [pass_snr] * 6 + [fail_snr] * 6,
+            'flag_brightneighbor': [pass_no_bneighbor] * 6 + [fail_no_bneighbor] * 6,
+            'do_phot': [0] * 12
+        })
+
+        # Without special IDs - only 6 sources pass selection cuts
         config = QueryReferenceCatalogConfig()
-        config.pixmargin = 0
-        config.extra_cols = ['SPHERExRefID', 'PS1_z', 'WISE_W1', 'WISE_W2', 'Gaia_RP', 'c2', 'spherex_class',
-                             'for_l3phot']
-        task = QueryReferenceCatalogTask(config=config)
+        do_select(table, config, self.cosmo_mask["COSMO_MASK"].data["MASK"],
+                  self.hi_density_mask["HI_DENSITY_MASK"].data["MASK"], None)
+        selected = table["do_phot"]
+        assert np.nonzero(selected == 1)[0].tolist() == [0, 1, 2, 3, 4, 5], \
+            f"Expected sources 0-5 to pass selection cuts, but got {np.nonzero(selected == 1)[0].tolist()}."
+        assert np.nonzero(selected == 0)[0].tolist() == [6, 7, 8, 9, 10, 11], \
+            f"Expected sources 6-11 to fail selection cuts, but got {np.nonzero(selected == 0)[0].tolist()}."
 
-        try:
-            output = task.run(
+        # With special IDs - 6 sources pass selection cuts, 3 are special IDs
+        special_ids = np.array([9, 10, 11])
+        config.select_special_ids = True
+        do_select(table, config, self.cosmo_mask["COSMO_MASK"].data["MASK"],
+                  self.hi_density_mask["HI_DENSITY_MASK"].data["MASK"], special_ids)
+        selected = table["do_phot"]
+        assert np.nonzero(selected == 1)[0].tolist() == [0, 1, 2, 3, 4, 5, 8, 9, 10], \
+            f"Expected sources 0-5 and 8-10 to be selected, but got {np.nonzero(selected == 1)[0].tolist()}."
+        assert np.nonzero(selected == 0)[0].tolist() == [6, 7, 11], \
+            f"Expected sources 6, 7, 11 to fail selection cuts; got {np.nonzero(selected == 0)[0].tolist()}."
+
+    def test_opt_cnxn(self):
+        """Test guards against silent failures due to optional inputs."""
+        # Case 1: select_special_ids is True but no special_ids provided
+        self.config.select_special_ids = True
+        task = QueryReferenceCatalogTask(config=self.config)
+        with self.assertRaises(ValueError) as cm:
+            task.run(
                 self.wcs_list,
-                [MockDeferredDatasetHandle(SourcePipelineClass.ASTROMETRIC)],
+                [MockDeferredDatasetHandle()],
                 self.dichroic_pair,
                 self.slewgroup_mjd_avg,
+                self.cosmo_mask,
+                self.hi_density_mask,
                 self.refcat_run_name,
+                None
             )
-        except Exception:
-            output = None
-        if output is not None:
-            self.assertTrue(hasattr(output, "catalog"))
-            if isinstance(output.catalog, Table):
-                self.assertIn("ra", output.catalog.colnames)
-                self.assertIn("dec", output.catalog.colnames)
-
-        try:
-            output = task.run(
-                self.wcs_list,
-                [MockDeferredDatasetHandle(SourcePipelineClass.PSF)],
-                self.dichroic_pair,
-                self.slewgroup_mjd_avg,
-                self.refcat_run_name,
-            )
-        except Exception:
-            output = None
-        if output is not None:
-            self.assertTrue(hasattr(output, "catalog"))
-            if isinstance(output.catalog, Table):
-                self.assertIn("ra", output.catalog.colnames)
-                self.assertIn("dec", output.catalog.colnames)
-
+        self.assertIn("select_special_ids is True, but no special_ids array was provided.", str(cm.exception))
 
 class MockDeferredDatasetHandle():
 
-    def __init__(self, *args, **kwargs):
-        pass
+    def __init__(self, ra=None, dec=None, **kwargs):
+        self._ra = ra
+        self._dec = dec
 
     def get(self, **kwargs):
-        """Retrieves the dataset pointed to by this handle"""
+        """Retrieve the dataset pointed to by this handle."""
         # Three near the center (276.5, -4.6) and one far away
         ra = np.array([276.5, 276.51, 276.49, 280.0]) * u.deg
         dec = np.array([-4.6, -4.61, -4.59, -5.0]) * u.deg
@@ -253,6 +422,14 @@ class MockDeferredDatasetHandle():
         pmdec = [-0.8, 0.4, -1.1, 0.9] * u.mas/u.year
         parallax = [10.0, 5.5, 7.8, 3.2] * u.mas
         ref_epoch = [-9999.0, 2016.0, -9999.0, 2016.0] * u.year
+        snr_max = [15.0, 20.0, 5.0, 25.0]
+        flag_brightneighbor = [0, 0, 1, 0]
+
+        # Override RA/DEC if provided (to test empty catalog handling)
+        if self._ra is not None:
+            ra = self._ra
+        if self._dec is not None:
+            dec = self._dec
 
         return Table({'ra': ra, 'dec': dec, 'ra_error': ra_error, 'dec_error': dec_error,
                       'SPHERExRefID': spx_ref_id, 'PS1_z': PS1_z, 'WISE_W1': WISE_W1,
@@ -263,7 +440,8 @@ class MockDeferredDatasetHandle():
                       'CatWISE_source_id': catwise_source_id, 'AllWISE_designation': allwise_designation,
                       '2MASS_designation': twomass_designation, 'coord_src': coord_src, 'pmra': pmra,
                       'pmdec': pmdec, 'parallax': parallax, 'shape_r': shape_r, 'shape_e1': shape_e1,
-                      'shape_e2': shape_e2, 'sersic': sersic, 'ref_epoch': ref_epoch})
+                      'shape_e2': shape_e2, 'sersic': sersic, 'ref_epoch': ref_epoch, 'SNR_MAX': snr_max,
+                      'flag_brightneighbor': flag_brightneighbor})
 
 
 class MockIncorrectFlagDatasetHandle(MockDeferredDatasetHandle):

@@ -14,6 +14,8 @@ from spx_data import Flag
 
 
 class FilterByMaskConfig(Config):
+    """Configuration for FilterByMask task."""
+
     mask_frac_threshold = Field(
         doc="Exclude images with more than this fraction of pixels masked.",
         dtype=float,
@@ -25,11 +27,13 @@ class FilterByMaskConfig(Config):
 
 
 class FilterByMaskTask(pipeBase.Task):
+    """Task to filter images based on mask fraction threshold."""
+
     _DefaultName = "filter_by_mask"
     ConfigClass = FilterByMaskConfig
 
     def run(self, dataset: list[DeferredDatasetHandle]):
-        """Filters dataset if image is some percentage masked.
+        """Filter dataset if image is some percentage masked.
 
         Parameters
         ----------

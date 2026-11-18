@@ -18,6 +18,7 @@ class OdirImage(BaseModel):
     ----------
     status: `str`
         The overall status of the image.
+
     """
 
     status: str
@@ -41,6 +42,7 @@ class OdirObservation(BaseModel):
         The timestamp for the observation, reused from the IDQR definition.
     images : `dict[int, OdirImage]`
         A dictionary of simplified image data, keyed by an integer ID.
+
     """
 
     survey_plan_indicator: bool
@@ -60,6 +62,7 @@ class ODIR(BaseModel):
     ----------
     observations : `dict[str, OdirObservation]`
         A dictionary of observation data, keyed by a string identifier.
+
     """
 
     observations: dict[str, OdirObservation]

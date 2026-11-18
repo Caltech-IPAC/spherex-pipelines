@@ -2,7 +2,8 @@ __all__ = ["sample_psf", "get_sample_psf", "get_sample_ssocat",
            "get_sample_sur", "get_sample_zodi", "get_sample_sip",
            "get_sample_hdulist", "get_sample_spx_img", "get_sample_background",
            "get_sample_pyarrow_table", "get_sample_gain_factors",
-           "get_sample_level1_img", "get_sample_level1b_img", "get_sample_read_noise_map",
+           "get_sample_level1_img", "get_sample_level1b_img", "get_sample_persistence_img",
+           "get_sample_read_noise_map",
            "get_5x5sample_spectral_wcs", "get_6x6sample_spectral_wcs",
            "get_sample_nonlinearity_parameters",
            "get_sample_planned_obs_data",
@@ -31,11 +32,12 @@ from spx_data import (SPHERExImage, SPSFlag, ImageMetadata, ImageMetadataStats,
                       GainFactors, ReadoutParameters, NonLinearityParameters, ReadNoiseParameters,
                       PersistenceState, PersistenceStateModelPars, NonfuncData,
                       set_metadata_provenance)
-from spx_tasks import CreateVarianceMapTask
+from spx_data.spx_version import SSDC_PIPELINES_VERSION
 from spx_utils import l1_utils, spectral_wcs_tab_header
 
 
 def get_sample_hdulist() -> fits.HDUList:
+    """Return a sample FITS HDUList for testing."""
     hdu1 = fits.PrimaryHDU()
     hdu2 = fits.ImageHDU(data=np.zeros([5, 5]))
     hdulist = fits.HDUList([hdu1, hdu2])
@@ -43,7 +45,7 @@ def get_sample_hdulist() -> fits.HDUList:
 
 
 def get_sample_background(shape=None, box_size=None) -> BackgroundMesh:
-    """Creates a sample background with a gradient.
+    """Create a sample background with a gradient.
 
     Parameters
     ----------
@@ -56,6 +58,7 @@ def get_sample_background(shape=None, box_size=None) -> BackgroundMesh:
     -------
     bkg : `~spx_data.BackgroundMesh`
         A `~spx_data.BackgroundMesh` object with all the background information
+
     """
     if shape is None:
         shape = (50, 50)
@@ -77,6 +80,7 @@ def get_sample_background(shape=None, box_size=None) -> BackgroundMesh:
 
 
 def get_sample_spx_img(data=None, shape=None):
+    """Return a sample SPHERExImage with default layers for testing."""
     if shape is None:
         shape = (5, 5)
     if data is None:
@@ -95,7 +99,7 @@ def get_sample_spx_img(data=None, shape=None):
     # Add additional layers
     psf = get_sample_psf()
     spx_img.psfcube = psf
-    ssocat = get_sample_ssocat()
+    ssocat = get_sample_ssocat(asteroids_only=True)  # exclude None values/object dtype from GPs
     spx_img.ssocat = ssocat
     sur = get_sample_sur()
     spx_img.sur = sur
@@ -131,10 +135,12 @@ def sample_psf(nx: int = 5, ny: int = 5, sigma: float = 1.0) -> ArrayLike:
         Number of pixels along Y will be (2*ny+1).
     sigma : `float`
         Parameter controlling PSF size.
+
     Returns
     -------
     `~numpy.ndarray`
         Array of shape [(2*``ny``+1), (2*``nx``+1)] with sample PSF.
+
     """
     # Create the data
     x = np.arange(-nx, nx + 1)
@@ -154,6 +160,7 @@ def get_sample_psf() -> PSFZoneData:
     -------
     `~spx_data.PSFZoneData`
         PSF object.
+
     """
     npx = 484  # Total pixel size
     nbr_x_zones = 11
@@ -177,6 +184,7 @@ def get_sample_sur() -> SUR:
     Returns
     -------
     sur : `~spx_data.SUR`
+
     """
     nsamp = 10  # number of samples
     shape = [2, 3]
@@ -191,16 +199,55 @@ def get_sample_sur() -> SUR:
 
 
 def get_sample_zodi(shape) -> Zodi:
+    """Return a sample Zodi object for testing."""
     zodi_data = np.fromfunction(lambda x, y: 10 * x + y, shape)
     return Zodi(zodi_data, "Fake zodi data")
 
 
-def get_sample_ssocat() -> Table:
-    names = ["object", "ra", "dec", "vmag", "x", "y"]
-    units = ["", "deg", "deg", "V", "pixel", "pixel"]
-    dtype = [str, float, float, float, float, float]
-    rows = [["test", 0.0, 0.1, 15.0, 0.0, 0.0]]
-    return Table(rows=rows, names=names, dtype=dtype, units=units)
+def get_sample_ssocat(asteroids_only=False) -> Table:
+    """Generate sample Solar System Object catalog for photometry testing.
+
+    Parameters
+    ----------
+    asteroids_only : `bool`, optional
+        If True, only include asteroids in the catalog and avoid mixed dtype
+        object columns. Default is False, which includes both asteroids and
+        giant planets (have None for some quantities).
+
+    Returns
+    -------
+    ssocat : `astropy.table.Table`
+        Contains 2 giant planets and 3 asteroids, with only 2
+        asteroids positioned in photometry unit test image boundaries.
+    """
+    non_gp_orb_data = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    gp_orb_data = np.array([None, None])
+    orb_data = np.concatenate([non_gp_orb_data, gp_orb_data])
+    ssocat = Table({
+        "H": orb_data,
+        "G": orb_data,
+        "dmax": orb_data,
+        "alpha": orb_data,
+        "rh": orb_data,
+        "ro": orb_data,
+        "V": orb_data,
+        "Tmax": orb_data,
+        "AB5_brightest": orb_data,
+        "RA": [350.000, 354.305, 354.295, 354.310, 354.300],
+        "DEC": [10.000, 12.874, 12.876, 12.878, 12.880],
+        "desig": ["1234", "5678", "9101", "saturn barycenter", "phoebe"]
+    })
+    ssocat.meta["user_metadata"] = {
+        "version": SSDC_PIPELINES_VERSION
+    }
+
+    if asteroids_only:
+        ssocat = ssocat[0:3]  # only asteroids (GPs have None values)
+        for col in ssocat.colnames:
+            if ssocat[col].dtype == object:
+                ssocat[col] = ssocat[col].astype("float64")  # remove object dtype associated w/ None values
+
+    return ssocat
 
 
 def get_sample_catalog() -> Table:
@@ -210,6 +257,7 @@ def get_sample_catalog() -> Table:
 
 
 def get_sample_sip(img) -> Sip:
+    """Return a sample SIP distortion object for testing."""
     # A 4th order polynomial requires a 5x5 array for coefficients.
     shape = (5, 5)
     # Forward corefficients
@@ -225,16 +273,19 @@ def get_sample_sip(img) -> Sip:
 
 
 def get_fake_nonfunc_v2_map(detector: int = 1, seed: int | None = 42) -> NonfuncData:
-    """Fake Nonfunctional v2 product, returned as a NonfuncData instance.
+    """Return fake Nonfunctional v2 product as a NonfuncData instance.
 
     Builds a multi-extension FITS with:
       - COMBINED (1=bad, 0=good)
-      - DARKCURR, HIGHDRIFT, SPECCAL, TRANSIENT, OVERFLOW (each 1=bad, 0=good)
+      - DARKCURR, HIGHDRIFT, SPECCAL, TRANSIENT, OVERFLOW, OPTEFF, OOS
+        (each 1=bad, 0=good)
 
     Parameters
     ----------
     detector : `int`
         Detector ID written into the PrimaryHDU header.
+    seed : `int` or None, optional
+        Random seed for reproducibility. Default is 42.
 
     Returns
     -------
@@ -243,7 +294,6 @@ def get_fake_nonfunc_v2_map(detector: int = 1, seed: int | None = 42) -> Nonfunc
     """
     rng = np.random.default_rng(seed)
 
-    # Match how fake_nonlin_inputs gets its shape
     ny, nx = spx_param.get_npix_x(), spx_param.get_npix_y()
 
     def sparse_mask(count: int) -> np.ndarray:
@@ -261,62 +311,95 @@ def get_fake_nonfunc_v2_map(detector: int = 1, seed: int | None = 42) -> Nonfunc
     speccal = sparse_mask(120)
     transient = sparse_mask(7000)
     overflow = sparse_mask(60)
+    opteff = sparse_mask(400)
+    oos = sparse_mask(500)
 
     # Add a couple structured features for easy QA
-    np.fill_diagonal(speccal, 1)      # thin diagonal line
+    np.fill_diagonal(speccal, 1)
     box = 24
-    darkcurr[:box, :box] |= 1         # small UL box
+    darkcurr[:box, :box] |= 1
 
-    combined = (darkcurr | highdrift | speccal | transient | overflow).astype(np.uint8)
+    category_planes = {
+        "DARKCURR": darkcurr,
+        "HIGHDRIFT": highdrift,
+        "SPECCAL": speccal,
+        "TRANSIENT": transient,
+        "OVERFLOW": overflow,
+        "OPTEFF": opteff,
+        "OOS": oos,
+    }
+
+    combined = np.zeros((ny, nx), dtype=np.uint8)
+    for mask in category_planes.values():
+        combined |= mask
 
     primary_hdu = fits.PrimaryHDU()
     primary_hdu.header["DETECTOR"] = detector
     primary_hdu.header["BPCONV"] = (1, "Bad-pixel convention: 1=bad, 0=good")
 
-    combined_hdu = fits.ImageHDU(data=combined, header=fits.Header({"EXTNAME": "COMBINED"}))
-    darkcurr_hdu = fits.ImageHDU(data=darkcurr, header=fits.Header({"EXTNAME": "DARKCURR"}))
-    highdrift_hdu = fits.ImageHDU(data=highdrift, header=fits.Header({"EXTNAME": "HIGHDRIFT"}))
-    speccal_hdu = fits.ImageHDU(data=speccal, header=fits.Header({"EXTNAME": "SPECCAL"}))
-    transient_hdu = fits.ImageHDU(data=transient, header=fits.Header({"EXTNAME": "TRANSIENT"}))
-    overflow_hdu = fits.ImageHDU(data=overflow, header=fits.Header({"EXTNAME": "OVERFLOW"}))
-
-    hdul = fits.HDUList([
+    hdus = [
         primary_hdu,
-        combined_hdu,
-        darkcurr_hdu,
-        highdrift_hdu,
-        speccal_hdu,
-        transient_hdu,
-        overflow_hdu,
-    ])
+        fits.ImageHDU(data=combined, header=fits.Header({"EXTNAME": "COMBINED"})),
+    ]
 
-    # Optional integrity check
-    union = (darkcurr | highdrift | speccal | transient | overflow).astype(bool)
-    cmb = (combined == 1)
-    if np.any(union & ~cmb) or np.any(cmb & ~union):
+    for extname, mask in category_planes.items():
+        hdus.append(
+            fits.ImageHDU(data=mask, header=fits.Header({"EXTNAME": extname}))
+        )
+
+    hdul = fits.HDUList(hdus)
+
+    # Integrity check: COMBINED should be the union of category planes.
+    union = np.zeros((ny, nx), dtype=bool)
+    for mask in category_planes.values():
+        union |= mask.astype(bool)
+
+    cmb = combined.astype(bool)
+    if not np.array_equal(cmb, union):
         raise ValueError("COMBINED is not the union of category planes.")
 
     return NonfuncData(hdul, detector=detector)
 
 
 def get_sample_nonlinearity_parameters() -> NonLinearityParameters:
+    """Return sample non-linearity correction parameters for testing.
+
+    Notes
+    -----
+    Q_nl must be large enough that the discriminant in the quadratic formula
+    is non-negative: qnl**2 - 4 * qover * qnl >= 0, i.e. qnl >= 4 * qover.
+    With overflow threshold KOVR_A=1000 and potential gain variations,
+    qover could be higher than expected, so we use Q_nl in [50000, 100000]
+    to ensure valid discriminants with plenty of margin.
+    """
+    rng = np.random.default_rng(seed=42)
+    # Q_nl needs to be >= 4 * overflow_charge for valid sqrt discriminant
+    # Using large values to account for any gain variations
+    q_nl = rng.integers(50000, 100001, size=(28, 28)).astype(np.float32)
+    # Qmax should be larger than typical accumulated charge
+    q_max = rng.integers(80000, 150001, size=(28, 28)).astype(np.float32)
+    # Transient correction coefficients (small values)
+    b1 = rng.integers(1, 51, size=(28, 28)).astype(np.float32) * 1e-6
+    b2 = rng.integers(1, 51, size=(28, 28)).astype(np.float32) * 1e-9
+    b3 = rng.integers(1, 51, size=(28, 28)).astype(np.float32) * 1e-12
+
     fits_content = [
         fits.PrimaryHDU(
             header=fits.Header({"DETECTOR": 1})),
         fits.ImageHDU(
-            data=np.array([[13, 14], [15, 16]], dtype=np.float32),
+            data=q_nl,
             header=fits.Header({'EXTNAME': 'Q_nl'})),
         fits.ImageHDU(
-            data=np.array([[13, 14], [15, 16]], dtype=np.float32),
+            data=q_max,
             header=fits.Header({'EXTNAME': 'Qmax'})),
         fits.ImageHDU(
-            data=np.array([[25, 26], [27, 28]], dtype=np.float32),
+            data=b1,
             header=fits.Header({'EXTNAME': 'b1'})),
         fits.ImageHDU(
-            data=np.array([[29, 30], [31, 32]], dtype=np.float32),
+            data=b2,
             header=fits.Header({'EXTNAME': 'b2'})),
         fits.ImageHDU(
-            data=np.array([[33, 34], [35, 36]], dtype=np.float32),
+            data=b3,
             header=fits.Header({'EXTNAME': 'b3'})),
     ]
 
@@ -324,7 +407,7 @@ def get_sample_nonlinearity_parameters() -> NonLinearityParameters:
 
 
 def get_sample_persistence_state(spximg: SPHERExImage | None = None) -> PersistenceState:
-    """Fake persistence state for pipeline. (mutable)"""
+    """Return fake persistence state for pipeline (mutable)."""
     if spximg is not None:
         rp = ReadoutParameters.from_metadata(spximg.meta)
     else:
@@ -349,10 +432,26 @@ def get_sample_persistence_state(spximg: SPHERExImage | None = None) -> Persiste
 
 
 def get_sample_planned_obs_data() -> dict:
-    """Sample data to construct planned observation for testing"""
+    """Return sample data to construct planned observation for testing.
 
-    begin_time = Time(datetime.now())
+    The obs_id is generated based on the current time in SPS format
+    (e.g., "2025W52_2A_0923_1") to allow extraction of spsplan_id.
+    """
+    now = datetime.now()
+    begin_time = Time(now)
     end_time = begin_time + timedelta(seconds=1)
+
+    # Generate realistic obs_id based on current time
+    # Long format:
+    #   {year}W{week}_{plan_number}{plan_version}_{large_slew}_{small_slew}_{total}
+    year = now.year
+    week = now.isocalendar()[1]  # ISO week number
+    plan_number = 2  # Day of week indicator (1 or 2)
+    plan_version = "A"
+    large_slew = 486  # Example slew group
+    small_slew = 1  # Small slew counter
+    total_slews = 4  # Total number of pointings per small slew group (informational)
+    obs_id = f"{year}W{week:02d}_{plan_number}{plan_version}_{large_slew:04d}_{small_slew}_{total_slews}"
 
     planned_obs_data = {
         'ra': Angle(23, unit="deg"),  # Angle object
@@ -362,7 +461,7 @@ def get_sample_planned_obs_data() -> dict:
         'lon_ecl': 17.7,
         'pa_ecl': 180.0,
         'timespan': Timespan(begin=begin_time, end=end_time),  # Timespan
-        'obs_id': "123xvz",
+        'obs_id': obs_id,
         'target_id': 789,
         'flags': SPSFlag.ALL_SKY | SPSFlag.SAA,  # Make sure this matches expected bitwise flags
         'quaternions': {'q1': 0.1, 'q2': 0.2, 'q3': 0.3, 'q4': 0.4},
@@ -376,7 +475,16 @@ def get_sample_planned_obs_data() -> dict:
     return planned_obs_data
 
 
+def get_sample_planned_obs_data_with_target_name() -> dict:
+    """Return sample data with optional target name fields for testing."""
+    data = get_sample_planned_obs_data()
+    data['regularized_target_id'] = 789
+    data['target_name'] = 'SPS_000789_S12'
+    return data
+
+
 def get_sample_image_metadata() -> ImageMetadata:
+    """Return sample ImageMetadata for testing."""
     meta2 = ImageMetadata(
         start_time_days=24108,
         start_time_ms=69119379,
@@ -431,6 +539,7 @@ def get_sample_image_metadata() -> ImageMetadata:
 
 
 def get_sample_image_metadata_stats() -> ImageMetadataStats:
+    """Return sample ImageMetadataStats for testing."""
     meta3 = ImageMetadataStats(
         start_time_days=24108,
         start_time_ms=71231401,
@@ -449,7 +558,7 @@ def get_sample_image_metadata_stats() -> ImageMetadataStats:
 
 
 def get_sample_pyarrow_table() -> pa.Table:
-    """Generates a sample `pyarrow.Table` for testing."""
+    """Generate a sample `pyarrow.Table` for testing."""
     row = {"flux_bkg": 0, "flux": 10000000, "flux_err": 10.01, "flag": True, "status": "Testing",
            "calibration": [0.1, 0.2, 3, 10]}
     # Create duplicates of row
@@ -474,7 +583,7 @@ def get_sample_pyarrow_table() -> pa.Table:
 
 
 def get_sample_gain_factors(spximg: SPHERExImage = None) -> GainFactors:
-    """Generates a sample `~spx_data.GainFactors`.
+    """Generate a sample `~spx_data.GainFactors`.
 
     Parameters
     ----------
@@ -485,6 +594,7 @@ def get_sample_gain_factors(spximg: SPHERExImage = None) -> GainFactors:
     -------
     `~spx_data.GainFactors`
         Sample gain factors for each array id.
+
     """
     if spximg is not None:
         rp = ReadoutParameters.from_metadata(spximg.meta)
@@ -507,11 +617,13 @@ def get_sample_level1_img(rp: Optional[ReadoutParameters] = None) -> SPHERExImag
     Parameters
     ----------
     rp : `~spx_data.ReadoutParameters`, optional
+        Readout parameters. If None, uses default test parameters.
 
     Returns
     -------
     SPHERExImage
         The level 0 image.
+
     """
     # small test L1 image.
     phan_val = 1
@@ -578,6 +690,7 @@ def get_sample_level1b_img(seed_number: int | None = 42,
     `~spx_data.SPHERExImage`
         Level 1 image with reference, phantom, and active pixels;
         includes some random transient and overflow flags.
+
     """
     # small test L2 image.
     phan_val = 1
@@ -680,8 +793,8 @@ def get_sample_level1b_img(seed_number: int | None = 42,
     w = get_sample_wcs()
 
     hdr = fits.Header(rp.to_metadata())
-    hdr["JD"] = 2460480.499855344
     hdr["MJD-BEG"] = 60480.499855344
+    hdr["DATE-BEG"] = "2024-06-19T11:59:47.502"  # ISO date corresponding to MJD-BEG
     hdr["TINT"] = 112.5  # total exposure time in seconds
     hdr["TELAPSE"] = 115.5  # total elapsed time
 
@@ -716,7 +829,7 @@ def get_sample_level1b_img(seed_number: int | None = 42,
 def get_sample_read_noise_map(spximg: SPHERExImage | None = None,
                               mu: int = 0,
                               sigma: int = 0.1) -> ReadNoiseParameters:
-    """Generates sample per-pixel readout noise map with random values
+    """Generate sample per-pixel readout noise map with random values
     sampled from a Gaussian with one sigma equal to 0.1 and centered at 0.
 
     Parameters
@@ -739,6 +852,7 @@ def get_sample_read_noise_map(spximg: SPHERExImage | None = None,
       where nref = 1.
     - There will be a separate map for each of the six detectors.
     - Read noise maps are in units of electrons.
+
     """
     if spximg is not None:
         rp = ReadoutParameters.from_metadata(spximg.meta)
@@ -766,8 +880,7 @@ def get_sample_read_noise_map(spximg: SPHERExImage | None = None,
 
 
 def get_sample_ff(spximg: SPHERExImage) -> SPHERExImage:
-    """
-    Makes a fake flat field with random values.
+    """Make a fake flat field with random values.
 
     Parameters
     ----------
@@ -778,6 +891,7 @@ def get_sample_ff(spximg: SPHERExImage) -> SPHERExImage:
     -------
     `~spx_data.SPHERExImage`
         Sample flat field as data in a SPHEREx image.
+
     """
     rng = np.random.default_rng(seed=321)
 
@@ -791,13 +905,52 @@ def get_sample_ff(spximg: SPHERExImage) -> SPHERExImage:
     return sample_ff
 
 
+def get_sample_persistence_img() -> SPHERExImage:
+    """Get sample persistence image from l1 image.
+
+    Returns
+    -------
+    `SPHERExImage`
+    Persistence image with data, flags, variance, and nonlinearity correction.
+    """
+    from spx_tasks import CreateVarianceMapTask, CorrectNonLinearityTask, UpdatePersistenceTask
+    spximg = get_sample_level1b_img(bad_flags=True)
+
+    spximg.header["TCUT"] = 70
+    spximg.header["TSAMP"] = 1.5349
+    spximg.header["SURLIM"] = 77
+    spximg.header["TRANDLY"] = 7
+    spximg.header["SURDLY"] = 3
+
+    gain_factors = get_sample_gain_factors(spximg)
+    read_noise = get_sample_read_noise_map(spximg)
+    nonlinear_pars = get_sample_nonlinearity_parameters()
+
+    task = CreateVarianceMapTask()
+    result = task.run(spximg, gain_factors, read_noise=read_noise)
+    spximg = result.spximg_out
+
+    task = CorrectNonLinearityTask()
+    result = task.run(spximg, nonlinear_pars, gain_factors)
+    spximg = result.spximg_out
+
+    task = UpdatePersistenceTask()
+    result = task.run(spximg, None)
+    persistence_image = result.persistence_image
+
+    return persistence_image
+
+
 def get_sample_l2_img() -> SPHERExImage:
-    """Gets sample l2 image from l1 image, after variance map made and ref pix removed.
+    """Get sample l2 image from l1 image, after variance map made and ref pix
+    removed.
 
     Returns
     -------
     L2 image with data, flags, and variance.
+
     """
+    from spx_tasks import CreateVarianceMapTask
     task = CreateVarianceMapTask()
     # Get sample Level 1b image.
     spximg = get_sample_level1b_img(bad_flags=True)
@@ -810,8 +963,8 @@ def get_sample_l2_img() -> SPHERExImage:
     gain_factors = get_sample_gain_factors(spximg)
     # Read noise map.
     read_noise = get_sample_read_noise_map(spximg)
-    # Running variance map task to check that uncertainty array changes as expected.
-
+    # Run variance map task to check that uncertainty array changes as
+    # expected.
     output = task.run(spximg, gain_factors, read_noise=read_noise)
 
     actv_area = l1_utils.active_area_range(output.spximg_out)
@@ -832,8 +985,8 @@ def get_5x5sample_spectral_wcs() -> tuple[fits.HDUList, np.ndarray]:
         Tuple of two elements:
         1. spectral wcs python representation
         2. expected values at each point of 5x5 image as int32 numpy array
-    """
 
+    """
     index_x = [1, 3, 5]
     index_y = [1, 5]
     coord_data = [[[200, 2000], [160, 1600], [240, 2400]], [[100, 1000], [60, 600], [140, 1000]]]
@@ -876,8 +1029,8 @@ def get_6x6sample_spectral_wcs() -> tuple[fits.HDUList, np.ndarray]:
         Tuple of two elements:
         1. spectral wcs python representation
         2. expected values at each point of 5x5 image as int32 numpy array
-    """
 
+    """
     index_x = [1, 3, 4, 6]
     index_y = [1, 6]
     coord_data = [[[225, 2250], [185, 1850], [185, 1850], [225, 2250]],
@@ -913,6 +1066,74 @@ def get_6x6sample_spectral_wcs() -> tuple[fits.HDUList, np.ndarray]:
     return hdul, expected_vals
 
 
+def make_fake_spectral_wcs_l2_img(
+    spximg_l2,
+    cwave_center_um: float = 1.50,
+    cwave_step_x_um: float = 1e-4,
+    cwave_step_y_um: float = -7e-5,
+    include_dwave: bool = True,
+    dwave_um: float = 1e-4,
+) -> fits.HDUList:
+    """Create a fake spectral_wcs HDUList with a 'CWAVE' image extension.
+
+    This is intended for unit tests where code does:
+        spectral_wcs["CWAVE"].data
+
+    Parameters
+    ----------
+    spximg_l2 : `~spx_data.SPHERExImage`
+        L2 image that defines output shape (ny, nx).
+    cwave_center_um : `float`, optional
+        Central wavelength value at image center (microns).
+    cwave_step_x_um : `float`, optional
+        Linear gradient in +x (microns/pixel).
+    cwave_step_y_um : `float`, optional
+        Linear gradient in +y (microns/pixel).
+    include_dwave : `bool`, optional
+        If True, add a 'DWAVE' extension as well.
+    dwave_um : `float`, optional
+        Constant delta-wavelength value (microns).
+
+    Returns
+    -------
+    hdul : `~astropy.io.fits.HDUList`
+        HDUList with at least:
+          - PrimaryHDU
+          - ImageHDU named 'CWAVE' (float32)
+          - optionally ImageHDU named 'DWAVE' (float32)
+
+    """
+    ny, nx = spximg_l2.data.shape[-2], spximg_l2.data.shape[-1]
+
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    x0 = (nx - 1) / 2.0
+    y0 = (ny - 1) / 2.0
+
+    # Fake CWAVE map (microns): simple plane
+    cwave = (
+        cwave_center_um
+        + cwave_step_x_um * (xx - x0)
+        + cwave_step_y_um * (yy - y0)
+    ).astype(np.float32)
+
+    # Minimal header is usually enough for tests
+    cwave_hdr = fits.Header()
+    cwave_hdr["BUNIT"] = "um"
+
+    hdus = [
+        fits.PrimaryHDU(),
+        fits.ImageHDU(data=cwave, header=cwave_hdr, name="CWAVE"),
+    ]
+
+    if include_dwave:
+        dwave_arr = np.full((ny, nx), dwave_um, dtype=np.float32)
+        dwave_hdr = fits.Header()
+        dwave_hdr["BUNIT"] = "um"
+        hdus.append(fits.ImageHDU(data=dwave_arr, header=dwave_hdr, name="DWAVE"))
+
+    return fits.HDUList(hdus)
+
+
 def add_gradient(data: np.ndarray) -> np.ndarray:
     """Add a gradient going from bottom left to upper right.
 
@@ -925,6 +1146,7 @@ def add_gradient(data: np.ndarray) -> np.ndarray:
     -------
     data_with_gradient : `numpy.ndarray`
         The data array with the gradient added in.
+
     """
     ny, nx = data.shape
     y, x = np.mgrid[:ny, :nx]
@@ -939,20 +1161,21 @@ def get_sample_global_bkgd(data: np.ndarray, null=False) -> np.ndarray:
     ----------
     data : `numpy.ndarray`
         Sample image data.
-    null : `bool`, optional
-        If True, return a null global background estimate to trigger local
-        background estimation. If False, return a global background estimate
-        to be subtracted during photometry. Default is False.
+    null: `bool`, optional
+        If True, return a global background estimate of all NaNs. If False,
+        return a global background estimate to be subtracted during photometry.
+        Default is False.
 
     Returns
     -------
     bkgd : `numpy.ndarray`
         Global background estimate.
+
     """
     if not null:
         bkgd = add_gradient(data)
     else:
-        bkgd = np.full(data.shape, np.nan)
+        bkgd = np.full_like(data, np.nan)
     return bkgd
 
 
@@ -968,6 +1191,15 @@ def get_sample_pix_map(data: np.ndarray) -> SPHERExImage:
     -------
     `spx_data.SPHERExImage`
         Solid angle pixel map.
+
     """
     solid_angle_data = np.ones(data.shape, dtype=np.float32)
     return SPHERExImage(solid_angle_data, unit=u.arcsec**2)
+
+
+def fake_he_template(spximg: SPHERExImage) -> SPHERExImage:
+    """Return fake He I Airglow Template."""
+    npix_x, npix_y = spximg.data.shape
+    data = np.ones([npix_x, npix_y], dtype=np.float32)/100
+    img = SPHERExImage(data, unit=u.Unit("MJy/sr"))
+    return img

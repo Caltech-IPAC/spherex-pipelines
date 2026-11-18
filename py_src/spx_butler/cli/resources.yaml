@@ -9,7 +9,8 @@ cmd:
   - ingest-calibrations
   - estimate-flat-field
   - run-l2a
-  - run-l3-photometry
   - update-exposure-region
   - create-tagged-primary-calibrators
   - report-contiguous-obs
+  - export-l2bwcs-and-tagl2a
+  - add-photometry-exceptions

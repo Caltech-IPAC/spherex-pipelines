@@ -14,7 +14,7 @@ import lsst.pipe.base.connectionTypes as cT
 # Local application/library specific imports
 from spx_data import SPHERExImage, SpectralWCS, Flag, ReadoutParameters, NonfuncData
 from spx_utils import active_area_range, with_extra_refs
-from spx_utils.utils import is_device_detcoord
+from spx_utils.utils import add_detcoord, is_device_detcoord
 from spx_tasks import add_history
 # ==============================================================================
 
@@ -28,20 +28,13 @@ class CreateImageDataFilesConnections(pipeBase.PipelineTaskConnections,
         storageClass="SPHERExImage",
         dimensions=("instrument", "exposure"),
     )
-    nonfunc_map = cT.PrerequisiteInput(
+    nonfunc_map_v2 = cT.PrerequisiteInput(
         name="nonfunc",
         doc="Permanently unusable.",
-        storageClass="SPHERExImage",
+        storageClass="NonfuncData",
         dimensions=["instrument", "detector"],
         isCalibration=True
     )
-    # nonfunc_map = cT.PrerequisiteInput(
-    #     name="nonfunc",
-    #     doc="Permanently unusable.",
-    #     storageClass="NonfuncData",
-    #     dimensions=["instrument", "detector"],
-    #     isCalibration=True
-    # )
     dichroic_cut_map = cT.PrerequisiteInput(
         name="dichroic",
         doc="Low efficiency due to dichroic.",
@@ -69,10 +62,12 @@ class CreateImageDataFilesConnections(pipeBase.PipelineTaskConnections,
 
 class CreateImageDataFilesConfig(pipeBase.PipelineTaskConfig,
                                  pipelineConnections=CreateImageDataFilesConnections):
+    """Configuration for CreateImageDataFiles task."""
+
     layers = ListField(
         doc="Additional image layers (apart from data and flags) to preserve.",
         dtype=str,
-        default=["RAWDATA", "CUBEFLGS"])
+        default=["RAWDATA", "CUBEFLGS", "GDSDATA"])
 
 
 class CreateImageDataFilesTask(pipeBase.PipelineTask):
@@ -96,6 +91,7 @@ class CreateImageDataFilesTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "create-image-data-files"
@@ -110,7 +106,7 @@ class CreateImageDataFilesTask(pipeBase.PipelineTask):
     @add_history()
     def run(self,
             spximg: SPHERExImage,
-            nonfunc_map: Optional[SPHERExImage] = None,
+            nonfunc_map: Optional[NonfuncData] = None,
             dichroic_cut_map: Optional[SPHERExImage] = None,
             spectral_wcs: Optional[HDUList] = None) -> pipeBase.Struct:
         """Generate a spectral image containing Level 1 data products.
@@ -121,7 +117,7 @@ class CreateImageDataFilesTask(pipeBase.PipelineTask):
         ----------
         spximg : `~spx_data.SPHERExImage`
             Input image.
-        nonfunc_map : `~spx_data.SPHERExImage`
+        nonfunc_map : `NonfuncData`
             Non-functional pixel map.
         dichroic_cut_map : `~spx_data.SPHERExImage`
             Map of the pixels affected by dichroic beam splitter.
@@ -133,6 +129,7 @@ class CreateImageDataFilesTask(pipeBase.PipelineTask):
         output: `Output`
             An `Output` object containing the ``image`` with all Level 1
             data products as an attribute of type `~spx_data.SPHERExImage`.
+
         """
         spximg_out = copy.copy(spximg)
         rp = ReadoutParameters.from_metadata(spximg.meta)
@@ -179,5 +176,7 @@ class CreateImageDataFilesTask(pipeBase.PipelineTask):
         # reset HDU creation time
         spximg_out.header["DATE"] = Time.now().to_value(format="fits")
         spximg_out.header.comments["DATE"] = "HDU creation time (UTC)"
+        # explicitly set DETCOORD
+        add_detcoord(spximg_out, device_coord=True)
 
         return pipeBase.Struct(spximg_out=spximg_out)

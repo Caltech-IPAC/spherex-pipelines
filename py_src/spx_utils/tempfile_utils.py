@@ -11,12 +11,15 @@ def get_ssdc_tempfiledir(env_var_name="SSDC_TEMPDIR") -> str:
 
     Parameters
     ----------
-    env_var_name : `str`
+    env_var_name : `str`, optional
+        Name of environment variable containing temp directory path.
+        Default is "SSDC_TEMPDIR".
 
     Returns
     -------
     result : `str`
         The absolute path of the temporary files directory.
+
     """
     # Check if the environment variable is set
     temp_dir = os.getenv(env_var_name)
@@ -57,6 +60,7 @@ def get_temp_path(prefix: str, suffix: str, dir=ssdc_temp_dir) -> str:
     -------
     result : `str`
         The absolute path of the created file.
+
     """
     with tempfile.NamedTemporaryFile(dir=dir, delete=False,
                                      prefix=prefix, suffix=suffix) as temp_file:

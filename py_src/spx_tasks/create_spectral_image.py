@@ -2,19 +2,20 @@ __all__ = ["CreateSpectralImageConfig", "CreateSpectralImageTask"]
 
 # Standard library imports
 import copy
-from typing import Optional
 
 # Related third party imports
 from astropy.io.fits import HDUList
 from astropy.time import Time
-from lsst.pex.config import ListField
+from lsst.pex.config import Field, ListField
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
+import numpy as np
 
 # Local application/library specific imports
 from spx_data import SPHERExImage, SpectralWCS, Layer
 from spx_tasks import add_history
-
+from spx_utils import fit_airglow_he, attach_airglow_fit_to_header, correlate_image
+from spx_utils.template_utils import HE_TEMP_PAR_KWS
 # ==============================================================================
 
 
@@ -34,6 +35,30 @@ class CreateSpectralImageConnections(pipeBase.PipelineTaskConnections,
         dimensions=["instrument", "detector"],
         isCalibration=True,
     )
+    he_template = cT.PrerequisiteInput(
+        name="he_template",
+        doc="He I Airglow Template.",
+        storageClass="SPHERExImage",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0
+    )
+    aurora_template = cT.PrerequisiteInput(
+        name="aurora_template",
+        doc="Aurora Template.",
+        storageClass="SPHERExImage",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0
+    )
+    shuttle_glow_template = cT.PrerequisiteInput(
+        name="shuttle_glow_template",
+        doc="Shuttle-glow Template.",
+        storageClass="SPHERExImage",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0
+    )
     spximg_out = cT.Output(
         name="spximg_out",  # default dataset type for output
         doc="Output after spectral image created.",
@@ -44,10 +69,18 @@ class CreateSpectralImageConnections(pipeBase.PipelineTaskConnections,
 
 class CreateSpectralImageConfig(pipeBase.PipelineTaskConfig,
                                 pipelineConnections=CreateSpectralImageConnections):
+    """Configuration for CreateSpectralImage task."""
+
     layers = ListField(
         doc="Additional image layers (apart from data and flags) to preserve.",
         dtype=str,
-        default=[Layer.PSF, Layer.ZODI])
+        default=[Layer.EPSF, Layer.ZODI])
+
+    threshold = Field(
+        doc="Threshold above which aurora/shuttleglow contamination is flagged True.",
+        dtype=float,
+        default=0.2,
+    )
 
 
 class CreateSpectralImageTask(pipeBase.PipelineTask):
@@ -71,6 +104,7 @@ class CreateSpectralImageTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "create-spectral-image"
@@ -83,7 +117,11 @@ class CreateSpectralImageTask(pipeBase.PipelineTask):
         super().__init__(**kwargs)
 
     @add_history()
-    def run(self, spximg: SPHERExImage, spectral_wcs: Optional[HDUList] = None) -> pipeBase.Struct:
+    def run(self, spximg: SPHERExImage,
+            spectral_wcs: HDUList | None,
+            he_template: SPHERExImage | None,
+            aurora_template: SPHERExImage | None,
+            shuttle_glow_template: SPHERExImage | None) -> pipeBase.Struct:
         """Generate an spectral image containing Level 2 data products.
         In implementation, this method will remove any unwanted information or
         data from the input image.
@@ -94,12 +132,19 @@ class CreateSpectralImageTask(pipeBase.PipelineTask):
             Input image.
         spectral_wcs : `~astropy.io.fits.HDUList`, optional
             Spectral WCS data.
+        he_template : `SPHERExImage` or `None`
+            Input He I Airglow template.
+        aurora_template : `SPHERExImage` or `None`
+            Input Aurora template.
+        shuttle_glow_template : `SPHERExImage` or `None`
+            Input Shuttle-glow template.
 
         Returns
         -------
         output: `Output`
             An `Output` object containing the ``image`` with all Level 2
             data products as an attribute of type `~spx_data.SPHERExImage`.
+
         """
         spximg_out = copy.copy(spximg)
 
@@ -124,10 +169,9 @@ class CreateSpectralImageTask(pipeBase.PipelineTask):
 
         # Remove unwanted diagnostic header keywords from earlier modules
         keywords_to_remove = [
-            "SNWCIRCL", "SATSTRKS", "SNW7-5CT", "SNW3-1CT", "SNW2-5CT",
-            "SNW6-5CT", "HIGHTRNS", "NBLMSRCS", "NSNOWSRC", "NBLM5SCS",
-            "TRANSFRC", "MXTRNSFR", "XTENDRAD", "MINOVRFL", "WTAVGCTR",
-            "MAXOVRLP", "MAXSNWLP", "SATHALOM", "SATHALOF", "BRDRMIND",
+            "SNWCIRCL", "HIGHTRNS", "MXTRNSFR", "XTENDRAD", "MINOVRFL", "WTAVGCTR",
+            "MAXOVRLP", "MAXSNWLP", "SATHALOM", "SATHALOF", "BRDRMIND", "MAXBLMLP",
+            "TRANSFRC", "NSNOWPIX", "NBLMPIX", "NHALOPIX"
         ]
 
         for key in keywords_to_remove:
@@ -137,5 +181,66 @@ class CreateSpectralImageTask(pipeBase.PipelineTask):
         spximg_out.header["BUNIT"] = ("MJy/sr", "Unit of pixel value")
         # Force FITS-friendly string representation for headers
         # spximg_out.uncertainty.unit = "MJy2/sr2"
+
+        band = spximg_out.getArrayId()
+        # Fit He Aurora Template on det 1 and 2
+        if he_template is not None:
+            params_airglow_helium = {
+                "WL_AIR": he_template.header[HE_TEMP_PAR_KWS["ag_wavelength"]],
+                "HW_AIR": he_template.header[HE_TEMP_PAR_KWS["ag_halfwidth"]],
+                "HW_BKG": he_template.header[HE_TEMP_PAR_KWS["ag_halfwidth_bkg"]],
+                "WL_TOP": [
+                    he_template.header[HE_TEMP_PAR_KWS["wl_top_1"]],
+                    he_template.header[HE_TEMP_PAR_KWS["wl_top_2"]],
+                ],
+            }
+            # Get best-fit parameters
+            fit_params = fit_airglow_he(spximg_out, band, he_template, spectral_wcs, params_airglow_helium,
+                                        use_variance=True, fit_xslope=True, verbose=False)
+            # Attach fit pars to image metadata
+            attach_airglow_fit_to_header(spximg_out.header, fit_params)
+
+        # Defaults
+        aurora_corr = 0.0
+        shuttle_glow_corr = 0.0
+
+        airglow_cont = band in (1, 2)
+        aurora_cont = False
+        shuttle_glow_cont = False
+
+        # Disallow both templates at once
+        if aurora_template is not None and shuttle_glow_template is not None:
+            raise ValueError("Provide only one of aurora_template or shuttle_glow_template (not both).")
+
+        def _finite_or_zero(x) -> float:
+            return 0.0 if not np.isfinite(x) else float(x)
+
+        if aurora_template is not None:
+            if band != 1:
+                raise ValueError("Aurora template only applies to detector 1.")
+            aurora_corr = _finite_or_zero(correlate_image(spximg, aurora_template))
+            aurora_cont = aurora_corr > self.config.threshold
+
+        elif shuttle_glow_template is not None:
+            if band != 5:
+                raise ValueError("Shuttle glow template only applies to detector 5.")
+            shuttle_glow_corr = _finite_or_zero(correlate_image(spximg, shuttle_glow_template))
+            shuttle_glow_cont = shuttle_glow_corr > self.config.threshold
+
+        spximg_out.header["HIERARCH AURORA_CORR"] = (
+            round(aurora_corr, 3), "Correl coeff with aurora template"
+        )
+        spximg_out.header["HIERARCH SHUTTLE_GLOW_CORR"] = (
+            round(shuttle_glow_corr, 3), "Correl coeff with shuttle-glow template"
+        )
+        spximg_out.header["HIERARCH HE_AIRGLOW_CONT"] = (
+            airglow_cont, "True for detectors 1 and 2, False otherwise"
+        )
+        spximg_out.header["HIERARCH SHUTTLE_GLOW_CONT"] = (
+            shuttle_glow_cont, f"True if SHUTTLE_GLOW_CORR > {self.config.threshold}"
+        )
+        spximg_out.header["HIERARCH AURORA_CONT"] = (
+            aurora_cont, f"True if AURORA_CORR > {self.config.threshold}"
+        )
 
         return pipeBase.Struct(spximg_out=spximg_out)

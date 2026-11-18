@@ -50,31 +50,31 @@ def centers_to_widths(centers: np.ndarray, lo: float, hi: float) -> np.ndarray:
     return np.diff(edges)                  # length N
 
 
-@numba.njit
-def manual_dot(psfs: np.ndarray, weights: np.ndarray) -> np.ndarray:
+@numba.njit(fastmath=True)
+def manual_dot(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.ndarray,
+               w0: float, w1: float, w2: float, w3: float) -> np.ndarray:
     """Manually computes the tensor dot product, summing the product of
     the weight and the PSF over all corners of an inner PSF rectangle.
 
     Parameters
     ----------
-    psfs : `numpy.ndarray`
-        Array of corner PSFs with shape (4, N, N), in order lower left,
-        upper left, lower right, upper right.
-    weights : `numpy.ndarray`
-        Array of corner weights with shape (4, ), in order lower left,
-        upper left, lower right, upper right.
+    p0, p1, p2, p3 : `numpy.ndarray`
+        Corner PSFs, in order lower left, upper left, lower right, upper right.
+    w0, w1, w2, w3 : `float`
+        Corner weights, in order lower left, upper left, lower right, upper right.
 
     Returns
     -------
     blended_psf : `numpy.ndarray`
         Blended/interpolated PSF with shape (N, N).
+
     """
-    j, k = psfs.shape[1], psfs.shape[2]
-    blended_psf = np.zeros(psfs[0].shape, psfs[0].dtype)
-    for i in range(weights.shape[0]):
-        for jj in range(j):
-            for kk in range(k):
-                blended_psf[jj, kk] += weights[i] * psfs[i, jj, kk]
+    j, k = p0.shape
+    blended_psf = np.zeros((j, k), dtype=p0.dtype)
+    for jj in range(j):
+        for kk in range(k):
+            blended_psf[jj, kk] = (w0 * p0[jj, kk] + w1 * p1[jj, kk] +
+                                   w2 * p2[jj, kk] + w3 * p3[jj, kk])
     return blended_psf
 
 
@@ -107,16 +107,23 @@ class PSFZoneData(NDIOMixin):
     -----
     Using FITS coords in the original image.
     We maybe have to apply the offsets when the coordinates are used elsewhere.
+
     """
 
     def __init__(self, data: ArrayLike, x_centers: np.ndarray, y_centers: np.ndarray,
-                 oversampling: int = 10) -> None:
+                 oversampling: float = 10) -> None:
 
-        self.data = np.asarray(data)
+        data = np.asarray(data)
+        # Convert to native byte order to enable SIMD numba compatibility.
+        if not data.dtype.isnative:
+            data = data.byteswap().view(data.dtype.newbyteorder())
+        self.data: ArrayLike = data
+        # Explicitly initialize `<axis>_centers` as arrays in order to use
+        # `repeat` method and convert any input lists
         self.x_centers = np.asarray(x_centers, dtype=float)
         self.y_centers = np.asarray(y_centers, dtype=float)
-        self.oversampling = int(oversampling)  # casted for backwards compatability
-        # zones
+        self.oversampling = int(oversampling)
+        # Calculate zone IDs using centers
         self.x_zones = len(x_centers)
         self.y_zones = len(y_centers)
         # Detector bounds in "pixel center" coords (consistent with your quad edges)
@@ -153,12 +160,13 @@ class PSFZoneData(NDIOMixin):
             )
 
     def _get_header(self) -> fits.Header:
-        """Builds the header and WCS for PSF grid.
+        """Build the header and WCS for PSF grid.
 
         Returns
         -------
         `fits.Header`
             Header for PSF grid.
+
         """
         # Build WCS
         w = wcs.WCS(naxis=2)
@@ -246,6 +254,7 @@ class PSFZoneData(NDIOMixin):
             An array where each element is a dictionary of quadrilaterals. Keys
             "zone_ctrs" and "zone_edges" map to different coordinate
             boundary values. The coordinates are in order xmin,xmax,ymin,ymax.
+
         """
         def find_value_coords(grid_xy, position, axis):
             # Find all coordinate sets matching an input position along 1 axis
@@ -340,6 +349,7 @@ class PSFZoneData(NDIOMixin):
         ------
         ValueError
             Raised if input positions are outside of all PSF zone edges.
+
         """
         inner_rect = None
         for quad in self.quads:
@@ -355,7 +365,7 @@ class PSFZoneData(NDIOMixin):
 
     def _get_corner_psf(self, rectangle: tuple[float],
                         corner_type: str) -> np.ndarray:
-        """Helper to extract one of the four PSFs in an inner PSF rectangle.
+        """Extract one of the four PSFs in an inner PSF rectangle.
 
         Parameters
         ----------
@@ -370,6 +380,7 @@ class PSFZoneData(NDIOMixin):
         -------
         `numpy.ndarray`
             The PSF for the queried corner.
+
         """
         x1, x2, y1, y2 = rectangle
 
@@ -415,6 +426,7 @@ class PSFZoneData(NDIOMixin):
         weights : `np.ndarray` of `float`
             The distance-based weight for each corner, in order (lower left,
             upper left, lower right, upper right).
+
         """
         x1, x2, y1, y2 = rectangle
 
@@ -433,7 +445,7 @@ class PSFZoneData(NDIOMixin):
         return weights
 
     def get_blended_psf(self, x: float, y: float) -> np.ndarray:
-        """Retrieves the interpolated PSF for a given source position on the
+        """Retrieve the interpolated PSF for a given source position on the
         detector.
 
         Notes
@@ -451,19 +463,28 @@ class PSFZoneData(NDIOMixin):
         -------
         psf : `numpy.ndarray`
             The blended PSF.
+
         """
         psf_rectangle = self._get_inner_rectangle(x, y)
-        corner_types = ["lower left", "upper left", "lower right", "upper right"]
-        corner_psfs = np.array([self._get_corner_psf(psf_rectangle, c) for c in corner_types])
+
+        # Fetch PSFs directly without packing into a new np.array
+        p0 = self._get_corner_psf(psf_rectangle, "lower left")
+        p1 = self._get_corner_psf(psf_rectangle, "upper left")
+        p2 = self._get_corner_psf(psf_rectangle, "lower right")
+        p3 = self._get_corner_psf(psf_rectangle, "upper right")
+
         corner_weights = self._get_dist_weights(x, y, psf_rectangle)
-        psf = manual_dot(corner_psfs, corner_weights)
+        psf = manual_dot(p0, p1, p2, p3,
+                         corner_weights[0], corner_weights[1],
+                         corner_weights[2], corner_weights[3])
+
         weight_sum = np.sum(corner_weights)
         if not (abs(weight_sum - 1.0) <= 1e-3):
             logging.warning(f"Weights sum to {weight_sum:.6f}, expected ~1.0.")
-        return psf
 
+        return psf
     def to_hdu(self, name: str = "PSF-DATA-CUBE") -> fits.ImageHDU:
-        """Returns the PSF zone data and header as an image HDU.
+        """Return the PSF zone data and header as an image HDU.
 
         Parameters
         ----------
@@ -474,6 +495,7 @@ class PSFZoneData(NDIOMixin):
         -------
         `~astropy.io.fits.ImageHDU`
             The image HDU of the PSF zone data and header.
+
         """
         return fits.ImageHDU(data=self.data.astype(np.float32, copy=False), header=self.header, name=name)
 
@@ -682,7 +704,7 @@ class PSFZoneData(NDIOMixin):
 
 
 def spx_psf_writer(psf: PSFZoneData, filename: Union[str, Path], **kwargs) -> None:
-    """Writes PSF zone data object to a file.
+    """Write PSF zone data object to a file.
 
     Parameters
     ----------
@@ -690,6 +712,9 @@ def spx_psf_writer(psf: PSFZoneData, filename: Union[str, Path], **kwargs) -> No
         The instance to write to a file.
     filename : `Union[str, Path]`
         Filename and path to write to.
+    **kwargs
+        Additional keyword arguments passed to `astropy.io.fits.HDUList.writeto`.
+
     """
     primary_header = fits.Header()
     primary_header["COMMENT"] = "PSF zone data defined by x and y centers and x and y zones"
@@ -700,12 +725,14 @@ def spx_psf_writer(psf: PSFZoneData, filename: Union[str, Path], **kwargs) -> No
 
 
 def spx_psf_reader(filename: Union[str, Path], **kwargs) -> PSFZoneData:
-    """Reads in FITS file and creates PSF instance.
+    """Read in FITS file and create PSF instance.
 
     Parameters
     ----------
     filename : `Union[str, Path]`
         Path to FITS file to read in.
+    **kwargs
+        Additional keyword arguments passed to `astropy.io.fits.open`.
 
     Returns
     -------
@@ -717,6 +744,7 @@ def spx_psf_reader(filename: Union[str, Path], **kwargs) -> PSFZoneData:
     FITS files that contain scaled data (e.g. unsigned integer images) will
     be scaled and the keywords used to manage scaled data in
     :mod:`astropy.io.fits` are disabled.
+
     """
     with fits.open(filename, **kwargs) as hdul:
         return PSFZoneData.from_hdu(hdul[1])

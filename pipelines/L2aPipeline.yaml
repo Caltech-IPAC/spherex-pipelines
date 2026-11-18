@@ -5,6 +5,7 @@ tasks:
     class: spx_tasks.L2aTask
     config:
       connections.spximg: "level1"
+      create_variance_map.apply_variance_boost: false
       connections.persistence_state_in: "persistence_state"
       connections.nonlinear_pars: "nonlinear_pars"
       connections.gain_factors: "gain_factors"

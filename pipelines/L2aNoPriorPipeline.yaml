@@ -6,6 +6,7 @@ tasks:
     class: spx_tasks.L2aTask
     config:
       connections.spximg: "level1"
+      create_variance_map.apply_variance_boost: false
       connections.nonlinear_pars: "nonlinear_pars"
       connections.gain_factors: "gain_factors"
       connections.readnoise_pars: "readnoise_pars"

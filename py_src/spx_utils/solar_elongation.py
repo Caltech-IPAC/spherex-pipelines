@@ -51,6 +51,7 @@ def get_eclons_from_Sun(obspos: SkyCoord, obstimes: list[Time], unit='deg'):
     np.ndarray
         Array of absolute ecliptic longitude differences (wrapped to [-180, 180] deg)
         between the observation positions and the Sun at each observation time.
+
     """
     eclons_from_sun = []
 
@@ -85,6 +86,7 @@ def meshgrid(npix: int, dnpix: int = None):
     ------
     ValueError
         If `npix` or `dnpix` are not positive integers.
+
     """
     if not isinstance(npix, int) or npix <= 0:
         raise ValueError("`npix` must be a positive integer.")
@@ -122,6 +124,7 @@ def lstsq(Y: np.ndarray, A: np.ndarray, Cinv: np.ndarray, return_err=False):
         Least-squares solution.
     `np.ndarray`, optional
         Covariance matrix of the fit (if `return_err=True`).
+
     """
     if len(Cinv.shape) == 1:
         A_weighted = A * np.sqrt(Cinv[:, None])
@@ -209,6 +212,7 @@ def compute_tilt_function(images: list[np.ma.MaskedArray],
         - 'eclons_from_Sun_latbins': Ecliptic longitudes from the Sun
            for each latitude bin.
         - 'avg_signals_latbins': Mean signals for each latitude bin.
+
     """
     comm = _get_mpi_comm()
 
@@ -420,6 +424,7 @@ def fit_tilt_function(latavg: np.ndarray,
     -------
     tilt_function : np.ndarray
         Fitted tilt function across the latitude range.
+
     """
     A = np.column_stack((np.ones_like(latavg), latavg))
     Y = tilts
@@ -480,6 +485,7 @@ def tilt_correct(images: list[np.ma.MaskedArray],
     corrected_images : `list[np.ma.MaskedArray]`
         List of tilt-corrected masked images. For images where no correction
         was applied, the original image is returned (if `save_uncorrected=True`).
+
     """
     comm = _get_mpi_comm()
 
@@ -581,7 +587,6 @@ def tilt_correct(images: list[np.ma.MaskedArray],
 
 def construct_tilt_template(image, wcs, obstime, tilt):
     """Construct a tilt template object and tilt function."""
-
     # pixel indices
     xp, yp = meshgrid(image.shape[0])
 

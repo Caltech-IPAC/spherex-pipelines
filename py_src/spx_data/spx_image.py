@@ -37,7 +37,7 @@ from spx_data.spx_flags import Flag
 from .spx_version import SSDC_PIPELINES_VERSION
 from .sur import SUR
 from . import spx_param
-from .spx_flags import flag_description
+from .fits_flag_io import read_flag_headers, write_flag_headers
 # from spx_utils.utils import add_detcoord
 
 ExtensionHDU = fits.hdu.base.ExtensionHDU
@@ -57,7 +57,7 @@ for hdr_key in ("MJD-BEG", "MJD-END", "MJD-OBS", "MJDREF", "MJD-AVG",
 
 @dataclass(frozen=True)
 class Layer:
-    """Additional image layers"""
+    """Additional image layers."""
 
     # Fixed sources falling within the image.
     CATALOG: Final[str] = "CATALOG"
@@ -69,6 +69,8 @@ class Layer:
     DIAGNOSTIC_SIGMA: Final[str] = "DIAGNOSTIC_SIGMA"
     # PSF data.
     PSF: Final[str] = "PSF"
+    # EPSF binary table.
+    EPSF: Final[str] = "EPSF"
     # Full sample data.
     RAWDATA: Final[str] = "RAWDATA"
     # Full sample data flags.
@@ -95,7 +97,9 @@ class SPHERExSlicingMixin(NDSlicingMixin):
     -----
     Be aware that changing values of the sliced instance will change the values
     of the original.
+
     """
+
     def _slice(self, item):
         """Slices and collects the attributes and passes them back as a `dict`.
 
@@ -118,6 +122,7 @@ class SPHERExSlicingMixin(NDSlicingMixin):
 
         When possible the return should not be a copy of the data but
         a reference.
+
         """
         kwargs = super()._slice(item)
         # Handle flags for SPHEREx
@@ -150,6 +155,7 @@ class SPHERExSlicingMixin(NDSlicingMixin):
         Notes
         -----
         See `astropy.nddata.NDSlicingMixin._slice_mask`
+
         """
         if self.flags is None:
             return None
@@ -161,15 +167,16 @@ class SPHERExSlicingMixin(NDSlicingMixin):
 
 
 class SPHERExArithmeticMixin(NDArithmeticMixin):
-    """Extension of `astropy.nddata.NDArithmeticMixin` to preserve flags, flag
+    """Extend `astropy.nddata.NDArithmeticMixin` to preserve flags, flag
     definitions and layers during arithmetic.
     """
+
     def _arithmetic(self, operation, operand,
                     propagate_uncertainties=True, handle_mask=np.logical_or,
                     handle_meta=None, uncertainty_correlation=0,
                     compare_wcs="first_found", handle_flags=None,
                     handle_layers=None, **kwds):
-        """Base method which calculates the result of the arithmetic operation.
+        """Calculate the result of the arithmetic operation.
 
         Parameters
         ----------
@@ -193,7 +200,7 @@ class SPHERExArithmeticMixin(NDArithmeticMixin):
             copies SPHEREx flags and flag_defs to new object
         handle_layers : callable, ``"first_found"`` or ``None``, optional
             copies SPHEREx layers to new object
-        kwargs :
+        **kwds
             Any other parameter that should be passed to the different
             :meth:`NDArithmeticMixin._arithmetic_mask` (or wcs, ...)
             methods.
@@ -214,6 +221,7 @@ class SPHERExArithmeticMixin(NDArithmeticMixin):
         This method determines the result of the arithmetic operation on the
         ``data`` including their units and then forwards to other methods
         to calculate the other properties for the result (like uncertainty).
+
         """
         # Pass to super with appropriate parameters
         result, kwargs = super()._arithmetic(
@@ -302,6 +310,7 @@ class SPHERExDataArray(NDDataArray, SPHERExArithmeticMixin,
     ValueError :
         If the `uncertainty` or `mask` inputs cannot be broadcast (e.g., match
         shape) onto ``data``.
+
     """
 
     def __init__(self, data, *args, flag_defs=None, **kwargs):
@@ -328,12 +337,12 @@ class SPHERExDataArray(NDDataArray, SPHERExArithmeticMixin,
     # A layer is lazily converted to an object when it is accessed
     @property
     def layers(self) -> dict[str, ExtensionHDU]:
-        """Do not use outside this module"""
+        """Return the layers dictionary (internal use only)."""
         return self._layers
 
     @layers.setter
     def layers(self, value: dict[str, ExtensionHDU]):
-        """Do not use outside this module"""
+        """Set the layers dictionary (internal use only)."""
         self._layers = value
 
     @property
@@ -387,13 +396,15 @@ class SPHERExImage(CCDData, SPHERExDataArray):
     -------
     read(*args, **kwargs)
         Class method to create an SPHERExImage instance based on a ``FITS``
-        file. This method uses :func:`spherex_fits_reader` with the provided
+        file. This method uses :func:`spherex_image_reader` with the provided
         parameters.
     write(*args, **kwargs)
         Writes the contents of the SPHERExImage instance into a new ``FITS``
-        file. This method uses :func:`spherex_fits_writer` with the provided
+        file. This method uses :func:`spherex_image_writer` with the provided
         parameters.
+
     """
+
     def __init__(self, data, *args, flag_header=None, **kwargs):
         if "flags" in kwargs and isinstance(kwargs["flags"], FlagCollection):
             raise NotImplementedError("Flag collection is not supported")
@@ -506,6 +517,27 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         self._layers[Layer.PSF] = value.to_hdu(Layer.PSF)
 
     @property
+    def epsf_table(self) -> Optional[fits.BinTableHDU]:
+        if Layer.EPSF in self._layers:
+            hdu = self._layers[Layer.EPSF]
+            if isinstance(hdu, fits.BinTableHDU):
+                return hdu
+            raise ValueError("Unexpected HDU type for EPSF layer")
+        return None
+
+    @epsf_table.setter
+    def epsf_table(self, value):
+        if isinstance(value, fits.BinTableHDU):
+            hdu = fits.BinTableHDU(data=value.data.copy(),
+                                   header=value.header.copy(),
+                                   name=Layer.EPSF)
+        elif isinstance(value, Table):
+            hdu = fits.BinTableHDU(data=value, name=Layer.EPSF)
+        else:
+            raise TypeError("epsf_table must be a BinTableHDU or astropy Table")
+        self._layers[Layer.EPSF] = hdu
+
+    @property
     def spectral_wcs(self) -> Optional[SpectralWCS]:
         return self._spectral_wcs
 
@@ -521,6 +553,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         -------
         `dict[str, WCS]`
             Dictionary of WCS objects, with the keys being the WCS suffix.
+
         """
         # Fix to not parse spectral WCS as alternative header.
         # Make a copy of the header to modify
@@ -542,12 +575,13 @@ class SPHERExImage(CCDData, SPHERExDataArray):
 
     @alt_wcs.setter
     def alt_wcs(self, alt_wcs_dict: dict[str, WCS]):
-        """Property setter for alternative WCS.
+        """Set the alternative WCS.
 
         Parameters
         ----------
-        `dict[str, WCS]`
+        alt_wcs_dict : `dict[str, WCS]`
             Dictionary of WCS objects, with the keys being the WCS suffix.
+
         """
         for suffix, wcsa in alt_wcs_dict.items():
             wcsa_header = wcsa.to_header()
@@ -602,6 +636,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         ----------
         layers : `list` [`str`]
             List of image layers
+
         """
         existing_layers = self._layers.keys()
         # verify that requested layers are part of the image
@@ -622,6 +657,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         -------
         array_id : `int`
             SPHEREx detector array id from 1 to 6
+
         """
         if "ARRAY" in self.header:
             return self.header["ARRAY"]
@@ -637,6 +673,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         ----------
         array_id : `int`
             SPHEREx detector array id from 1 to 6
+
         """
         self.header["ARRAY"] = (array_id, "SPHEREx detector array")
 
@@ -647,6 +684,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         ----------
         time : `astropy.time.Time`
             Exposure start time
+
         """
         self.meta["MJD-OBS"] = time.mjd
         self.meta["MJD-BEG"] = time.mjd
@@ -657,6 +695,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         Returns
         -------
         exposure_start_time : `astropy.time.Time`
+
         """
         if "MJD-BEG" in self.meta:
             return Time(self.meta["MJD-BEG"], format="mjd", scale="utc")
@@ -674,6 +713,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         Returns
         -------
         exposure_end_time : `astropy.time.Time`
+
         """
         if "MJD-END" in self.meta:
             return Time(self.meta["MJD-END"], format="mjd", scale="utc")
@@ -684,7 +724,8 @@ class SPHERExImage(CCDData, SPHERExDataArray):
             return self.getExposureStartTime() + self.getExposureDuration()
 
     def getFlagsAsMask(self, flag_val: int, check_all=False):
-        """Get flag mask by providing flag value.
+        """Return flag mask by providing flag value.
+
         Use ``|`` operator to combine flags.
         Example: Flag.COSMICRAY | Flag.SATURATED
 
@@ -704,6 +745,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
             Mask for the data, given as a boolean Numpy array with a shape
             matching that of the data. The values are `False` where
             the data is *not flagged* and `True` when it is.
+
         """
         if self.flags is None:
             raise RuntimeError("flags are not set")
@@ -720,22 +762,19 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         return ret
 
     def setFreeFormatHeaderCard(self, name: str, value: float, digits: int, comment: str) -> None:
-        """Set free format header card, which minimizes header line size
+        """Set free format header card, which minimizes header line size.
 
         Parameters
         ----------
-        name :
-            Header name
-        value :
-            Float value
-        digits :
-            Number of digits after the decimal point
-        comment :
-            Header comment
+        name : `str`
+            Header name.
+        value : `float`
+            Float value.
+        digits : `int`
+            Number of digits after the decimal point.
+        comment : `str`
+            Header comment.
 
-        Returns
-        -------
-        card : `fits.Card`
         """
         if len(name) > 8:
             raise ValueError(f"FITS keyword '{name}' exceeds 8 characters")
@@ -751,8 +790,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         return self.header.append(card)
 
     def setFlagsFromMask(self, mask: np.ndarray, flag_val: int, area: tuple[slice, slice] = None):
-        """Set flags defined by the ``flag_val`` for pixels defined by the
-        ``mask``.
+        """Set flags defined by ``flag_val`` for pixels defined by ``mask``.
 
         Parameters
         ----------
@@ -763,7 +801,8 @@ class SPHERExImage(CCDData, SPHERExDataArray):
             should be set.
         flag_val : `int`
             Combined flags value. For example: Flag.HOT | Flag.NONFUNC
-        area : `tuple[slice, slice]`
+        area : `tuple[slice, slice]`, optional
+            Sub-region of the image to apply flags to. Default is entire image.
 
         """
         if mask.dtype != np.bool_:
@@ -817,6 +856,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         ----------
         exp_duration : `astropy.time.TimeDelta`
             Exposure duration
+
         """
         self.meta["TINT"] = exp_duration.sec
 
@@ -827,6 +867,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         -------
         exposure_duration : `astropy.time.TimeDelta`
             Total time of taken exposure.
+
         """
         # exposure duration is named in header TINT.
         if "TINT" in self.meta:
@@ -841,6 +882,7 @@ class SPHERExImage(CCDData, SPHERExDataArray):
         ----------
         add_detcoord_flag : bool, optional
             If True, calls `add_detcoord(self)` to add detector coordinate WCS.
+
         """
         now = Time.now()
         hdr = self.meta  # or self.header; they are aliases
@@ -854,56 +896,47 @@ class SPHERExImage(CCDData, SPHERExDataArray):
 
 
 def _get_flag_defs(header: fits.Header):
-    """Get flag definition dictionary from the the header
+    """Return flag definition dictionary from the header.
+
+    Reads flag definitions and removes the flag keywords from the header
+    to avoid duplication (flag definitions are stored separately in flag_defs).
+
     Parameters
     ----------
     header : dict-like object
+        FITS header containing flag definitions. Modified in place to
+        remove flag definition keywords.
+
     Returns
     -------
-    flag_defs : dict-like object
+    flag_defs : dict or None
+        Dictionary mapping flag names to bit positions,
+        or None if no flag definitions found.
+
     """
-    flag_defs = {}
-    for key, val in header.items():
-        if key.startswith("MP_"):
-            try:
-                intval = int(val)
-                if intval > 31:
-                    raise ValueError(f"bit value {intval} for flag {key}"
-                                     " is too large")
-                flagkey = key[3:]
-                flag_defs[flagkey] = intval
-            except ValueError:
-                pass
-    if len(flag_defs) > 0:
-        return flag_defs
+    flag_defs = read_flag_headers(header, remove_from_header=True)
+    return flag_defs if flag_defs else None
 
 
 def _add_flag_defs(spherex_image: SPHERExImage, header: fits.Header) -> None:
-    """Add image flag definitions to the header
+    """Add image flag definitions to the header.
+
     Parameters
     ----------
     spherex_image : `~spherex.data.SPHERExImage`
+        The SPHERExImage containing flag definitions.
     header : dict-like object
-    """
+        FITS header to update with flag definitions.
 
+    """
     # check for None or empty dictionary
     if not spherex_image.flag_defs:
         return
 
-    # convention understood by Firefly:
-    # EXTTYPE=MASK and flag bit values in keywords starting with "MP_"
-    header["EXTTYPE"] = ("MASK", "Extension can be used as a mask overlay")
-    # sort flags numerically by value
-    for key, val in sorted(spherex_image.flag_defs.items(), key=lambda x: x[1]):
-        prefix = "MP_" if len(key) < 6 else "HIERARCH MP_"
-        header[f"{prefix}{key.upper()}"] = val
-        flag_name = key.upper()
-        header_key = f"{prefix}{flag_name}"
-        # Get flag description
-        flag_enum = getattr(Flag, flag_name, None)
-        description = flag_description(flag_enum) if flag_enum else "No description"
-        # Add to header with comment
-        header[header_key] = (val, description)
+    # Use consolidated flag header I/O
+    # Convert keys to uppercase to match Flag enum names
+    flag_defs = {k.upper(): v for k, v in spherex_image.flag_defs.items()}
+    write_flag_headers(header, flag_defs)
 
 
 def _remove_spectral_wcs_keys(hdr):
@@ -913,10 +946,14 @@ def _remove_spectral_wcs_keys(hdr):
 
 
 def ensure_uncertainty_parentdata(spx_image: SPHERExImage) -> None:
-    # Workaround for None in _parent_nddata field of uncertainty.
-    # _parent_nddata is set in uncertainty setter of CCDData.
-    # It is a weak reference and might be lost when the original
-    # image is garbage collected.
+    """Ensure uncertainty parent data reference is set.
+
+    Workaround for None in _parent_nddata field of uncertainty.
+    _parent_nddata is set in uncertainty setter of CCDData.
+    It is a weak reference and might be lost when the original
+    image is garbage collected.
+
+    """
     spx_image.uncertainty = spx_image.uncertainty
 
 
@@ -927,8 +964,7 @@ def spherex_image_reader(filename, hdu=0, unit=None,
                          dtype_data=np.float32,
                          dtype_flags=np.int32,
                          **kwd) -> SPHERExImage:
-    """
-    Generate a SPHERExImage object from a FITS file.
+    """Generate a SPHERExImage object from a FITS file.
 
     When flags and variance are present, they are expected to be in
     the second and the third extensions.
@@ -995,6 +1031,7 @@ def spherex_image_reader(filename, hdu=0, unit=None,
     FITS files that contained scaled data (e.g. unsigned integer images) will
     be scaled and the keywords used to manage scaled data in
     :mod:`astropy.io.fits` are disabled.
+
     """
     unsupport_open_keywords = {
         "do_not_scale_image_data": "Image data must be scaled.",
@@ -1135,7 +1172,7 @@ def spherex_image_reader(filename, hdu=0, unit=None,
 def spherex_image_writer(spherex_image: SPHERExImage, fileobj, extname="IMAGE",
                          hdu_mask="MASK", hdu_uncertainty="VARIANCE", hdu_flags="FLAGS",
                          wcs_relax=True, key_uncertainty_type="UTYPE",
-                         add_version=True, **kwd):
+                         add_version=True, compress_image_hdu=False, **kwd):
     """Write `~spx_data.SPHERExImage` to a file.
 
     We do not usually use MASK layer in SPHEREx products.
@@ -1144,7 +1181,11 @@ def spherex_image_writer(spherex_image: SPHERExImage, fileobj, extname="IMAGE",
     Parameters
     ----------
     spherex_image : `~spx_data.SPHERExImage`
-    fileobj : file-like object or filename
+        The SPHERExImage object to write.
+    fileobj : file-like object or `str`
+        File path or file-like object to write to.
+    extname : `str`, optional
+        Name of the image extension. Default is ``"IMAGE"``.
     hdu_mask, hdu_uncertainty, hdu_flags : `str` or `None`, optional
         If it is a string append this attribute to the HDUList as
         `~astropy.io.fits.ImageHDU` with the string as extension name.
@@ -1162,12 +1203,12 @@ def spherex_image_writer(spherex_image: SPHERExImage, fileobj, extname="IMAGE",
         Default is ``UTYPE``.
     add_version : `bool`
         If True, adds VERSION header with software version.
+    compress_image_hdu: `bool`, optional
+        If True, it will compress the image extension (lossy).
     kwd : `dict`
         Keyword parameters passed to :meth:`~astropy.io.fits.HDUList.writeto` method.
-    Returns
-    -------
-    """
 
+    """
     # ensure data types
     ensure_dtype(spherex_image)
 
@@ -1208,8 +1249,12 @@ def spherex_image_writer(spherex_image: SPHERExImage, fileobj, extname="IMAGE",
         hdr_flags = deepcopy(spherex_image.flag_header)
         _add_flag_defs(spherex_image, hdr_flags)
 
-        hdu = fits.ImageHDU(spherex_image.flags.data, hdr_flags,
-                            name=hdu_flags)
+        hdu = fits.CompImageHDU(
+            data=np.asarray(spherex_image.flags),
+            header=hdr_flags,
+            name=hdu_flags,
+            compression_type="RICE_1",
+        )
         hdulist.insert(2, hdu)
 
     for name, layer in spherex_image.layers.items():
@@ -1248,6 +1293,16 @@ def spherex_image_writer(spherex_image: SPHERExImage, fileobj, extname="IMAGE",
     if spectral_wcs is not None:
         hdulist.append(spherex_image.spectral_wcs.tab)
 
+    # Compress image hdu (for PersistenceImage)
+    if compress_image_hdu:
+        hdulist[extname] = fits.CompImageHDU(
+            data=image_hdu.data,
+            header=image_hdu.header,
+            name=image_hdu.name,
+            compression_type="HCOMPRESS_1",
+            quantize_level=64,
+        )
+
     hdulist.writeto(fileobj, **kwd)
 
 
@@ -1269,6 +1324,7 @@ def _convert_dtype(array: np.ndarray, dtype_desired: np.dtype, name: str) -> np.
     -------
     array : `~numpy.ndarray`
         The array with the desired data type.
+
     """
     dtype_array = array.dtype
     if dtype_array != dtype_desired:
@@ -1287,6 +1343,7 @@ def ensure_dtype(spherex_image: SPHERExImage) -> None:
     spherex_image : `~spx_data.SPHERExImage`
         The SPHERExImage object containing the data, uncertainty, and flags
         arrays to be converted to the desired data types.
+
     """
     dtype_desired = spherex_image.dtype_data
     spherex_image.data = _convert_dtype(spherex_image.data, dtype_desired, "data")

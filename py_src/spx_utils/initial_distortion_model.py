@@ -12,7 +12,7 @@ from astropy.modeling import models, fitting
 
 
 def get_initial_distortion_model(T: Table, poly_order=3):
-    """Calculates the optical field distortion derived from pre-launch
+    """Calculate the optical field distortion derived from pre-launch
        ray trace model (August 2023) of the telescope field distortion.
        This creates an initial pre-launch representation of the
        field distortion of the SPHEREx telescope for use prior to
@@ -20,8 +20,10 @@ def get_initial_distortion_model(T: Table, poly_order=3):
 
     Parameters
     ----------
-    initial_distortion_table : `astropy.table.Table`
+    T : `~astropy.table.Table`
         Tabular data of ray-tracing for deriving initial distortion model.
+    poly_order : `int`, optional
+        Order of polynomial for distortion model. Default is 3.
 
     Notes
     -----
@@ -30,6 +32,7 @@ def get_initial_distortion_model(T: Table, poly_order=3):
     SPHEREx_InstrumentSimulator/optical_field_distorter.py
     Also refers to notebook:
     https://github.com/SPHEREx/SPHEREx-Pipeline/blob/master/doc/sip/Initial_SIP.ipynb
+
     """
     Array_Distortion_Model = {}
     for array in [1, 2, 3, 4, 5, 6]:

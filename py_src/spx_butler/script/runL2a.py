@@ -17,7 +17,6 @@ from lsst.daf.butler.registry import ConflictingDefinitionError
 from spx_data import (SPHERExImage, ObservationId,
                       GainFactors, NonLinearityParameters,
                       ReadNoiseParameters, PersistenceState,)
-import spx_tasks
 
 from ..defaults import DatasetTypes, Collections
 from ..instrument import SimulatorInstrument
@@ -30,6 +29,8 @@ SPS_PLAN_PATTERN = re.compile(r"(^\d\d\d\dW\d\d_\d[A-Z]$)")
 
 @dataclass
 class PipeState:
+    """Pipeline state holding calibration data and image for L2a processing."""
+
     # will be updated by pipeline
     spximg: SPHERExImage
     gain_factors: GainFactors
@@ -45,6 +46,7 @@ def get_initial_state(butler: Butler,
                       persistence_prior,
                       dataset_types: DatasetTypes,
                       collections, config) -> tuple[PipeState, list[DatasetRef]]:
+    """Retrieve initial pipeline state and calibration references from butler."""
     img = butler.get(dataset_types.level1, dataId=dataid, collections=collections)
     img.ensure_layers([])  # make sure no layers are in the image
 
@@ -143,6 +145,7 @@ def runL2a(repo, collections, output_run,
         If True and prior is not found, raise an exception.
     persistence_state_collection : `str`
         The name of the persistence state collection, default `None`.
+
     Raises
     ------
     Exception
@@ -151,14 +154,17 @@ def runL2a(repo, collections, output_run,
     Notes
     -----
     This method runs Estimate Flat Field task
+
     """
     instrument_name = instrument
     persistence_prior = None
 
+    from spx_tasks import L2aConfig, L2aTask, _provenance
+
     # set up the task
-    config = spx_tasks.L2aConfig()
+    config = L2aConfig()
     apply_config_overrides(config, config_file, dump_config)
-    task: spx_tasks.L2aTask = spx_tasks.L2aTask(config=config)
+    task: L2aTask = L2aTask(config=config)
 
     # dataset types used by L2a pipeline
     dataset_types = DatasetTypes()
@@ -197,7 +203,7 @@ def runL2a(repo, collections, output_run,
     datasetTypePersistenceImage = \
         DatasetType(dataset_types.persistence_image,
                     dimension_universe.conform(("instrument", "exposure")),
-                    "SPHERExImage",
+                    "PersistenceImage",
                     universe=dimension_universe)
     # idempotent persistence signal image dataset type registration
     butler.registry.registerDatasetType(datasetTypePersistenceImage)
@@ -329,7 +335,7 @@ def runL2a(repo, collections, output_run,
 
                 if result.spximg_out is not None:
                     calib_items = [(ref.datasetType.name, ref.id) for ref in calibration_refs]
-                    spx_tasks._provenance.add_calibration_provenance(result.spximg_out, calib_items)
+                    _provenance.add_calibration_provenance(result.spximg_out, calib_items)
 
                 persistence_prior = result.persistence_state_out
 

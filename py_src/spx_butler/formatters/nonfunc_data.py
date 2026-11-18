@@ -35,6 +35,7 @@ class NonfuncDataFormatter(FileFormatter):
         ------
         FileNotFoundError
             If the FITS file is missing.
+
         """
         try:
             data = NonfuncData(fits.open(path))
@@ -56,6 +57,7 @@ class NonfuncDataFormatter(FileFormatter):
             If the provided object is not a NonfuncData.
         ValueError
             If validation fails before writing.
+
         """
         if not isinstance(inMemoryDataset, NonfuncData):
             raise NotImplementedError(

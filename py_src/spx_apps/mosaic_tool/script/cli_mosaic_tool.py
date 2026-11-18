@@ -8,23 +8,29 @@ import sys
 import traceback
 import signal
 import multiprocessing
-import shutil
 # Related 3rd-party imports
 import click
+from astropy.io import fits
 from spx_apps import mosaic_tool
-
+from spx_apps.mosaic_tool.mosaic_builder import (
+    build_mosaics_from_temp_butler,
+    build_interpolated_mosaic,
+)
+from pathlib import Path
+import tempfile
 from spx_apps.common_cli import runid_option, jobid_option, result_dir_option, \
     err_dir_option, tmp_dir_option, log_dir_option, make_runid_default, \
     setup_exit_handlers, extract_log_config_and_ids_from_argv, force_override_runid, \
     extract_err_dir_from_argv, log_start_time, safe_exit, generate_error_summary, \
-    parse_detectors, parse_time, fake_option
+    parse_detectors, parse_time, fake_option, use_deep_option, validate_writable
 from spx_apps.photometry_tool.temp_butler import populate_temp_butler_from_export
-from .exceptions import EmptyMosaicQueryError
+from ..exceptions import EmptyMosaicQueryError
 from ..temp_butler import collect_inputs_for_temp_butler
 from lsst.daf.butler import Butler, MissingDatasetTypeError
 # Global variables for timing
 _start_time = None
 _script_name = "mosaic_tool"
+CHANNEL_LIMITS = (0.75, 5)
 
 # Starts a fresh python interpreter process
 multiprocessing.set_start_method("spawn", force=True)
@@ -35,10 +41,10 @@ multiprocessing.set_start_method("spawn", force=True)
               help='Show the version and exit.')
 @click.pass_context
 def cli(ctx, version):
-    """Mosaic tool"""
+    """Mosaic tool."""
     if version:
 
-        logging.info(f"Mosaic Tool Version: {mosaic_tool.__version__}")
+        click.echo(f"Mosaic Tool Version: {mosaic_tool.__version__}")
         ctx.exit()
 
 
@@ -56,7 +62,7 @@ def validate_center(ctx, param, value):
     if not (-90 <= dec <= 90):
         raise click.BadParameter(f"Invalid Dec {dec}: must be in [-90, 90]")
 
-    return (ra, dec)
+    return ra, dec
 
 
 def validate_size(ctx, param, value):
@@ -92,14 +98,18 @@ def validate_channel_range(ctx, param, value):
     try:
         parts = [float(x) for x in value.split(",")]
     except ValueError:
-        raise click.BadParameter(f"Invalid --channel-range format: '{value}', expected min,max floats.")
+        raise click.BadParameter(f"Invalid --channel-range format: {value}, expected min,max floats.")
 
     if len(parts) != 2:
         raise click.BadParameter(f"--channel-range must have exactly 2 comma-separated values\
                                     (min,max). {parts}")
-    if not (0.75 <= float(value.split(",")[0]) <= 1 and 0.75 <= float(value.split(",")[1]) <= 1):
-        raise click.BadParameter(
-            "Invalid --channel-range format: '{value}', all values must be between 0.75 and 1.")
+    val_1, val_2 = [float(x) for x in value.split(",")[:2]]
+    lower_check = CHANNEL_LIMITS[0] <= val_1 <= CHANNEL_LIMITS[1]
+    upper_check = CHANNEL_LIMITS[0] <= val_2 <= CHANNEL_LIMITS[1]
+    if not (lower_check and upper_check):
+        err_str = f"Invalid --channel-range format: {value} , all values must be between"
+        err_str += f" {CHANNEL_LIMITS[0]} microns and {CHANNEL_LIMITS[1]} microns."
+        raise click.BadParameter(err_str)
 
     min_ch, max_ch = parts
     if min_ch <= 0 or max_ch <= 0:
@@ -122,9 +132,16 @@ def validate_user_channels(ctx, param, value):
         raise click.BadParameter("--user-channels: must specify an even number of values (pairs of min,max).")
 
     vals = [float(x) for x in value.split(",")]
+    vals_tuples = list(zip(vals[::2], vals[1::2]))
+
+    if len(set(vals_tuples)) != len(vals_tuples):
+        raise click.BadParameter(f"--user-channels: {vals_tuples}, must not be duplicate ranges")
+
     for val in vals:
-        if not (0.75 <= val <= 1):
-            raise click.BadParameter(f"--user-channels: {vals}  all values must be between 0.75 and 1.")
+        if not (CHANNEL_LIMITS[0] <= val <= CHANNEL_LIMITS[1]):
+            err_str = f"--user-channels: {vals}  all values must be between"
+            err_str += f" {CHANNEL_LIMITS[0]} microns and {CHANNEL_LIMITS[1]} microns."
+            raise click.BadParameter(err_str)
     # Validate ordering inside each pair
     for i in range(0, len(vals), 2):
         if vals[i] >= vals[i + 1]:
@@ -132,7 +149,7 @@ def validate_user_channels(ctx, param, value):
                 f"--user-channels: invalid pair ({vals[i]}, {vals[i+1]}). Each min must be < max."
             )
 
-    return list(zip(vals[::2], vals[1::2]))  # list of (min, max) tuples
+    return vals_tuples  # list of (min, max) tuples
 
 
 def validate_channel_exclusivity(ctx, param, value):
@@ -145,6 +162,39 @@ def validate_channel_exclusivity(ctx, param, value):
     return value
 
 
+def validate_interpolate_wavelength(ctx, param, value):
+    if value is None:
+        return None
+    if not (CHANNEL_LIMITS[0] <= value <= CHANNEL_LIMITS[1]):
+        raise click.BadParameter(
+            f"Invalid --interpolate-wavelength: {value} μm. "
+            f"Must be between {CHANNEL_LIMITS[0]} and {CHANNEL_LIMITS[1]} μm."
+        )
+    return value
+
+
+def validate_interp_n_width(ctx, param, value):
+    if value <= 0:
+        raise click.BadParameter("--interp-n-width must be positive.")
+    if value > 10:
+        raise click.BadParameter("--interp-n-width exceeds maximum value of 10.")
+    return value
+
+
+def validate_interp_n_req(ctx, param, value):
+    if value <= 0:
+        raise click.BadParameter("--interp-n-req must be positive.")
+    if value > 5:
+        raise click.BadParameter("--interp-n-req exceeds maximum value of 5.")
+    return value
+
+
+def validate_interp_n_subdivisions(ctx, param, value):
+    if value < 1 or value > 7:
+        raise click.BadParameter("--interp-n-subdivisions must be between 1 and 7.")
+    return value
+
+
 @click.command()
 @result_dir_option()
 @err_dir_option()
@@ -153,6 +203,7 @@ def validate_channel_exclusivity(ctx, param, value):
 @tmp_dir_option()
 @log_dir_option()
 @fake_option()
+@use_deep_option()
 @click.option("--center", required=True, callback=validate_center,
               help="""Center of a rectangular mosaic in TAN projection.
                     Values are in ICRS degrees, with the usual con
@@ -200,7 +251,7 @@ def validate_channel_exclusivity(ctx, param, value):
 @click.option("--channel-range", callback=validate_channel_range, default=None,
               help="""Range of central wavelengths of standard
                     SPHEREx spectral channels to include in
-                    the result. Values are in microns and must be in range [0.75,1]
+                    the result. Values are in microns and must be in range [0.75,5]
                     . Default is the 102 standard channels. Incompatible with the
                     --user-channels option. V1 of the tool will not
                     provide access to the “partial channels” at the
@@ -217,7 +268,7 @@ def validate_channel_exclusivity(ctx, param, value):
                         the planes of the mosaic result. Values
                         are in microns. Pairs of consecutive values in
                         the list define channels. No default; must be
-                        specified explicitly.Values must be in range [0.75,1].
+                        specified explicitly.Values must be in range [0.75,5].
                         Specifying just a single channel
                         is allowed; this still produces cube extensions
                         (NAXIS=3), just with NAXIS3=1. Incompatible with
@@ -265,6 +316,58 @@ def validate_channel_exclusivity(ctx, param, value):
         "Defaults to --no-verbose. Translated within the science tools to logging control options."
     )
 )
+@click.option(
+    '--compress',
+    is_flag=True,
+    default=True,
+    show_default=True,
+    help="Compress output cube with gzip (produces .fits.gz instead of .fits)."
+)
+@click.option(
+    '--interpolate-wavelength',
+    type=float,
+    default=None,
+    callback=validate_interpolate_wavelength,
+    help="""Target wavelength (μm) for spectral interpolation.
+            Creates a single mosaic by interpolating across neighboring
+            spectral channels to reduce stripe artifacts from extended
+            sources with strong spectral features. This option is
+            incompatible with --channel-range and --user-channels.
+            The output is a single mosaic file, not a cube."""
+)
+@click.option(
+    '--interp-n-width',
+    type=float,
+    default=1.0,
+    show_default=True,
+    callback=validate_interp_n_width,
+    help="""Interpolation range in resolution widths (default 1.0).
+            Channels within ±n×Δλ of the target wavelength are used.
+            Larger values use more channels but increase spectral
+            smoothing. Only used with --interpolate-wavelength."""
+)
+@click.option(
+    '--interp-n-req',
+    type=float,
+    default=0.55,
+    show_default=True,
+    callback=validate_interp_n_req,
+    help="""Required contribution distance in resolution widths (default 0.55).
+            At least one channel must be within this distance of target
+            for a pixel to be valid. Only used with --interpolate-wavelength."""
+)
+@click.option(
+    '--interp-n-subdivisions',
+    type=int,
+    default=4,
+    show_default=True,
+    callback=validate_interp_n_subdivisions,
+    help="""Number of subdivisions per standard channel (1-7, default 4).
+            When > 1, creates finer spectral sampling by dividing each
+            standard channel into n subchannels. Requires wavelength
+            calibration files in the butler. Only used with
+            --interpolate-wavelength."""
+)
 def create_mosaic(
     result_dir,
     err_dir: str,
@@ -274,6 +377,11 @@ def create_mosaic(
     log_dir: str,
     fake: str,
     verbose: bool,
+    compress: bool,
+    interpolate_wavelength,
+    interp_n_width: float,
+    interp_n_req: float,
+    interp_n_subdivisions: int,
     center,
     size,
     rotation,
@@ -282,7 +390,9 @@ def create_mosaic(
     user_channels,
     time,
     detector,
+    use_deep: bool
 ):
+    """Create a mosaic image from SPHEREx data."""
     log_file = None
     for handler in logging.getLogger().handlers:
         if isinstance(handler, logging.FileHandler):
@@ -292,23 +402,42 @@ def create_mosaic(
     time = parse_time(time)
     detectors = parse_detectors(detector)
     x_size, y_size = size[0], size[1]
-    size_scale_text = f"Size (x,y): {size}, Pixel scale: {pixel_scale}"
-    if not (x_size/pixel_scale > 1):
+    size_scale_text = f"Size (x,y): {size} degrees, Pixel scale: {pixel_scale} arcsec"
+    pixel_scale_deg = pixel_scale / 3600
+    if not (x_size/pixel_scale_deg > 1):
         raise click.BadParameter(f"{size_scale_text}, x_size / --pixel-scale should be greater than 1")
-    if not (y_size/pixel_scale > 1):
+    if not (y_size/pixel_scale_deg > 1):
         raise click.BadParameter(f"{size_scale_text}, y_size / --pixel-scale should be greater than 1")
+
+    # Validate mutual exclusivity of interpolation mode with channel options
+    if interpolate_wavelength is not None:
+        if channel_range is not None:
+            raise click.BadParameter(
+                "Options --interpolate-wavelength and --channel-range are mutually exclusive."
+            )
+        if user_channels is not None:
+            raise click.BadParameter(
+                "Options --interpolate-wavelength and --user-channels are mutually exclusive."
+            )
 
     logging.info("Mosaic configuration:")
     logging.info(f"  Center (ra,dec): {center}")
-    logging.info(f"  Size (x,y): {size}")
-    logging.info(f"  Rotation: {rotation}")
-    logging.info(f"  Pixel scale: {pixel_scale}")
-    logging.info(f"  Channel range: {channel_range}")
-    logging.info(f"  User channels: {user_channels}")
+    logging.info(f"  Size (x,y): {size} degrees")
+    logging.info(f"  Rotation: {rotation} degrees")
+    logging.info(f"  Pixel scale: {pixel_scale} arcsec")
+    if interpolate_wavelength is not None:
+        logging.info(f"  Interpolate wavelength: {interpolate_wavelength} μm")
+        logging.info(f"  Interpolation n_width: {interp_n_width}")
+        logging.info(f"  Interpolation n_req: {interp_n_req}")
+        logging.info(f"  Interpolation n_subdivisions: {interp_n_subdivisions}")
+    else:
+        logging.info(f"  Channel range: {channel_range}")
+        logging.info(f"  User channels: {user_channels}")
     logging.info(f"  Time: {time}")
     logging.info(
         f"  Detector(s): {detectors}.(Not intended for to be exposed via UI, None indicates all detectors)")
     logging.info(f"  Verbose: {verbose}")
+    logging.info(f"  Compress: {compress}")
     logging.info(f"  Fake mode: {fake}")
     logging.info(f"  Run ID: {runid}, Job ID: {jobid}")
     logging.info(f"  Result dir: {result_dir}")
@@ -317,15 +446,16 @@ def create_mosaic(
     if fake == "normal":
         src_path = pathlib.Path(os.getenv("SPXMOSAIC_SAMPLE_RESULT",
                                           "~/tmp-result/mosaic-tool-result.fits")).expanduser()
+        hdul = fits.open(src_path)
+        # Insert CRVAL1 and CRVAL2 into headers
+        for i in range(1, len(hdul)-1):
+            hdul[i].header["CRVAL1"] = center[0]
+            hdul[i].header["CRVAL2"] = center[1]
         destination_dir = pathlib.Path(result_dir)
-        dest_file = destination_dir / src_path.name
+        dest_file = destination_dir / "mosaic-tool-result.fits"
         # Ensure the destination directory exists
         destination_dir.mkdir(parents=True, exist_ok=True)
-
-        # Destination file path
-        dest_file = destination_dir / src_path.name
-        # Copy the file
-        shutil.copy(src_path, dest_file)
+        hdul.writeto(dest_file, overwrite=True)
         # === Create symlink to output VOTable ===
         symlink_path = destination_dir / "result"
         if symlink_path.exists() or symlink_path.is_symlink():
@@ -373,13 +503,14 @@ def create_mosaic(
             with multiprocessing.Pool(processes=1) as pool:
                 collect_result = pool.apply_async(
                     collect_inputs_for_temp_butler,
-                    args=(butler_repo, tmp_dir, center, size, rotation, time, detectors, pixel_scale)
+                    args=(butler_repo, tmp_dir, center, size,
+                        rotation, time, detectors, pixel_scale_deg, use_deep)
                 )
                 # This will automatically propagate exceptions from the child process
                 collect_results = collect_result.get()
             logging.info(f"Temp butler root: {collect_results['temp_butler_root']}")
             logging.info(f"export_file: {collect_results['export_file']}")
-            logging.info(f"coverage_table: {collect_results['coverage_table']}")
+            logging.info(f"coverage_table:\n{collect_results['coverage_table']}")
             # Create pool for populate process
             with multiprocessing.Pool(processes=1) as pool:
                 populate_result = pool.apply_async(
@@ -387,8 +518,7 @@ def create_mosaic(
                     args=(
                         collect_results["temp_butler_root"],
                         collect_results["export_file"],
-                        collect_results["coverage_table"],
-                        collect_results["srccat_dataids"]
+                        collect_results["coverage_table"]
                     )
                 )
                 # This will also automatically propagate exceptions
@@ -396,6 +526,54 @@ def create_mosaic(
 
             logging.info(f'Temp butler root: {populate_results["temp_butler_root"]}')
 
+            # ================================================================
+            # MOSAIC BUILDING
+            # ================================================================
+            if interpolate_wavelength is not None:
+                # Spectral interpolation mode - creates a single interpolated mosaic
+                logging.info("Using spectral interpolation mode...")
+                output_filepath = build_interpolated_mosaic(
+                    temp_butler_root=populate_results["temp_butler_root"],
+                    center=center,
+                    size=size,
+                    pixel_scale=pixel_scale,
+                    rotation=rotation,
+                    output_dir=result_dir,
+                    target_wavelength=interpolate_wavelength,
+                    n_interp=interp_n_width,
+                    n_req=interp_n_req,
+                    n_subdivisions=interp_n_subdivisions,
+                    compress=compress,
+                )
+            else:
+                # Standard mosaic building mode
+                if user_channels is not None:
+                    # TODO: user_channels not implemented in this version
+                    logging.warning("--user-channels not implemented yet, using all standard channels")
+
+                with tempfile.TemporaryDirectory(
+                    dir=tmp_dir, prefix="channel_mosaics_"
+                ) as channel_mosaics_dir:
+                    output_filepath = build_mosaics_from_temp_butler(
+                        temp_butler_root=populate_results["temp_butler_root"],
+                        center=center,
+                        size=size,
+                        pixel_scale=pixel_scale,
+                        rotation=rotation,
+                        output_dir=result_dir,
+                        channel_mosaics_dir=channel_mosaics_dir,
+                        channel_range=channel_range,
+                        compress=compress,
+                        user_channels=user_channels,
+                    )
+
+            # Symlink creation happens after the context manager exits
+            result_symlink = pathlib.Path(result_dir) / "result"
+            if result_symlink.exists() or result_symlink.is_symlink():
+                result_symlink.unlink()
+            result_symlink.symlink_to(os.path.basename(output_filepath))
+            logging.info(f"Result symlink created: {result_symlink}")
+            logging.info("Mosaic building complete!")
         except MissingDatasetTypeError as mdte:
             logging.error(f"Error: {mdte}")
             exit_code = 12
@@ -420,85 +598,92 @@ cli.add_command(create_mosaic)
 
 
 def main():
-    # Setup exit handlers first, before any other code
-    setup_exit_handlers(_script_name)
-
-    try:
-        # Extract log dir and associated flags.
-        log_dir, verbose, runid, jobid = extract_log_config_and_ids_from_argv()
-        error_symlink = None
-        if runid is None:
-            runid = make_runid_default("mosaic")
-            force_override_runid(new_value=runid)
-        err_dir = extract_err_dir_from_argv()
-        log_level = logging.DEBUG if verbose else logging.INFO
-        if log_dir is None:
-            logging.basicConfig(
-                level=log_level,
-                stream=sys.stdout,
-                format='%(asctime)s %(levelname)s: %(message)s'
-            )
-        else:
-            log_file = os.path.join(log_dir, f"{runid}_JOB_{jobid}_log.out")
-
-            logging.basicConfig(
-                filename=log_file,
-                filemode='w',
-                format='%(asctime)s %(levelname)s: %(message)s',
-                level=log_level,
-                force=True
-            )
-            error_symlink = pathlib.Path(os.path.join(err_dir, "error"))
-
-        # Log start time after logging is configured
-        log_start_time()
-
-        # Use runid here as foo and pass it to mosaic tool
+    if "--help" in sys.argv or "--version" in sys.argv:
         cli(standalone_mode=False, obj={})
-    except (click.BadParameter, click.MissingParameter) as e:
-        param_name = e.param_hint
-        message = f"Command line validation error for {param_name}"
-        generate_error_summary(
-            message=message,
-            error_dir=err_dir,
-            write_to_file=True,
-            error_type="fatal",
-            user_error=True
-        )
-        logging.error(e)
-        logging.error(message)
-        if log_dir is not None and error_symlink is not None:
-            error_symlink.unlink(missing_ok=True)
-            error_symlink.symlink_to(log_file)
-        safe_exit(19)
+    else:
+        # Setup exit handlers first, before any other code
+        # except help or version calls
+        setup_exit_handlers(_script_name)
 
-    except click.UsageError as e:
-        message = "Command line validation error"
-        generate_error_summary(
-            message=message,
-            error_dir=err_dir,
-            write_to_file=True,
-            error_type="fatal",
-            user_error=True
-        )
-        logging.error(e)
-        logging.error(message)
-        if log_dir is not None and error_symlink is not None:
-            error_symlink.unlink(missing_ok=True)
-            error_symlink.symlink_to(log_file)
-        safe_exit(19)
+        try:
+            # Extract log dir and associated flags.
+            log_dir, verbose, runid, jobid = extract_log_config_and_ids_from_argv()
+            error_symlink = None
+            if runid is None:
+                runid = make_runid_default("mosaic")
+                force_override_runid(new_value=runid)
+            err_dir = extract_err_dir_from_argv()
+            log_level = logging.DEBUG if verbose else logging.INFO
+            if log_dir is None:
+                logging.basicConfig(
+                    level=log_level,
+                    stream=sys.stdout,
+                    format='%(asctime)s %(levelname)s: %(message)s'
+                )
+            else:
+                log_dir = validate_writable(None, None, Path(log_dir))
+                log_file = os.path.join(log_dir, f"{runid}_JOB_{jobid}_log.out")
 
-    except (Exception) as e:
-        logging.error(e)
-        message = str(traceback.format_exc())
-        logging.error(message)
-        generate_error_summary(
-            message="Unknown error " + message,
-            error_dir=err_dir,
-            write_to_file=True,
-            error_type="fatal",
-        )
-        if log_dir is not None and error_symlink is not None:
-            error_symlink.unlink(missing_ok=True)
-            error_symlink.symlink_to(log_file)
-        safe_exit(20)
+                logging.basicConfig(
+                    filename=log_file,
+                    filemode='w',
+                    format='%(asctime)s %(levelname)s: %(message)s',
+                    level=log_level,
+                    force=True
+                )
+                error_symlink = pathlib.Path(os.path.join(err_dir, "error"))
+
+            # Log start time after logging is configured
+            log_start_time()
+
+            # Use runid here as foo and pass it to mosaic tool
+            cli(standalone_mode=False, obj={})
+        except (click.BadParameter, click.MissingParameter) as e:
+
+            message = f"Command line validation error: {e.message}"
+            if e.param_hint is not None:
+                message += f" (parameter: {e.param_hint})"
+            generate_error_summary(
+                message=message,
+                error_dir=err_dir,
+                write_to_file=True,
+                error_type="fatal",
+                user_error=True
+            )
+            logging.error(e)
+            logging.error(message)
+            if log_dir is not None and error_symlink is not None:
+                error_symlink.unlink(missing_ok=True)
+                error_symlink.symlink_to(log_file)
+            safe_exit(19)
+
+        except click.UsageError as e:
+            message = "Command line validation error"
+            generate_error_summary(
+                message=message,
+                error_dir=err_dir,
+                write_to_file=True,
+                error_type="fatal",
+                user_error=True
+            )
+            logging.error(e)
+            logging.error(message)
+            if log_dir is not None and error_symlink is not None:
+                error_symlink.unlink(missing_ok=True)
+                error_symlink.symlink_to(log_file)
+            safe_exit(19)
+
+        except (Exception) as e:
+            logging.error(e)
+            message = str(traceback.format_exc())
+            logging.error(message)
+            generate_error_summary(
+                message="Unknown error " + message,
+                error_dir=err_dir,
+                write_to_file=True,
+                error_type="fatal",
+            )
+            if log_dir is not None and error_symlink is not None:
+                error_symlink.unlink(missing_ok=True)
+                error_symlink.symlink_to(log_file)
+            safe_exit(20)

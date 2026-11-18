@@ -14,7 +14,7 @@ from typing import Optional
 
 # Local application/library specific imports
 from spx_butler.defaults import SPHERExImageConfig
-from spx_data import SPHERExImage, GainFactors, PlannedObservation
+from spx_data import SPHERExImage, GainFactors, PlannedObservation, NonfuncData
 from ._provenance import add_calibration_provenance, get_calibration_inputs
 from spx_tasks.gds_image_association import GdsImageAssociationTask
 from spx_tasks.estimate_coarse_astrometry import EstimateCoarseAstrometryTask
@@ -78,10 +78,10 @@ class L1Connections(pipeBase.PipelineTaskConnections,
         dimensions=["instrument"],
         isCalibration=True
     )
-    nonfunc_map = cT.PrerequisiteInput(
+    nonfunc_map_v2 = cT.PrerequisiteInput(
         name="nonfunc",
         doc="Permanently unusable.",
-        storageClass="SPHERExImage",
+        storageClass="NonfuncData",
         dimensions=["instrument", "detector"],
         isCalibration=True
     )
@@ -151,6 +151,7 @@ class SPHERExL1ImageConfig(SPHERExImageConfig):
 
 
 class L1Config(pipeBase.PipelineTaskConfig, pipelineConnections=L1Connections):
+    """Configuration for L1 pipeline task."""
 
     gds_image_association = pexConfig.ConfigurableField(
         doc="GDS Image Association",
@@ -191,6 +192,7 @@ class L1Config(pipeBase.PipelineTaskConfig, pipelineConnections=L1Connections):
 
 class L1Task(pipeBase.PipelineTask):
     """Implementation of Level1 data processing pipeline."""
+
     _DefaultName = "l1-pipeline"
     ConfigClass = L1Config
     full_name = "SPHEREx L1 Pipeline v2024.01-1"
@@ -220,7 +222,7 @@ class L1Task(pipeBase.PipelineTask):
             spximg: DeferredDatasetHandle,
             planned_obs: PlannedObservation,
             gain_factors: GainFactors,
-            nonfunc_map: SPHERExImage,
+            nonfunc_map_v2: NonfuncData,
             dichroic_cut_map: SPHERExImage,
             spectral_wcs: HDUList,
             initial_distortion_table: Table,
@@ -229,34 +231,43 @@ class L1Task(pipeBase.PipelineTask):
             sband: Optional[Table] = None,
             sband_mnemonics: Optional[Table] = None
             ) -> pipeBase.Struct:
-        """Runs the L1 pipeline.
+        """Run the L1 pipeline.
 
         Parameters
         ----------
-        spximg
+        spximg : `~lsst.daf.butler.DeferredDatasetHandle`
             The raw input image to process.
-        sgt : `astropy.table.Table`
-            Table of reconstructed ground track data.
-        gain_factors
+        planned_obs : `~spx_data.PlannedObservation`
+            Planned observation data.
+        gain_factors : `~spx_data.GainFactors`
             The gain factors to use to convert to engineering units.
-        nonfunc_map
+        nonfunc_map_v2 : `NonfuncData`
             The image of nonfunctional pixels.
-        dichroic_cut_map
+        dichroic_cut_map : `~spx_data.SPHERExImage`
             Low efficiency pixels due to dichroic.
-        spectral_wcs
+        spectral_wcs : `~astropy.io.fits.HDUList`
             Spectral coordinates lookup data.
-        initial_distortion_table
+        initial_distortion_table : `~astropy.table.Table`
             Ray-tracing for initial distortion model.
+        sgt : `~astropy.table.Table`, optional
+            Table of reconstructed ground track data.
+        spk : `~astropy.table.Table`, optional
+            SPK ephemeris table.
+        sband : `~astropy.table.Table`, optional
+            S-band telemetry table.
+        sband_mnemonics : `~astropy.table.Table`, optional
+            S-band mnemonics table.
 
         Returns
         -------
         `~lsst.pipe.base.Struct`
             Output of L1 pipeline.
 
-        NOTES
+        Notes
         -----
         TODO need to ingest GDS for ck, spk, sband, planned_obs,
         in order to run gds_image_association task.
+
         """
         # With deferred objects, can pass parameters to get.
         spximg = spximg.get(parameters=self.config.l1_image.toDict())
@@ -307,7 +318,7 @@ class L1Task(pipeBase.PipelineTask):
         task: CreateImageDataFilesTask = getattr(self, "create_image_data_files")
         # nonfunc map includes all physical pixels, active and refs,
         # but dichroic map includes only active pixels.
-        result = task.run(spximg, nonfunc_map, dichroic_cut_map, spectral_wcs)
+        result = task.run(spximg, nonfunc_map_v2, dichroic_cut_map, spectral_wcs)
         spximg = result.spximg_out
 
         # Perform data quality assessment

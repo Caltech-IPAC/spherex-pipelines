@@ -45,7 +45,7 @@ rawexp_re = r"^.+\.(?:fits|gz)"
 @click.option("--obsid_max", default=None, help="Maximum observation id.")
 @instrument_option()
 def ingest_simulated(*args, **kwargs):
-    """Ingest raw frames into from a directory into the butler registry"""
+    """Ingest raw frames from a directory into the butler registry."""
     script.ingestSimulated(*args, **kwargs)
 
 
@@ -65,7 +65,7 @@ def ingest_simulated(*args, **kwargs):
 @detector_option(default=0)
 @instrument_option()
 def ingest_calibrations(*args, **kwargs):
-    """Ingest raw frames from a directory into the butler registry"""
+    """Ingest raw frames from a directory into the butler registry."""
     script.ingestCalibrations(*args, **kwargs)
 
 
@@ -83,7 +83,7 @@ def ingest_calibrations(*args, **kwargs):
                     help="Path to a config file overrides file.")
 @dump_config_option(required=False)
 def estimate_flat_field(*args, **kwargs):
-    """Run flat field estimation"""
+    """Run flat field estimation."""
     script.estimateFlatField(*args, **kwargs)
 
 
@@ -113,30 +113,8 @@ def estimate_flat_field(*args, **kwargs):
 @click.option("--persistence-state-collection", required=False, default=None,
               help="The name of tagged collection for persistence state datasets.")
 def run_l2a(*args, **kwargs):
-    """Run l2a modules"""
+    """Run l2a modules."""
     script.runL2a(*args, **kwargs)
-
-
-@click.command(short_help="Run L3 Photometry pipeline.", cls=ButlerCommand)
-@repo_argument(required=True,
-               help="REPO is the URI or path to the gen3 repository. "
-                    "Will be created if it does not already exist.")
-@collections_argument(required=True,
-                      help="COLLECTIONS is one or more expressions that identify "
-                           "the collections to search for input datasets, "
-                           "including prior persistence state.")
-@run_option(required=False)
-@in_type_option(default="level2")
-@out_type_option(default="phot_meas")
-@detector_option(default=2)
-@iso_start_option(required=False)
-@iso_end_option(required=False)
-@config_file_option(required=False,
-                    help="Path to a config file overrides file.")
-@dump_config_option(required=False)
-def run_l3_photometry(*args, **kwargs):
-    """Run l3 photometry modules"""
-    script.runL3Photometry(*args, **kwargs)
 
 
 @click.command(short_help="Update exposure region.", cls=ButlerCommand)
@@ -186,6 +164,7 @@ def create_tagged_primary_calibrators(repo, collections, output_collection, data
 @click.option("--output", required=True, type=click.Path(writable=True),
               help="Output JSON file to save the report.")
 def report_contiguous_obs(repo, collections, detector, instrument, output):
+    """Generate a report of contiguous observations for a detector."""
     # Convert comma-separated string to list
     collection_list = [c.strip() for c in collections.split(",") if c.strip()]
     # Call function
@@ -195,3 +174,45 @@ def report_contiguous_obs(repo, collections, detector, instrument, output):
     with open(output, "w") as f:
         json.dump({k: v.dict() for k, v in result.items()}, f, indent=2)
         click.echo(f"Contiguity report saved to {output}")
+
+
+@click.command(short_help="Export L2b WCS and make a tagged collection of L2a "
+                          "corresponding to L2b finast failures.",
+               cls=ButlerCommand)
+@repo_argument(required=True,
+               help="REPO is the URI or path to the gen3 repository. "
+                    "Will be created if it does not already exist.")
+@collections_argument(required=True,
+                      help="COLLECTIONS is one or more collection expressions containing the "
+                           "level2 and level2a dataset types.")
+@click.option("--output-tag", required=True,
+              help="Name of output tagged collection.")
+@run_option(required=True)
+@in_type_option(default="level2")
+@out_type_option(default="l2bwcs")
+@sps_plan_option(default=None)
+@instrument_option()
+@click.option("--progress-every", required=False, type=int, default=500,
+              help="Show progress of export every N exposure(s) (default: 500).")
+def export_l2bwcs_and_tagl2a(*args, **kwargs):
+    """
+    Export L2b WCS and make a tagged collection of L2a corresponding
+    to L2b finast failures.
+    """
+    script.export_l2bwcs_and_tagl2a(*args, **kwargs)
+
+
+@click.command(short_help="Add photometry exceptions as phot_meas datasets.",
+               cls=ButlerCommand)
+@repo_argument(required=True,
+               help="REPO is the URI or path to the gen3 repository. "
+                    "Will be created if it does not already exist.")
+@collections_argument(required=True,
+                      help="COLLECTIONS is one or more expressions that identify "
+                           "the collections to search for input datasets.")
+@in_type_option(default="phot_exceptions")
+@where_option()
+@limit_option()
+def add_photometry_exceptions(repo, collections, in_type, where, limit):
+    """Add photometry exceptions to the butler as `phot_meas` datasets."""
+    script.addPhotometryExceptions(repo, collections, in_type, where, limit)

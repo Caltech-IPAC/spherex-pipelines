@@ -37,6 +37,8 @@ class CorrectPreamplifierConnections(pipeBase.PipelineTaskConnections,
 
 class CorrectPreamplifierConfig(pipeBase.PipelineTaskConfig,
                                 pipelineConnections=CorrectPreamplifierConnections):
+    """Configuration for CorrectPreamplifier task."""
+
     sigma = Field(
         doc="Sigma for sigma-clipping.",
         dtype=int,
@@ -69,6 +71,7 @@ class CorrectPreamplifierTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "correct-preamplifier"
@@ -134,8 +137,11 @@ class CorrectPreamplifierTask(pipeBase.PipelineTask):
 
         # Phantom pixel correction
         # phantom pixels
+        # Missing phantom pixels (Flag.MISSING_DATA) carry NaN values;
+        # mask invalid values so they do not contribute to the phantom
+        # statistics (and to avoid per-exposure astropy warnings).
         phan = spximg.data[:, :rp.nchannel * rp.Mphan]
-        phan_masked = sigma_clip(phan, sigma=sigma)
+        phan_masked = sigma_clip(np.ma.masked_invalid(phan), sigma=sigma)
 
         ro_channels = l1_readout_channels(rp)
         for ch in ro_channels:
@@ -189,12 +195,18 @@ class CorrectPreamplifierTask(pipeBase.PipelineTask):
         ref_flgs2 = flags[irows.stop:, icols.start:icols.stop]
         ref_flgs = np.vstack((ref_flgs1, ref_flgs2))
 
-        # Verify that all reference row pixels are flagged as reference
-        # If not true, our reference rows must be either not flagged or
-        # picked incorrectly.
-        if not np.array_equal(ref_flgs & Flag.REFERENCE,
-                              np.full(shape=refs.shape, fill_value=Flag.REFERENCE)):
+        # Verify that all reference row pixels are flagged as reference.
+        # Reference pixels lost in transmission carry Flag.MISSING_DATA
+        # instead of Flag.REFERENCE; they are tolerated here and excluded
+        # from the reference statistics below. Anything else means our
+        # reference rows are either not flagged or picked incorrectly.
+        if not np.all((ref_flgs & (Flag.REFERENCE | Flag.MISSING_DATA)) > 0):
             raise ValueError("Ref pixels must be flagged")
+
+        # Missing reference pixels (Flag.MISSING_DATA) carry NaN values;
+        # mask invalid values so they do not contribute to the
+        # sigma-clipped reference statistics.
+        refs = np.ma.masked_invalid(refs)
 
         ro_channels = l1_readout_channels(rp)
         even_refs_masked = 0
@@ -223,10 +235,26 @@ class CorrectPreamplifierTask(pipeBase.PipelineTask):
             iend = icols.start + icol_refs_stop
 
             # even columns - data and mask
-            data[irows.start:irows.stop, istart:iend:2] -= refs_even_masked_median
+            # Uncorrectable pixels are set to NaN and flagged PHANMISS,
+            # matching the phantom correction behavior.
+            if refs_even_masked_median is np.ma.masked:
+                self.log.warning(
+                    f"Readout channel {ch.ichan}: no valid even reference "
+                    "pixels; even columns can not be corrected")
+                data[irows.start:irows.stop, istart:iend:2] = np.nan
+                fmask[irows.start:irows.stop, istart:iend:2] = True
+            else:
+                data[irows.start:irows.stop, istart:iend:2] -= refs_even_masked_median
 
             # odd columns - data and mask
-            data[irows.start:irows.stop, istart + 1:iend:2] -= refs_odd_masked_median
+            if refs_odd_masked_median is np.ma.masked:
+                self.log.warning(
+                    f"Readout channel {ch.ichan}: no valid odd reference "
+                    "pixels; odd columns can not be corrected")
+                data[irows.start:irows.stop, istart + 1:iend:2] = np.nan
+                fmask[irows.start:irows.stop, istart + 1:iend:2] = True
+            else:
+                data[irows.start:irows.stop, istart + 1:iend:2] -= refs_odd_masked_median
 
         # Create an Output object and
         # pass all module outputs during its instantiation

@@ -7,6 +7,7 @@ from spx_utils.odir_utils import get_odir
 
 class MockSPHERExImage:
     """A mock class to simulate SPHERExImage for unit testing."""
+
     def __init__(self, header, flags):
         self.header = header
         self.flags = flags
@@ -31,7 +32,8 @@ class TestGetOdir(unittest.TestCase):
         self.base_header = {
             "OBSID": self.valid_obs_id,
             "ARRAYID": 1,
-            "SPS_TARGET": 12345,
+            "SPS_TARGET": "SPS_012345_S12",
+            "SPS_TARGET_PEF": 12345,
             "SPS_FLAGS": "all_sky",
             "DATE-BEG": "2023-01-01T12:00:00",
             "DATE-END": "2023-01-01T12:05:00",

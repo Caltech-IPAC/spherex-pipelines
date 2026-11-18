@@ -6,59 +6,60 @@ from lsst.utils.timer import timeMethod
 from lsst.daf.butler import (
     DeferredDatasetHandle
 )
+from spx_data import ReadoutParameters
 from typing import List
 from scipy.interpolate import RectBivariateSpline
 import importlib
 import pandas as pd
 from spx_data import ObservationId
 from lsst.pex.config import Field
-from spx_utils.coarse_astro_utils import calculate_pa_from_pc
 import numpy as np
-s__all__ = ["SolarSystemObjectsConfig", "SolarSystemObjectsTask"]
+import pyarrow as pa
+from spx_data.spx_param import get_pix_scale
+from astropy.table import Table
+from spx_data.spx_version import SSDC_PIPELINES_VERSION
 
-# Standard library imports
+__all__ = ["SolarSystemObjectsConfig", "SolarSystemObjectsTask"]
 
-# Related third party imports
+# Conversion factor from degrees/day to arcsec/min.
+DEGPERDAY2ARCSECPERMIN = 3600 / (24 * 60)
 
+SPHEREX_PIXEL_SCALE = get_pix_scale()
+SPHEREX_PIXEL_SCALE = getattr(SPHEREX_PIXEL_SCALE, "value", SPHEREX_PIXEL_SCALE)
 
 def create_dataframe_from_headers(handles: List[DeferredDatasetHandle],
-                                  column_names: list):
+                                  column_names: list, butlerQC, max_workers=10):
+    """Create a DataFrame from the FITS header values for specified column names
+    across multiple FITS files using parallel threading.
     """
-    Create a DataFrame from the FITS header values for specified column names
-    across multiple FITS files.
+    # 1. Define the worker function to process a single handle.
+    # We define this inside the main function to easily capture
+    # 'butlerQC' and 'column_names'
+    # without needing to pass them as arguments every time.
+    def process_handle(handle):
+        # Retrieve the full object (I/O heavy step)
+        spximg = butlerQC.get(handle).get()
 
-    Parameters:
-    - handles List[DeferredDatasetHandle]: References to SPHERExImages
-    - column_names list: List of column names to extract from the FITS headers.
-
-    Returns:
-    - pd.DataFrame: Combined DataFrame with data from all FITS files.
-    """
-    data_list = []
-    for handle in handles:
-        spximg = handle.get()
-        data = {col_name: spximg.header.get(
-            col_name, None) for col_name in column_names}
+        # Extract data
+        data = {col_name: spximg.header.get(col_name, None) for col_name in column_names}
         data["EXPSTART"] = spximg.getExposureStartTime().value
         data["EXPSTOP"] = spximg.getExposureEndTime().value
-    # TODO: implement mean position and velocity
-    # in estimate_coarse_astrometry
-    # to ADD seperate mean values to header, and extract it.
-    # Test from spherex-analysis/notebooks/L1/1.5
-        data["RA_EQ"] = spximg.wcs.wcs.crval[0]
-        data["DEC_EQ"] = spximg.wcs.wcs.crval[1]
-        data["OBSID"] = spximg.header.get(
-            "OBSID")
-        data["PA_ECL"] = calculate_pa_from_pc(spximg.wcs)
-        data_list.append(data)
+        data["OBSID"] = spximg.header.get("OBSID")
+        data["DETECTOR"] = spximg.header.get("DETECTOR")
+        data["WCS"] = spximg.wcs
+        data["META"] = spximg.meta
+        return data
 
-    # Create a DataFrame from the list of dictionaries
+    data_list = []
+
+    for handle in handles:
+        data_list.append(process_handle(handle))
+
     return pd.DataFrame(data_list)
 
 
 def calculate_midpoint_time(header: pd.DataFrame):
-    """
-    Calculate the midpoint of exposure times and convert
+    """Calculate the midpoint of exposure times and convert
     to Julian Date in TDB scale.
     """
     midpoint_mjd = (header["EXPSTART"] + header["EXPSTOP"]) / 2
@@ -67,56 +68,102 @@ def calculate_midpoint_time(header: pd.DataFrame):
 
 
 def create_observer_state(row, jd_tdb, obsid):
-    """
-    Create the observer's state based on position and velocity data.
+    """Create the observer's state based on position and velocity data.
     """
     position = kete.Vector(
         np.array([row["X_SC"], row["Y_SC"], row["Z_SC"]])
         / kete.constants.AU_KM,
-        frame=kete.Frames.Ecliptic
+        frame=kete.Frames.Equatorial
     )
     velocity = kete.Vector(
         np.array([row["VX_SC"], row["VY_SC"], row["VZ_SC"]])
         / kete.constants.AU_KM * 86400,
-        frame=kete.Frames.Ecliptic
+        frame=kete.Frames.Equatorial
     )
 
     return kete.State(
-        desig=str(obsid),
+        desig=str(obsid)+"_D"+str(row["DETECTOR"]),
         jd=jd_tdb,
         pos=position,
         vel=velocity,
         center_id=399
-    )
+    ).change_center(10)
 
 
-def create_fovs(fits_plan, jd_tdbs, obsids):
-    """
-    Create a list of FOVs based on FITS plan data.
+def create_fovs(fits_plan, jd_tdbs, obsids, npixMargin):
+    """Create a list of FOVs based on FITS plan data.
     """
     fovs = []
     for (_, row), jd_tdb, obsid in zip(fits_plan.iterrows(), jd_tdbs, obsids):
         observer_state = create_observer_state(row, jd_tdb, obsid)
-        fov = kete.RectangleFOV(
-            pointing=kete.Vector.from_ra_dec(row["RA_EQ"], row["DEC_EQ"]),
-            rotation=-row["PA_ECL"],
-            observer=observer_state,
-            lon_width=14.0,
-            lat_width=4.0
-        )
+        wcs = row["WCS"]
+
+        # Most of this code is from spx_butler.skypix.skypix_utils.getSPHERExImageRegion
+        rp = ReadoutParameters.from_metadata(row["META"])
+        npixX, npixY = rp.Jactive, rp.Kactive
+        npixMarginX, npixMarginY = (npixMargin, npixMargin)
+        if abs(npixMarginX) >= npixX / 2 or abs(npixMarginY) >= npixY / 2:
+            raise ValueError(f"Pixel margin {npixMargin} exceeds half-image pixel size")
+        x1, x2 = (0 - npixMarginX, (npixX - 1) + npixMarginX)
+        y1, y2 = (0 - npixMarginY, (npixY - 1) + npixMarginY)
+        cornersX = [x1, x2, x2, x1]
+        cornersY = [y1, y1, y2, y2]
+        cornersCoords = wcs.pixel_to_world(cornersX, cornersY)
+
+        vectors = []
+        for coord in cornersCoords:
+            vector = kete.Vector.from_ra_dec(coord.ra.deg, coord.dec.deg)
+            vectors.append(vector)
+
+        fov = kete.RectangleFOV.from_corners(vectors, observer=observer_state)
         fovs.append(fov)
     return kete.fov.FOVList(fovs)
 
 
 def propagate_orbit_elements(states, fovs):
-    """
-    Propagate orbital elements to the reference time.
+    """Propagate orbital elements to the reference time.
     """
     # Propagate orbital elements to a certain
     # reference time (arbitrarily chosen as
     # the first observation time).
+
     reference_jd = fovs[0].observer.jd
+
     return kete.propagate_n_body(states, reference_jd, include_asteroids=False)
+
+
+def compute_trail(states_i, xposure):
+    """Compute on-sky trail length (in pixels) and a trailed flag.
+
+    Uses the RA/Dec rates from ``states_i.ra_dec_with_rates`` (deg/day, with
+    RA' already scaled by cos(dec)) together with the exposure time to estimate
+    how many pixels each object moves across during the exposure.
+
+    Parameters
+    ----------
+    states_i : `kete.vector.SimultaneousStates`
+        States with a FOV present, so rates can be computed.
+    xposure : float
+        Exposure time in seconds for this observation.
+
+    Returns
+    -------
+    trail_pix : `np.ndarray`
+        Trail length in pixels for each object, in the same order as the
+        states.
+    """
+    # ra_dec_with_rates returns [RA, DEC, RA', DEC'] with rates in deg/day,
+    # in the same order as the states in this object.
+    radec_rates = states_i.ra_dec_with_rates
+    radec_rates = np.asarray(radec_rates)
+    ra_rate = radec_rates[:, 2]
+    dec_rate = radec_rates[:, 3]
+    # Total proper motion converted to arcsec/min.
+    rate_arcsec_per_min = (
+        np.sqrt(ra_rate**2 + dec_rate**2) * DEGPERDAY2ARCSECPERMIN
+    )
+    # Number of pixels the object moves across during the exposure.
+    return rate_arcsec_per_min * (xposure / 60.0) / SPHEREX_PIXEL_SCALE
 
 
 def _hgphi12(alpha__deg):
@@ -132,6 +179,7 @@ def _hgphi12(alpha__deg):
     phi1, phi2 : tuple
         The two components of the HG phase function. See `iau_hg_model`
         for more details.
+
     """
     alpha__rad = np.deg2rad(alpha__deg)
     sin_a = np.sin(alpha__rad)
@@ -146,7 +194,7 @@ def _hgphi12(alpha__deg):
 
 
 def iau_hg_model(alpha__deg, gpar=0.15):
-    """The IAU HG phase function model in intensity (1 at alpha=0).
+    r"""Compute the IAU HG phase function model in intensity (1 at alpha=0).
 
     Parameters
     ----------
@@ -191,17 +239,53 @@ def iau_hg_model(alpha__deg, gpar=0.15):
 
     Reference: Bowell et al. 1989
     https://ui.adsabs.harvard.edu/abs/1989aste.conf..524B/abstract
+
     """
     hgphi1, hgphi2 = _hgphi12(np.array(np.abs(alpha__deg)))
     # Just to avoid negative alpha error
     return (1 - gpar)*hgphi1 + gpar*hgphi2
 
 
-def calc_mags(states_i, orb, tlut_5um_spl):
+def calc_mags_bright_planets(states_i, xposure):
+    """Calculate magnitudes for bright planets without brightness values."""
+    obs2objs = states_i.obs_vecs
+    desigs = [_r.desig for _r in states_i]
+    cols = ["spkid", "H", 'G', 'dmax', 'RA', 'DEC', 'alpha', 'rh', 'ro',
+         'V', 'Tmax', 'AB5_brightest', 'trail_pix', 'trailed']
+    orb = pd.DataFrame(index=pd.Index(desigs, name="desig"), columns=cols)
+    _orb = orb.loc[desigs]
+    desigs = [_r.desig for _r in states_i]
+    sun2obs = states_i.fov.observer.change_center(10).pos
+    # Also do it outside the loop.
+
+    alphas = []
+    rhels = []
+    robss = []
+    for _state, obs2obj in zip(states_i, obs2objs):
+        # Phase angle alpha
+        sun2obj = _state.pos
+        obj2obs = sun2obs - sun2obj
+        alphas.append(obj2obs.angle_between(-sun2obj))
+        # NOTE: _state.pos is heliocentric position
+        # Helio/observer-centric distances
+        rhels.append(sun2obj.r)
+        robss.append(obs2obj.r)
+    _orb["RA"] = [vec.as_equatorial.ra for vec in obs2objs]
+    _orb["DEC"] = [vec.as_equatorial.dec for vec in obs2objs]
+    # Trail length from on-sky motion rates (RA' already scaled by cos(dec)).
+    trail_pix = compute_trail(states_i, xposure)
+    _orb["trail_pix"] = trail_pix
+    _orb["trailed"] = trail_pix > 1
+    _orb.index = _orb.index.astype(pd.ArrowDtype(pa.string()))
+    return _orb
+
+
+def calc_mags(states_i, orb, tlut_5um_spl, xposure):
+    """Calculate magnitudes and physical properties for solar system objects."""
     obs2objs = states_i.obs_vecs
     desigs = [_r.desig for _r in states_i]
 
-    _orb = orb.loc[desigs][["H", "G"]].fillna({"G": 0.15})
+    _orb = orb.loc[desigs][["H", "G", "spkid"]].fillna({"G": 0.15})
     # ^^ Better doing it outside the for loop
     #   - ~0.1s for `orb[orb["desig"] == desigs[i]]`, so ~1s for 10 SSOs (!?)
     #   - <0.1s order for `isin` or `.loc[desigs]`
@@ -244,6 +328,11 @@ def calc_mags(states_i, orb, tlut_5um_spl):
         - 5*np.log10(_orb["dmax"])
         + 5*np.log10(_orb["ro"])
     )
+    # Trail length from on-sky motion rates (RA' already scaled by cos(dec)).
+    trail_pix = compute_trail(states_i, xposure)
+    _orb["trail_pix"] = trail_pix
+    # Flag as trailed if it moves more than 1 pixel during the exposure.
+    _orb["trailed"] = trail_pix > 1
     # Perform magnitude cuts
     vcut = 21  # magnitude limit for the V band
     tcut = 20  # thermal emission magnitude limit for the 5um band
@@ -251,12 +340,13 @@ def calc_mags(states_i, orb, tlut_5um_spl):
     objects_mask = np.array((pd.isna(_orb["V"]) | (
         _orb["V"] < vcut) | (_orb["AB5_brightest"] < tcut)))
     _orb = _orb[objects_mask]
+    _orb.index = _orb.index.astype(pd.ArrowDtype(pa.string()))
     return _orb
 
 
 def split_dataframe_by_mjd(df, max_diff_days=3) -> List[pd.DataFrame]:
-    """
-    Split dataframe by 3 day ranges to maintain the accuracy of N body computations.
+    """Split dataframe by 3 day ranges to maintain the accuracy of N body computations.
+
     Parameters
     ----------
     df : `pd.DataFrame`
@@ -264,10 +354,12 @@ def split_dataframe_by_mjd(df, max_diff_days=3) -> List[pd.DataFrame]:
     max_diff_days: `int`
         Integer representing no of days between the first and last observation
         in the resulting dataframe.
+
     Returns
     -------
     output: List[pd.DataFrame]
         List of Solar system object dataframes split up into 3 day periods.
+
     """
     # Sort the dataframe by the 'EXPSTART' column (assuming it's in MJD format)
     df = df.sort_values(by='EXPSTART')
@@ -296,17 +388,35 @@ def split_dataframe_by_mjd(df, max_diff_days=3) -> List[pd.DataFrame]:
         dfs.append(pd.DataFrame(current_df))
 
     return dfs
+def format_df_to_apy(df: pd.DataFrame) -> Table:
+    """Convert dataframe to table with appropriate metadata."""
+    for col in df.columns:
+        if df[col].dtype == object:
+            # Try numeric coercion first (handles int/float/None/NaN mixes).
+            coerced = pd.to_numeric(df[col], errors="coerce")
+            if coerced.notna().any() or df[col].isna().all():
+                df[col] = coerced.astype("float64")
+            else:
+                # Not numeric -- treat as string, NaN/None -> None
+                # is fine for Arrow strings.
+                df[col] = df[col].astype(str).where(df[col].notna(), None)
+
+    sso_tab = Table.from_pandas(df, index=True)  # keep "desig" as a column
+    sso_tab.meta = {"version": SSDC_PIPELINES_VERSION}
+    return sso_tab
 
 
 class SolarSystemObjectsConnections(pipeBase.PipelineTaskConnections,
                                     dimensions=("instrument", "spsplan"),
                                     defaultTemplates={}):
+    """We run SSO pipelines for all level1 images, using
+    -d  "instrument='spx' and  (detector=1 or  detector=2 or detector=3)
+    and spsplan=PLAN_NAME"
+    with pipetask in production.
     """
-    We run SSO pipelines for all level2 images, using
-     -d "instrument='spx' AND detector=2 "  with pipetask in production.
-    """
+
     images = cT.Input(
-        name="level2a",  # default dataset type for input
+        name="level2a",
         doc="Input level 2 images.",
         storageClass="SPHERExImage",
         dimensions=("instrument", "exposure"),
@@ -325,10 +435,18 @@ class SolarSystemObjectsConnections(pipeBase.PipelineTaskConnections,
 class SolarSystemObjectsConfig(
     pipeBase.PipelineTaskConfig,
         pipelineConnections=SolarSystemObjectsConnections):
+    """Configuration for SolarSystemObjects task."""
+
     update_cache = Field(
         doc="Download and update JPL SBDB catalog cache.Use existing cache if False",
         dtype=bool,
         default=False)
+    pixmargin = Field(
+        doc="Margin in pixels."
+        "The sources will be added to the ssocat table if they fall "
+        "within the image with this margin.",
+        dtype=float,
+        default=300.0)
 
 
 class SolarSystemObjectsTask(pipeBase.PipelineTask):
@@ -352,6 +470,7 @@ class SolarSystemObjectsTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "compute-sso"
@@ -365,32 +484,38 @@ class SolarSystemObjectsTask(pipeBase.PipelineTask):
 
     @timeMethod
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
+        imageList = [ref for ref in inputRefs.images]
+        output = self.run(imageList=imageList, butlerQC=butlerQC)
 
-        imageList = [butlerQC.get(ref) for ref in inputRefs.images]
-
-        output = self.run(imageList=imageList)
+        empty_cat = format_df_to_apy(pd.DataFrame(columns=[
+            "H", "G", "spkid", "dmax", "RA", "DEC", "alpha",
+            "rh", "ro", "V", "Tmax", "AB5_brightest", "trailed",
+            ], index=pd.Index([], name="desig")))
 
         for dataset_ref in outputRefs.catalog:
+            obs_id = ObservationId.unpack(dataset_ref.dataId["observation"])
             # Assuming dataset_refs is your list of DatasetRef objects
-            butlerQC.put(output[ObservationId.unpack(
-                dataset_ref.dataId["observation"])], dataset_ref)
+            butlerQC.put(output.get(obs_id, empty_cat), dataset_ref)
 
-    def run(self,
-            imageList: list[DeferredDatasetHandle]) -> dict:
-        """
+    def run(self, imageList: list[DeferredDatasetHandle],
+            butlerQC: pipeBase.QuantumContext) -> dict[str, Table]:
+        """Compute per-observation lists of solar system objects.
 
         Parameters
         ----------
         imageList: `list` [DeferredDatasetHandle]
             List of SPHERExImages in L1 format.
+        butlerQC: pipeBase.QuantumContext
+            Quantum context to lookup deferred datasets.
 
         Returns
         -------
-        output: Output
-            Parquet file containing asteroid data.
+        `dict`[`str`, `astropy.table.Table`]
+            Dictionary containing solar system objects for each observation.
+
         """
         column_names = ["X_SC", "VX_SC", "Y_SC",
-                        "VY_SC", "Z_SC", "VZ_SC", "PA_ECL"]
+                        "VY_SC", "Z_SC", "VZ_SC", "PA_ECL", "XPOSURE"]
 
         # This contains NEATM-based flux (Harrris 1998 Icar, 131, 291) at λ=5um,
         # for a unit asteroid (r_hel = r_obs = 1au, diameter = 1km).
@@ -406,10 +531,10 @@ class SolarSystemObjectsTask(pipeBase.PipelineTask):
             tlut_5um.columns.astype(float),
             tlut_5um.values
         )
-        fits_plan = create_dataframe_from_headers(imageList, column_names)
-        jd_tdbs = calculate_midpoint_time(fits_plan)
+        fits_plan = create_dataframe_from_headers(imageList, column_names, butlerQC)
 
         orb_data = kete.horizons.fetch_known_orbit_data(update_cache=self.config.update_cache)
+
         orb_data["G"] = 0.15  # Default value for missing G columns
         # Removing most impacted objects
         # Logically this will not remove
@@ -427,14 +552,80 @@ class SolarSystemObjectsTask(pipeBase.PipelineTask):
         ast_states = kete.mpc.table_to_states(orb_data)
 
         orb_data = orb_data.set_index("desig")
+
+        # Lookup of exposure time (sec) keyed by observer designation,
+        # which is built as "{OBSID}_D{DETECTOR}" in create_observer_state.
+        xposure_lut = {
+            f"{row['OBSID']}_D{row['DETECTOR']}": row["XPOSURE"]
+            for _, row in fits_plan.iterrows()
+        }
+
         fits_plan_3_day_chunks = split_dataframe_by_mjd(fits_plan)
+
         all_chunk_result = dict()
         for fits_chunk in fits_plan_3_day_chunks:
-            fovs = create_fovs(fits_plan, jd_tdbs, fits_chunk["OBSID"])
+            fovs_per_obsid = []
+            for obsid, per_obsid_fits in fits_chunk.groupby("OBSID"):
+                # print(per_obsid_fits)
+                jd_tdbs = calculate_midpoint_time(per_obsid_fits)
+                # print(jd_tdbs)
+                fovs = create_fovs(per_obsid_fits, jd_tdbs, per_obsid_fits["OBSID"],
+                                   int(self.config.pixmargin))
+                # printlen(fovs))
+                fovs_per_obsid.extend(fovs)
+
+            fovs = kete.fov.FOVList(fovs_per_obsid)
             ast_states_at_ref = propagate_orbit_elements(ast_states, fovs)
             result = kete.fov_state_check(
                 obj_state=ast_states_at_ref, fovs=fovs)
+
+            giant_planets = ["mars barycenter", "jupiter barycenter",
+                             "saturn barycenter", "uranus barycenter",
+                             "phoebe"]
+            result_gp = kete.fov.fov_spice_check(giant_planets, fovs)
+
             for res in result:
                 # Associating specific observations with SSO
-                all_chunk_result[str(res.fov.observer.desig)] = calc_mags(res, orb_data, tlut_5um_spl)
-        return all_chunk_result
+                obs = str(res.fov.observer.desig).split("_D")[0]
+                # Exposure time (sec) for this detector's observation.
+                xposure = xposure_lut[str(res.fov.observer.desig)]
+                # Combining all detector results in an observation
+                if obs in all_chunk_result:
+                    det_data = calc_mags(res, orb_data, tlut_5um_spl, xposure)
+
+                    existing_data = all_chunk_result[obs]
+                    # 2. Append to existing_data
+                    final_df = pd.concat([det_data, existing_data])
+
+                    all_chunk_result[obs] = final_df
+                else:
+                    all_chunk_result[obs] = calc_mags(
+                        res, orb_data, tlut_5um_spl, xposure)
+            # Seperate loop for giant planet results
+            # As their mags do not need to be calculated.
+            for res in result_gp:
+                # Associating specific observations with SSO
+                obs = str(res.fov.observer.desig).split("_D")[0]
+                # Exposure time (sec) for this detector's observation.
+                xposure = xposure_lut[str(res.fov.observer.desig)]
+                # Combining all detector results in an observation
+                if obs in all_chunk_result:
+                    det_data = calc_mags_bright_planets(res, xposure)
+
+                    existing_data = all_chunk_result[obs]
+                    # 2. Append to existing_data
+                    final_df = pd.concat([det_data, existing_data])
+
+                    all_chunk_result[obs] = final_df
+                else:
+                    all_chunk_result[obs] = calc_mags_bright_planets(res, xposure)
+        for key, value in all_chunk_result.items():
+            # If a desig appears multiple times (due to FOV overlap margin)
+            # keep only the first instance of it
+            value = value.loc[~value.index.duplicated(keep='first'), :]
+            # Sort by spkid
+            value = value.sort_values(by=["spkid"])
+            value.drop(columns=['trail_pix'], inplace=True)
+            all_chunk_result[key] = value
+
+        return {obs: format_df_to_apy(df) for obs, df in all_chunk_result.items()}

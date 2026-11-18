@@ -27,6 +27,7 @@ def calculate_solid_angle(input_wcs: WCS, array_id: int, plot: bool) -> np.ndarr
     Returns
     -------
     `np.ndarray`: Per-pixel solid angle map.
+
     """
     # xx, yy = np.meshgrid(np.arange(4, 2044) - 0.5, np.arange(4, 2044) - 0.5)
     xx, yy = np.meshgrid(np.arange(0, 2041), np.arange(0, 2041))
@@ -89,6 +90,7 @@ def calculate_median_std_solid_angle(solid_angle_map: np.ndarray) -> tuple[float
     -------
     `tuple[float, float]`
         The median and standard deviation of the solid angle map.
+
     """
     # Flatten the solid angle map to apply statistics on all pixels
     solid_angle_flat = solid_angle_map.flatten()

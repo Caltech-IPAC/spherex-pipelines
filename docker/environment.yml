@@ -21,6 +21,7 @@ dependencies:
     - pandas
     - photutils
     - pip
+    - pigz
     - psutil
     - psycopg2
     - pyarrow

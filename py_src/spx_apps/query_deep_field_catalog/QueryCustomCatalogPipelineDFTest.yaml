@@ -2,10 +2,12 @@
 description: QueryCustomCatalogTask
 tasks:
   query_custom_catalog:
-    class: spx_apps.QueryCustomCatalogTask
+    class: spx_tasks.QueryCustomCatalogTask
     config:
       connections.planned_obs: "planned_obs"
       connections.refcat_allsky: "refcat_allsky"
+      connections.cosmo_mask: "cosmo_mask"
+      connections.hi_density_mask: "hi_density_mask"
       connections.initial_distortion_table: "initial_distortion_table"
       connections.catalog: "srccat_deep_field_test"
       selection_cuts: false

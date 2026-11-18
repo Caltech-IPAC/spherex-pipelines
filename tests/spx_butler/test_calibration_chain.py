@@ -38,8 +38,8 @@ class TestCalibrationChain(unittest.TestCase):
 
     def test_calibration_chain_prepend(self):
         """Test that the calibration chain prepends correctly
-           and retrieves the latest calibration."""
-
+        and retrieves the latest calibration.
+        """
         # Step 1: Simulate ingesting the initial calibration
         self.mock_butler.put(self.init_calib, "abs_gain_matrix", dataId=self.dataId, run=self.calib_init)
 

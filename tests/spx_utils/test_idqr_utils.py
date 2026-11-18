@@ -34,7 +34,8 @@ class TestGetIdqr(unittest.TestCase):
             'OBSID': '2025W37_2A_0486_2',
             'PA_ECL': 15.0,
             'PSF_FWHM': 1.1,
-            'SPS_TARGET': 1001,
+            'SPS_TARGET': 'SPS_001001_S12',
+            'SPS_TARGET_PEF': 1001,
             'SPS_FLAGS': 'all_sky'
         }
         self.mock_spximg1.getArrayId.return_value = 1
@@ -48,7 +49,8 @@ class TestGetIdqr(unittest.TestCase):
             'OBSID': '2025W37_2A_0486_2',  # Same OBSID as image 1
             'PA_ECL': 15.5,
             'PSF_FWHM': 1.2,
-            'SPS_TARGET': 1001,
+            'SPS_TARGET': 'SPS_001001_S12',
+            'SPS_TARGET_PEF': 1001,
             'SPS_FLAGS': 'all_sky'
         }
         self.mock_spximg2.getArrayId.return_value = 2  # Different detector
@@ -62,7 +64,8 @@ class TestGetIdqr(unittest.TestCase):
             'OBSID': '2025W38_1B_0010_1',
             'PA_ECL': 25.0,
             'PSF_FWHM': 1.3,
-            'SPS_TARGET': 1002,
+            'SPS_TARGET': 'SPS_001002_S12',
+            'SPS_TARGET_PEF': 1002,
             'SPS_FLAGS': 'all_sky,saa'  # Contains the SAA flag
         }
         self.mock_spximg3_saa.getArrayId.return_value = 3
@@ -112,7 +115,7 @@ class TestGetIdqr(unittest.TestCase):
         self.assertTrue(observation.survey_plan_indicator)
 
     def test_survey_plan_indicator_for_saa(self):
-        """Test that the survey plan indicator is correctly set for SAA"""
+        """Test that the survey plan indicator is correctly set for SAA."""
         idqr = get_idqr([self.mock_spximg1, self.mock_spximg3_saa])
 
         # Check that both observations are present

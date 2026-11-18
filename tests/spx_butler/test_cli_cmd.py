@@ -2,7 +2,8 @@ from spx_butler.cli.cmd import (
     ingest_simulated,
     ingest_calibrations,
     create_tagged_primary_calibrators,
-    report_contiguous_obs
+    report_contiguous_obs,
+    add_photometry_exceptions,
 )
 
 
@@ -11,3 +12,4 @@ def test_imports():
     assert ingest_calibrations is not None
     assert create_tagged_primary_calibrators is not None
     assert report_contiguous_obs is not None
+    assert add_photometry_exceptions is not None

@@ -5,7 +5,7 @@ tasks:
     config:
       connections.spximg: "raw"
       connections.gain_factors: "gain_factors"
-      connections.nonfunc_map: "nonfunc"
+      connections.nonfunc_map_v2: "nonfunc_v2"
       connections.dichroic_cut_map: "dichroic"
       connections.spectral_wcs: "spectral_wcs"
       connections.level1_img: "level1"

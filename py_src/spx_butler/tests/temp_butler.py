@@ -31,6 +31,7 @@ def create_temp_butler(butler_config=None, butler_yaml=None,
         Butler object.
     root : str
         Path to temporary folder bulter storage is in.
+
     """
     # Create temp directory
     root = tempfile.mkdtemp()
@@ -56,11 +57,12 @@ def create_temp_butler(butler_config=None, butler_yaml=None,
 
 
 def destroy_temp_butler(root):
-    """Removes the temporary folder and all of its contents.
+    """Remove the temporary folder and all of its contents.
 
     Parameters
     ----------
     root : str
         Path to the temporary folder to delete.
+
     """
     shutil.rmtree(root, ignore_errors=True)

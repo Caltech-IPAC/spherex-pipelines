@@ -64,16 +64,33 @@ class L2bConnections(pipeBase.PipelineTaskConnections,
         storageClass="AstropyParquet",
         dimensions=["instrument", "dichroicpair", "spsplan", "slewgroup"],
     )
-    # ssocat = cT.Input(
-    #     name="ssocat",
-    #     doc="Input solar system object catalog.",
-    #     storageClass="AstropyParquet",
-    #     dimensions=["instrument", "exposure"],
-    # )
+    ssocat = cT.Input(
+        name="ssocat",
+        doc="Input solar system object catalog.",
+        storageClass="AstropyParquet",
+        dimensions=["instrument", "observation"],
+        minimum=0
+    )
     psf_avg = cT.PrerequisiteInput(
         name="average_psf",
         doc="Input psf library.",
         storageClass="PSF",
+        dimensions=("instrument", "detector"),
+        isCalibration=True,
+        minimum=0,
+    )
+    epsf = cT.PrerequisiteInput(
+        name="epsf",
+        doc="Input average EPSF product used as template for EPSF binary-table output.",
+        storageClass="EPSF",
+        dimensions=("instrument", "detector"),
+        isCalibration=True,
+        minimum=0,
+    )
+    zodi_scaling = cT.PrerequisiteInput(
+        name="zodi_scaling",
+        doc="Detector-dependent 1D zodi scaling table in ECSV format.",
+        storageClass="AstropyTable",
         dimensions=("instrument", "detector"),
         isCalibration=True,
     )
@@ -84,13 +101,47 @@ class L2bConnections(pipeBase.PipelineTaskConnections,
         dimensions=["instrument", "detector"],
         isCalibration=True,
     )
-    # xtalk_coupling_matrix = cT.PrerequisiteInput(
-    #    name="xtalk_coupling_matrix",
-    #    doc="Crosstalk coupling matrix",
-    #    storageClass="SPHERExImage",
-    #    dimensions=["instrument", "detector"],
-    #    isCalibration=True,
-    # )
+    he_template = cT.PrerequisiteInput(
+        name="he_template",
+        doc="He I Airglow Template.",
+        storageClass="SPHERExImage",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0
+    )
+    aurora_template = cT.PrerequisiteInput(
+        name="aurora_template",
+        doc="Aurora Template.",
+        storageClass="SPHERExImage",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0
+    )
+    shuttle_glow_template = cT.PrerequisiteInput(
+        name="shuttle_glow_template",
+        doc="Shuttle-glow Template.",
+        storageClass="SPHERExImage",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0
+    )
+    xtalk_class1 = cT.PrerequisiteInput(
+        name="xtalk_class1",
+        doc="Class 1 crosstalk amplitudes table.",
+        storageClass="Xtalk",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0,
+    )
+    xtalk_class2 = cT.PrerequisiteInput(
+        name="xtalk_class2",
+        doc="Class 2 crosstalk coupling table.",
+        storageClass="Xtalk",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0,
+    )
+
     spximg_out = cT.Output(
         name="level2",  # default dataset type for output
         doc="Output spectral image.",
@@ -125,6 +176,8 @@ class L2bConnections(pipeBase.PipelineTaskConnections,
 
 class L2bConfig(pipeBase.PipelineTaskConfig,
                 pipelineConnections=L2bConnections):
+    """Configuration for L2b pipeline task."""
+
     remove_reference_pixels = pexConfig.ConfigurableField(
         doc="Remove Reference Pixels",
         target=RemoveReferencePixelsTask
@@ -171,7 +224,7 @@ class L2bConfig(pipeBase.PipelineTaskConfig,
 
 
 class L2bTask(pipeBase.PipelineTask):
-    """Implementation of Level2b data processing pipeline"""
+    """Implementation of Level2b data processing pipeline."""
 
     _DefaultName = "l2b-pipeline"
     ConfigClass = L2bConfig
@@ -207,10 +260,16 @@ class L2bTask(pipeBase.PipelineTask):
             dark: SPHERExImage,
             sip: Sip,
             srccat: Table,
-            # ssocat: Table,
-            # xtalk_coupling_matrix: SPHERExImage,
-            psf_avg: PSFZoneData,
-            spectral_wcs: HDUList
+            zodi_scaling: Table,
+            spectral_wcs: HDUList,
+            psf_avg: PSFZoneData | None = None,
+            epsf: SPHERExImage | None = None,
+            ssocat: Table | None = None,
+            xtalk_class2: Table | None = None,
+            xtalk_class1: Table | None = None,
+            he_template: SPHERExImage | None = None,
+            aurora_template: SPHERExImage | None = None,
+            shuttle_glow_template: SPHERExImage | None = None,
             ) -> pipeBase.Struct:
         # Raise error if L1 DQA was not passed
         check_l1_dqa(spximg)
@@ -239,9 +298,14 @@ class L2bTask(pipeBase.PipelineTask):
         # Create Source Mask
         task: CreateSourceMaskTask = getattr(self, "create_source_mask")
         # TODO: handle ssocat
-        result = task.run(spximg, srccat,
-                          # xtalk_coupling_matrix=xtalk_coupling_matrix,
-                          abs_gain_matrix=abs_gain_matrix, ssocat=None)
+        result = task.run(
+            spximg=spximg,
+            srccat=srccat,
+            ssocat=ssocat,
+            xtalk_class2=xtalk_class2,
+            xtalk_class1=xtalk_class1,
+            abs_gain_matrix=abs_gain_matrix
+        )
         spximg = result.spximg_out
 
         # Detect Outlier Pixels
@@ -252,19 +316,26 @@ class L2bTask(pipeBase.PipelineTask):
         # Get Zodi Model
         # Adds zodi layer
         task: GetZodiModelTask = getattr(self, "get_zodi_model")
-        result = task.run(spximg)
+        result = task.run(spximg, zodi_scaling, spectral_wcs)
         spximg = result.spximg_out
 
         # Measure Per-Exposure PSF
-        # Adds psf layer
+        # Adds either EPSF binary-table layer or legacy PSF cube layer
         task: MeasurePSFTask = getattr(self, "measure_psf")
-        result = task.run(spximg, srccat, psf_avg)
+        result = task.run(spximg=spximg, srccat=srccat, psf_avg=psf_avg, epsf=epsf)
         spximg = result.spximg_out
-        # print(spximg.header["PSF_FWHM"])
 
         # Create Spectral Image
         task: CreateSpectralImageTask = getattr(self, "create_spectral_image")
-        result = task.run(spximg, spectral_wcs)
+        if he_template is not None and spximg.getArrayId() in (1, 2):
+            result = task.run(spximg, spectral_wcs, he_template,
+                              aurora_template=aurora_template, shuttle_glow_template=None)
+        elif spximg.getArrayId() == 5:
+            result = task.run(spximg, spectral_wcs, he_template=None,
+                              aurora_template=None, shuttle_glow_template=shuttle_glow_template)
+        else:
+            result = task.run(spximg, spectral_wcs, he_template=None,
+                              aurora_template=None, shuttle_glow_template=None)
         spximg = result.spximg_out
 
         # Perform Data Quality Assessment

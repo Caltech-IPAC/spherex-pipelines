@@ -164,90 +164,102 @@ except ImportError:
 
 
 def get_sample_time() -> u.Quantity:
-    """The detector ramp sample readout cadence.
+    """Return the detector ramp sample readout cadence.
+
     Returns
     -------
-    sample_time: `astropy.units.Quantity`
+    sample_time : `astropy.units.Quantity`
+        The sample time in seconds.
+
     """
     return _param_dict["readout"]["t_samp"]["quantity"]
 
 
 def get_pix_scale() -> u.Quantity:
-    """The pixel scale.
+    """Return the pixel scale.
 
     Returns
     -------
-    pixel_scale: `astropy.units.Quantity`
+    pixel_scale : `astropy.units.Quantity`
+        The pixel scale in arcseconds.
+
     """
     return _param_dict["nominal_camera_model"]["pix_scale"]["quantity"]
 
 
 def get_npix_x() -> int:
-    """Number of pixels along similar wavelength direction of the detector"""
+    """Return number of pixels along similar wavelength direction of the detector."""
     return _param_dict["nominal_camera_model"]["npix_x"]["value"]
 
 
 def get_npix_y() -> int:
-    """Number of pixels along wavelength gradient direction of the detector"""
+    """Return number of pixels along wavelength gradient direction of the detector."""
     return _param_dict["nominal_camera_model"]["npix_y"]["value"]
 
 
 def get_npix_blind() -> int:
-    """Number of non-photosensitive pixels on each edge of the detector"""
+    """Return number of non-photosensitive pixels on each edge of the detector."""
     return 4
 
 
 def get_npix_x_active() -> int:
-    """Number of photosensitive pixels along similar wavelength
-    direction of the detector"""
+    """Return number of photosensitive pixels along similar wavelength
+    direction of the detector.
+    """
     return get_npix_x() - 2 * get_npix_blind()
 
 
 def get_npix_y_active() -> int:
-    """Number of photosensitive pixels along wavelength gradient
-    direction of the detector"""
+    """Return number of photosensitive pixels along wavelength gradient
+    direction of the detector.
+    """
     return get_npix_y() - 2 * get_npix_blind()
 
 
 def get_num_samples() -> int:
-    """The number of ramp samples in each exposure.
+    """Return the number of ramp samples in each exposure.
     Number of samples multiplied by sample duration gives exposure time.
 
     Returns
     -------
     num_samples: int
         Number of samples taken during the exposure integration.
+
     """
     return _param_dict["readout"]["n_samp"]["value"]
 
 
 def get_nonlinear_flag_threshold():
-    """The number of accumulated electrons that triggers the nonlinearity flag.
+    """Return the number of accumulated electrons that triggers the nonlinearity flag.
 
     Returns
     -------
     nonlinear_flag_threshold : Quantity
+        The electron count threshold for nonlinearity flagging.
+
     """
     return _param_dict["readout"]["nonlinear_flag_threshold"]["quantity"]
 
 
 def get_cds_read_noise(detector: int):
-    """Array-mean H2RG/amplifier noise, as read in correlated-double sample (CDS) mode.
+    """Return array-mean H2RG/amplifier noise in CDS mode.
 
     Parameters
     ----------
     detector : int
+        Detector ID (1-6).
 
     Returns
     -------
     result : float
         CDS-read noise for a given detector in electrons.
+
     """
     return _param_dict["detector"]["read_noise_cds"]["value"][detector-1]
 
 
 def get_lvf_values(array_id):
-    """Get lvf values for specific array."""
+    """Return LVF values for specific array."""
     return lvf_params[array_id]
 
 
@@ -257,10 +269,13 @@ def format_unit(unit: Union[u.Unit, str]):
     Parameters
     ----------
     unit : `~astropy.units.Unit` or `str`
+        The unit to format.
 
     Returns
     -------
     formatted_str : `str`
+        The formatted unit string.
+
     """
     # use generic formatter to have more control over how unit appears
     return u.format.Generic.to_string(u.Unit(unit))

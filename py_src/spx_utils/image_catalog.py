@@ -13,6 +13,7 @@ from spx_data import SPHERExImage
 
 class SourcePipelineClass(IntFlag):
     """Per-source bitwise flag for SPHEREx Pipeline."""
+
     UNDEFINED = 0
     ASTROMETRIC = 1 << 0  # astrometric calibrators
     PSF = 1 << 1  # PSF calibrators
@@ -115,8 +116,8 @@ def preprocess_catalog(cat: Table,
     -------
     result : Table
         Catalog table preprocessed according to the parameters.
-    """
 
+    """
     return _preprocess_per_image(
         _preprocess_per_catalog(cat, srcPipeFlag),
         img,
@@ -166,6 +167,7 @@ class ImageCatalogIterable(Iterable):
     -----
     ``preprocess_catalog`` provides equivalent catalog preprocessing functionality
     for a single image and catalog pair.
+
     """
 
     def __init__(self,

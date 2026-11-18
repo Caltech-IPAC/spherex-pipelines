@@ -54,6 +54,8 @@ class EstimateCoarseAstrometryConnections(pipeBase.PipelineTaskConnections,
 
 class EstimateCoarseAstrometryConfig(pipeBase.PipelineTaskConfig,
                                      pipelineConnections=EstimateCoarseAstrometryConnections):
+    """Configuration for EstimateCoarseAstrometry task."""
+
     naif_id = Field(
         doc="The NAIF ID of the instrument or spacecraft.",
         dtype=int,
@@ -127,6 +129,7 @@ class EstimateCoarseAstrometryTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "estimate-coarse-astrometry"
@@ -144,7 +147,7 @@ class EstimateCoarseAstrometryTask(pipeBase.PipelineTask):
             planned_obs: PlannedObservation,
             initial_distortion_table: Table,
             override_wcs: WCS = None) -> pipeBase.Struct:
-        """Creates WCS and jitter table from PEF pointings.
+        """Create WCS and jitter table from PEF pointings.
 
         Parameters
         ----------
@@ -167,6 +170,7 @@ class EstimateCoarseAstrometryTask(pipeBase.PipelineTask):
         ------
         ValueError
             Raised if no pointings are found within time range.
+
         """
         spximg_out = copy.copy(spximg)
         array_id = spximg.getArrayId()

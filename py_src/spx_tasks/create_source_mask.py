@@ -2,6 +2,7 @@ __all__ = ["CreateSourceMaskConfig", "CreateSourceMaskTask"]
 
 # Standard library imports
 import copy
+from typing import Union
 
 # Related third party imports
 from lsst.pex.config import Field, ListField
@@ -14,6 +15,7 @@ import scipy.linalg
 from astropy import stats as astrostats
 import numpy as np
 from astropy.table.table import Table
+from scipy.ndimage import gaussian_filter
 
 # Local application/library specific imports
 from spx_data import SPHERExImage, Flag
@@ -24,7 +26,7 @@ from spx_utils import refcat_utils
 
 
 def blended_exponential_radius(m, a1, b1, a2, b2, m0, w) -> np.ndarray:
-    """Blended exponential mask-radius model:
+    """Compute blended exponential mask-radius model.
 
     Parameters
     ----------
@@ -64,9 +66,6 @@ def blended_exponential_radius(m, a1, b1, a2, b2, m0, w) -> np.ndarray:
 
 def mask_sources(spximg: SPHERExImage,
                  cat: Table,
-                 minmag: float,
-                 maxmag: float,
-                 dmag: float,
                  blended_params_dict: dict,
                  plot_this: bool = True):
     """Mask sources based on their magnitudes and positions.
@@ -77,12 +76,6 @@ def mask_sources(spximg: SPHERExImage,
         The SPHEREx image object.
     cat : `Table`
         Source catalog.
-    minmag : `float`
-        Minimum magnitude to consider.
-    maxmag : `float`
-        Maximum magnitude to consider.
-    dmag : `float`
-        Magnitude bin width.
     blended_params_dict : `dict`
         Blended model params dict keyed by band:
         {band: [a1, b1, a2, b2, m0, w]}
@@ -92,6 +85,7 @@ def mask_sources(spximg: SPHERExImage,
     Returns
     -------
     `np.ndarray`: The source mask.
+
     """
     band = spximg.getArrayId()
 
@@ -111,10 +105,14 @@ def mask_sources(spximg: SPHERExImage,
     ix, iy = wcs_obj.world_to_pixel_values(ra_values, dec_values)
 
     # Filter magnitudes
-    inmagrange = np.logical_and(ABmag >= minmag, ABmag < maxmag)
-    xpix = ix[inmagrange]
-    ypix = iy[inmagrange]
-    abmag = ABmag[inmagrange]
+    if band in [1, 2, 3]:
+        mag_mask = cat['do_mask_swir'].astype(bool)
+    elif band in [4, 5, 6]:
+        mag_mask = cat['do_mask_mwir'].astype(bool)
+
+    xpix = ix[mag_mask]
+    ypix = iy[mag_mask]
+    abmag = ABmag[mag_mask]
 
     image_mask = np.zeros([2 * nx, 2 * ny])
 
@@ -170,174 +168,370 @@ def mask_sources(spximg: SPHERExImage,
     return whpl_type1mask
 
 
-def mask_crosstalk(spximg: SPHERExImage,
-                   cat: Table,
-                   limiting_xtalk_current: float,
-                   t_int: float,
-                   xtalk_coupling_matrix: np.ndarray,
-                   xtalk_amplitude_thresh: float,
-                   abs_gain_matrix: SPHERExImage):
-    """Mask pixels affected by crosstalk.
+def compute_planet_mask_radius(x: Union[int, float],
+                               y: Union[int, float],
+                               detector: int,
+                               planet: str,
+                               planet_mask_radii: dict) -> float:
+    """Return a masking radius (in pixels) for a planet on a SPHEREx detector.
+
+
+    Parameters
+    ----------
+    x, y : `int` or `float`
+        Pixel coordinates of the planet on the detector. These are currently
+        unused by the function, but are included to allow future extensions
+        where the mask radius may depend on position.
+    detector : `int`
+        SPHEREx detector ID.
+    planet : `str`
+        Name or identifier of the planet. This value is normalized internally
+        (lowercased and stripped) before lookup.
+    planet_mask_radii : `dict`
+        Dictionary mapping normalized planet names to a list of
+        masking radii (in pixels), one for each detector.
+
+    Returns
+    -------
+    radius : `float`
+        Masking radius in pixels for the given planet on the specified detector.
+
+    Raises
+    ------
+    ValueError
+        If the detector index is not in 1-6, if the planet name is not present
+        in ``planet_mask_radii``, or if the corresponding radii entry is not
+        a length-6 sequence.
+
+    """
+    if detector not in {1, 2, 3, 4, 5, 6}:
+        raise ValueError("detector index must be an integer in 1..6")
+
+    planet_key = str(planet).strip().lower()
+    if planet_key not in planet_mask_radii:
+        raise ValueError(f"unknown planet '{planet}'")
+
+    radii = planet_mask_radii[planet_key]
+    if not hasattr(radii, "__len__") or len(radii) != 6:
+        raise ValueError(
+            f"planet_mask_radii['{planet_key}'] must be a length-6 list (detectors 1..6)"
+        )
+
+    radius = float(radii[detector - 1])
+    return radius
+
+
+def mask_planets(spximg: SPHERExImage,
+                 ssocat: Table,
+                 planet_mask_radii: dict,
+                 name_col: str = "desig",
+                 ra_col: str = "RA",
+                 dec_col: str = "DEC") -> np.ndarray:
+    """Build a boolean mask for bright planets/SSOs using fixed radii.
 
     Parameters
     ----------
     spximg : `SPHERExImage`
-        The SPHEREx image object.
-    cat : `Table`
-        Source catalog.
-    limiting_xtalk_current : `float`
-        Threshold for identifying crosstalk-inducing pixels.
-    t_int : `float`
-        Integration time.
-    xtalk_coupling_matrix : `np.ndarray`
-        Crosstalk coupling matrix.
-    xtalk_amplitude_thresh : `float
-        Crosstalk amplitude threshold.
-    abs_gain_matrix : `SPHERExImage`
-        Absolute gain matrix.
+        Input SPHEREx image.
+    ssocat : `Table`
+        Table of solar system objects. Must contain RA/DEC columns and a
+        name/identifier column.
+    planet_mask_radii : `dict`
+        Dictionary mapping normalized planet names to a list of
+        masking radii (in pixels), one for each detector.
+    name_col : `str`, optional
+        Column holding the SSO name (e.g., "Mars", "Jupiter").
+    ra_col, dec_col : `str`, optional
+        RA/Dec column names.
 
     Returns
     -------
-    `np.ndarray` : The crosstalk mask.
+    mask : `np.ndarray`
+        Boolean mask of shape (Jactive, Kactive) where True means "mask it".
+
     """
     rp = ReadoutParameters.from_metadata(spximg.meta)
-    nx = rp.Jactive + rp.jref
-    ny = rp.Kactive + rp.kref
-    n_readout_channels = rp.nchannel
-    channel_width = int(ny / n_readout_channels)
-    xoff = yoff = nx // 2
-    rind = rp.jref // 2
+    nx = rp.Jactive  # rows (y)
+    ny = rp.Kactive  # cols (x)
 
-    # Crosstalk coupling matrix
-    xtalk_coupling_matrix[np.isnan(xtalk_coupling_matrix)] = 0.0
-    coupling = xtalk_coupling_matrix.T   # matches defintion in simulator
+    planet_mask = np.zeros((nx, ny), dtype=bool)
+    if ssocat is None or len(ssocat) == 0:
+        return planet_mask
 
-    # Make a mask that's bigger than the array and truncate later
-    image_mask = np.zeros([2*nx, 2*ny])
-    sky_image = np.zeros([nx, ny])
-    sky_image[rind: nx-rind, rind: ny-rind] = spximg.data
+    det_id = spximg.getArrayId()
 
-    # dQ is modeled photocurrent in a single pixel, ie infinitely small PSF
-    # validation data has dQ in catalog
-    # In real data processing we will not have dQ in catalog
-    try:
-        dQ = np.array(cat['dQ'])
-    except KeyError:
-        print("dQ not available, calculate photocurrent from flux.")
-        # Ensure 'dQ' exists in the catalog
-        if 'dQ' not in cat.colnames:
-            cat['dQ'] = np.full(len(cat), np.nan)  # Initialize with NaNs
+    for col in (ra_col, dec_col):
+        if col not in ssocat.colnames:
+            raise ValueError(f"ssocat is missing required column '{col}'")
+    if name_col not in ssocat.colnames:
+        raise ValueError(f"ssocat is missing required column '{name_col}'")
 
-        w = spximg.wcs
-        ra, dec = cat['ra'], cat['dec']
-        # Convert RA, Dec to pixel coordinates (x, y)
-        x, y = w.world_to_pixel_values(ra, dec)
-        # Round to nearest pixel index
-        # (may be better to interpolate?)
-        x_idx = np.round(x).astype(int)
-        y_idx = np.round(y).astype(int)
-        # Ensure indices are within image bounds
-        valid = (x_idx >= 0) & (x_idx < spximg.data.shape[1]) & \
-                (y_idx >= 0) & (y_idx < spximg.data.shape[0])
-        x_idx, y_idx = x_idx[valid], y_idx[valid]
-        # Extract flux at source positions
-        flux_mjy_sr = spximg.data[y_idx, x_idx]  # Flux in MJy/sr
-        # Convert from MJy/sr to e-/s using the inverse of the gain matrix
-        gain_matrix = abs_gain_matrix.data  # Gain matrix is in MJy s / (electron sr)
-        # Extract gain values at the same pixel locations as sources
-        gain_values = gain_matrix[y_idx, x_idx]  # Extract only the required pixels
-        # Convert flux from MJy/sr to e-/s
-        flux_e_per_s = flux_mjy_sr / gain_values  # Element-wise division
-        # Assign computed dQ for sources that lack it in the catalog
-        cat['dQ'][valid] = flux_e_per_s
-        dQ = np.array(cat['dQ'])
-    try:
-        ix = np.array(cat['ix']) + rind
-        iy = np.array(cat['iy']) + rind
-    except KeyError:
-        # srccat used in production processing
-        ra_values = cat['ra']  # Extract RA
-        dec_values = cat['dec']  # Extract Dec
-        # Convert (ra, dec) to pixel coordinates
-        ix, iy = spximg.wcs.world_to_pixel_values(ra_values, dec_values)
+    ra = np.asarray(ssocat[ra_col], dtype=float)
+    dec = np.asarray(ssocat[dec_col], dtype=float)
+    ix, iy = spximg.wcs.world_to_pixel_values(ra, dec)
+    ix = np.asarray(ix, dtype=float)
+    iy = np.asarray(iy, dtype=float)
 
-    # Find the sources to be masked
-    # First, find sources that would be
-    # masked based on modeled photocurrent
-    whpl_bright = dQ > limiting_xtalk_current * t_int
-    # Number of bright sources
-    bsrcsize = whpl_bright.sum()
-    brightmodel = np.zeros([2*nx, 2*ny])
-    brightpixx = ix[whpl_bright]
-    brightpixy = iy[whpl_bright]
-    # Loop through the list making circles.
-    # Use a radius of 2 pixels
-    # This is approximately how far out the big, bright
-    # photocurrent would be spread by the PSF
-    for bsrc in range(0, bsrcsize):
-        pixcoord = regions.PixCoord(brightpixy[bsrc], brightpixx[bsrc])
-        aperture = regions.CirclePixelRegion(pixcoord, 2)
-        mask = aperture.to_mask(mode='exact')
-        brightmodel[aperture.bounding_box.iymin+yoff:
-                    aperture.bounding_box.iymax+yoff,
-                    aperture.bounding_box.ixmin+xoff:
-                    aperture.bounding_box.ixmax+yoff] += mask
+    for xval, yval, pname in zip(ix, iy, ssocat[name_col]):
+        if not np.isfinite(xval) or not np.isfinite(yval):
+            continue
 
-    # Account for the fractional masking
-    brightmodel = brightmodel[xoff: xoff+nx, yoff: yoff+ny] > 0.1
+        pname_norm = str(pname).strip().lower()
 
-    # Now, find the list of pixels that are either modeled to be high
-    # photocurrent, or measured to be high photocurrent.
-    # The OR picks any pixels that might be in the union.
-    whpl_xtalk = np.logical_or(sky_image >= (limiting_xtalk_current * t_int), brightmodel)
-    print(f"Number of bright pixels identified: {whpl_bright.sum()}")
-    binsize = whpl_xtalk.sum()  # how many such pixels there are
-    print(f"Number of crosstalking pixels: {binsize}")
+        try:
+            radius = compute_planet_mask_radius(xval,
+                                                yval,
+                                                det_id,
+                                                pname_norm,
+                                                planet_mask_radii=planet_mask_radii)
+        except ValueError:
+            continue
 
-    # Now, build a model for the electrical channels
-    # start with making a grid of pixel x,y coords
-    [x_grid, y_grid] = np.meshgrid(np.linspace(0, nx-1, ny), np.linspace(0, ny-1, nx))
+        if not np.isfinite(radius) or radius <= 0:
+            continue
 
-    # Pick out those where the xtalking pixels are located
-    x_xt = x_grid[whpl_xtalk]
-    y_xt = y_grid[whpl_xtalk]
+        # fully-off-detector quick reject (x against ny, y against nx)
+        if (xval + radius < 0) or (xval - radius >= ny) or (yval + radius < 0) or (yval - radius >= nx):
+            continue
 
-    # Now make a vector of electrical channel numbers for mod operations
-    channel_vec = np.linspace(0, channel_width*(n_readout_channels-1), n_readout_channels, dtype='int')
+        aperture = regions.CirclePixelRegion(regions.PixCoord(x=xval, y=yval), radius)
 
-    # Loop through the list of xtalking pixels
-    for xt_pix in range(0, binsize):
-        # This is the position of the xtalking pixel in the channel
-        thisxpix = int(np.mod(x_xt[xt_pix], channel_width))
-        # This is the channel it's in
-        thisxchn = int((x_xt[xt_pix] - thisxpix) / channel_width)
-        # Loop through the dimension-3 part of the array of xtalking amplitudes
-        for icoupling in range(0, np.shape(coupling)[0]):
-            # Where the ampltiude of the xtalking is large
-            whpl_coupling = np.abs(coupling[icoupling, thisxchn, :]) >= xtalk_amplitude_thresh
-            # Ensure `whpl_coupling` matches the size of `channel_vec`
-            if whpl_coupling.size > channel_vec.size:
-                whpl_coupling = whpl_coupling[:channel_vec.size]
-            # Find the x pixel to mask in the 2*nx size
-            xt_mask = thisxpix + channel_vec[whpl_coupling] + xoff
-            xt_mask = thisxpix + channel_vec[whpl_coupling] + xoff
-            # Find the y pixel to mask in the 2*ny size
-            yt_mask = int(y_xt[xt_pix] + xoff)
-            # Set the mask
-            image_mask[yt_mask, xt_mask+(icoupling-1)] += 1
+        try:
+            m = aperture.to_mask(mode="center")
+        except regions.NoOverlap:
+            continue
 
-    # Truncate the array and print the result
-    whpl_type2mask = image_mask[xoff: xoff+nx, xoff: xoff+ny] > 0.1
-    print(f"Masking fraction after step 2: {np.sum(whpl_type2mask)/(nx*ny)}")
+        if m.data is None:
+            continue
 
+        bbox = aperture.bounding_box
+        iymin, iymax = bbox.iymin, bbox.iymax
+        ixmin, ixmax = bbox.ixmin, bbox.ixmax
+
+        # clip to detector bounds (rows=y against nx, cols=x against ny)
+        y0 = max(iymin, 0)
+        y1 = min(iymax, nx)
+        x0 = max(ixmin, 0)
+        x1 = min(ixmax, ny)
+
+        if y0 >= y1 or x0 >= x1:
+            continue
+
+        mask_yslice = slice(y0 - iymin, y1 - iymin)
+        mask_xslice = slice(x0 - ixmin, x1 - ixmin)
+        stamp = m.data[mask_yslice, mask_xslice]
+
+        # For mode="center", stamp is 0/1
+        planet_mask[y0:y1, x0:x1] |= (stamp == 1)
+
+    return planet_mask
+
+
+def ssocat_has_any_planets(ssocat: Table, name_col: str, planet_keys: list) -> bool:
+    """Check whether a solar-system object catalog contains any known planets.
+
+    Parameters
+    ----------
+    ssocat : `astropy.table.Table`
+        Table of solar-system objects. Must contain a column with object names
+        or identifiers.
+    name_col : `str`
+        Name of the column in ``ssocat`` that holds the object identifiers
+        (e.g., planet names).
+    planet_keys : `list`
+        Iterable list of planet identifiers to search for. Values are normalized
+        internally by stripping whitespace and converting to lowercase.
+
+    Returns
+    -------
+    has_planets : `bool`
+        True if any of the planet identifiers appear in the catalog;
+        False otherwise.
+
+    """
+    if ssocat is None or len(ssocat) == 0 or name_col not in ssocat.colnames:
+        return False
+
+    keys = {str(k).strip().lower() for k in planet_keys}
+    ssokeys = {str(v).strip().lower() for v in ssocat[name_col]}
+
+    return not keys.isdisjoint(ssokeys)  # True if any overlap
+
+
+def _prepare_xtalk_full_frame(spximg: SPHERExImage) -> tuple[np.ndarray, tuple[slice, slice]]:
     rp = ReadoutParameters.from_metadata(spximg.meta)
-    jact = rp.Jactive
-    kact = rp.Kactive
-    xoff = (jact + rp.jref) // 2
-    yoff = (kact + rp.kref) // 2
 
-    whpl_type2mask = image_mask[xoff: xoff + jact, yoff: yoff + kact] > 0.1
-    return whpl_type2mask
+    BAD_MASK = (
+        Flag.HOT
+        | Flag.COLD
+        | Flag.OVERFLOW
+        | Flag.TRANSIENT
+        | Flag.SNOWBALL
+        | Flag.BLOOM
+        | Flag.SUR_ERROR
+        | Flag.MISSING_DATA
+        | Flag.SUR_MISMATCH
+        | Flag.NONLINEAR
+        | Flag.NONFUNC
+    )
+
+    # Start from active science image
+    active_img = np.asarray(spximg.data, dtype=float).copy()
+
+    # Build bad-pixel mask on the active image
+    bad = ~np.isfinite(active_img)
+
+    if hasattr(spximg, "flags") and spximg.flags is not None:
+        bad |= (spximg.flags & BAD_MASK) != 0
+
+    good = ~bad
+    if np.any(good):
+        fill_value = np.nanmedian(active_img[good])
+    else:
+        fill_value = 0.0
+
+    active_img[bad] = fill_value
+
+    # Full detector shape including refs
+    full_shape = (rp.Jactive + rp.jref, rp.Kactive + rp.kref)
+    full_img = np.full(full_shape, fill_value, dtype=float)
+
+    # Embed active image in the middle of the full detector frame
+    nrows, ncols = active_img.shape
+    row0 = (full_shape[0] - nrows) // 2
+    col0 = (full_shape[1] - ncols) // 2
+    row1 = row0 + nrows
+    col1 = col0 + ncols
+
+    if row1 > full_shape[0] or col1 > full_shape[1]:
+        raise ValueError(
+            f"Active image shape {active_img.shape} does not fit in full detector shape {full_shape}"
+        )
+
+    row_range = slice(row0, row1)
+    col_range = slice(col0, col1)
+
+    full_img[row_range, col_range] = active_img
+
+    return full_img, (row_range, col_range)
+
+
+def class1_table_to_array(tbl: Table) -> np.ndarray:
+    channels = np.asarray(tbl["Channel"], dtype=int)
+    amps = np.asarray(tbl["Coupling Amplitude"], dtype=float)
+
+    if len(tbl) != 32:
+        raise ValueError("xtalk_class1 table must have 32 rows")
+
+    out = np.zeros(32, dtype=float)
+    for ch, amp in zip(channels, amps):
+        if ch < 1 or ch > 32:
+            raise ValueError(f"Invalid Class 1 channel {ch}; expected 1..32")
+        out[ch - 1] = amp
+
+    return out
+
+
+def class2_table_to_matrix(tbl: Table) -> np.ndarray:
+    colnames = list(tbl.colnames)
+
+    if len(colnames) != 32:
+        raise ValueError(f"xtalk_class2 table must have 32 columns; got {len(colnames)}")
+
+    matrix = np.column_stack([np.asarray(tbl[col], dtype=float) for col in colnames])
+
+    if matrix.shape != (32, 32):
+        raise ValueError(f"xtalk_class2 table must be shape (32, 32); got {matrix.shape}")
+
+    return matrix
+
+
+def mask_crosstalk(
+    spximg: SPHERExImage,
+    xtalk_class2: Table,
+    xtalk_class1: Table | None = None,
+    xtalk_threshold: float = 0.3,
+    gaussian_sigma: float = 1.5,
+    class1_swir_detectors: tuple[int, ...] = (1, 2, 3),
+) -> np.ndarray:
+    """Build CROSSTALK mask following SSDC-MS-019 v3.5."""
+    if xtalk_class2 is None:
+        raise ValueError("xtalk_class2 is required when mask_xtalk=True")
+
+    class2_coupling_matrix = class2_table_to_matrix(xtalk_class2)
+    class1_amplitudes = None
+    if xtalk_class1 is not None:
+        class1_amplitudes = class1_table_to_array(xtalk_class1)
+
+    full_img, (row_range, col_range) = _prepare_xtalk_full_frame(spximg)
+    filtered = gaussian_filter(full_img, sigma=gaussian_sigma)
+
+    ny, nx = filtered.shape
+    n_channels = 32
+
+    if nx % n_channels != 0:
+        raise ValueError(f"Image width {nx} is not divisible by {n_channels} channels.")
+
+    channel_width = nx // n_channels
+
+    if class2_coupling_matrix.shape != (n_channels, n_channels):
+        raise ValueError("class2_coupling_matrix must have shape (32, 32).")
+
+    class2_coupling_matrix = np.nan_to_num(class2_coupling_matrix, nan=0.0)
+
+    xtalk_mask = np.zeros((ny, nx), dtype=bool)
+
+    # Class 2
+    for i in range(n_channels):
+        x0_i = i * channel_width
+        x1_i = x0_i + channel_width
+        src_sub = filtered[:, x0_i:x1_i]
+
+        for j in range(n_channels):
+            coupling_ij = class2_coupling_matrix[i, j]
+            if coupling_ij == 0:
+                continue
+
+            xtalk_img = src_sub * coupling_ij
+            mask_ij = np.abs(xtalk_img) > xtalk_threshold
+            if not np.any(mask_ij):
+                continue
+
+            x0_j = j * channel_width
+            x1_j = x0_j + channel_width
+            xtalk_mask[:, x0_j:x1_j] |= mask_ij
+
+    # Class 1
+    det_id = spximg.getArrayId()
+    if det_id in class1_swir_detectors and class1_amplitudes is not None:
+        class1_amplitudes = np.asarray(class1_amplitudes, dtype=float)
+        if class1_amplitudes.shape != (n_channels,):
+            raise ValueError("class1_amplitudes must have shape (32,)")
+
+        class1_amplitudes = np.nan_to_num(class1_amplitudes, nan=0.0)
+        class1_mask_unshifted = np.zeros((ny, nx), dtype=bool)
+
+        for i in range(n_channels):
+            x0 = i * channel_width
+            x1 = x0 + channel_width
+            sub = filtered[:, x0:x1]
+
+            amp = abs(class1_amplitudes[i])
+            if amp == 0:
+                continue
+
+            xtalk_img = sub * amp
+            class1_mask_unshifted[:, x0:x1] |= (np.abs(xtalk_img) > xtalk_threshold)
+
+        shift = 32
+        class1_mask_shifted = np.zeros_like(class1_mask_unshifted)
+        if shift < ny:
+            class1_mask_shifted[shift:, :] = class1_mask_unshifted[:-shift, :]
+        class1_mask_shifted[:shift, :] = False
+
+        xtalk_mask |= class1_mask_shifted
+
+    return xtalk_mask[row_range, col_range]
 
 
 def mask_dbs_ghosts(spximg: SPHERExImage,
@@ -391,6 +585,7 @@ def mask_dbs_ghosts(spximg: SPHERExImage,
       - For Band 4: Uses the average flux from `mag_det1` and `mag_det4`.
       - For Band 5: Uses flux from `mag_det2`.
       - For Band 6: Uses flux from `mag_det3`.
+
     """
     band = spximg.getArrayId()
     ny, nx = spximg.data.shape  # Get detector bounds
@@ -629,6 +824,7 @@ def dqa_check_dbs_ghost_ext_corners(spximg: SPHERExImage,
     -------
     `dict`
         DQA result dict with "result" and "description".
+
     """
     band = spximg.getArrayId()
     ny, nx = spximg.data.shape
@@ -727,6 +923,7 @@ def dqa_check_masked_sources(spximg: SPHERExImage, srccat: Table, threshold: flo
     -------
     `dict`
         Dictionary with "result" and "description" for Level2DQA.
+
     """
     mask = (spximg.flags & Flag.SOURCE) > 0
     num_masked_pixels = np.sum(mask)
@@ -772,7 +969,9 @@ def dqa_check_masked_sources(spximg: SPHERExImage, srccat: Table, threshold: flo
 
 
 def dqa_check_ghost_flux(spximg: SPHERExImage, threshold: float = 1000.0) -> dict:
-    """Check that the flagged GHOST pixels have flux greater than the threshold."""
+    """Check that the flagged GHOST pixels have flux greater than the
+    threshold.
+    """
     ghost_mask = (spximg.flags & Flag.GHOST) > 0
     ghost_mask_ext = (spximg.flags & Flag.GHOST_EXT) > 0
     ghost_pix_flux = spximg.data[ghost_mask | ghost_mask_ext]
@@ -809,43 +1008,36 @@ def dqa_check_ghost_flux(spximg: SPHERExImage, threshold: float = 1000.0) -> dic
     return result
 
 
-def dqa_check_crosstalk_flux(spximg: SPHERExImage, threshold: float = 400.0) -> dict:
-    """Check that all CROSSTALK flagged pixels exceed the given threshold."""
+def dqa_check_crosstalk_flux(spximg: SPHERExImage, threshold: float = 0.1) -> dict:
+    """Check that CROSSTALK flagged pixels are less than threshold percent
+    of the full image.
+    """
     xtalk_mask = (spximg.flags & Flag.CROSSTALK) > 0
-    xtalk_pix_flux = spximg.data[xtalk_mask]
-    n_flagged = xtalk_pix_flux.size
-    n_total = spximg.data.size
-    frac = 100 * n_flagged / n_total
+    n_flagged = int(np.sum(xtalk_mask))
+    n_total = int(spximg.data.size)
+    frac_percent = 100.0 * n_flagged / n_total
 
-    if n_flagged == 0:
+    if frac_percent < threshold:
         result = {
-            "result": "FAIL",
+            "result": "PASS",
             "description": (
-                f"No CROSSTALK flagged pixels found. Total pixels: {n_total}."
-            )
-        }
-    elif np.any(xtalk_pix_flux < threshold):
-        n_fail = np.sum(xtalk_pix_flux < threshold)
-        result = {
-            "result": "FAIL",
-            "description": (
-                f"{n_flagged} CROSSTALK pixels flagged out of {n_total} "
-                f"({frac:.2f}%). {n_fail} have flux < {threshold:.1f} e-/s."
+                f"{n_flagged} CROSSTALK flagged pixels out of {n_total} "
+                f"({frac_percent:.6f}%). This is below the allowed "
+                f"{threshold:.3f}% threshold."
             )
         }
     else:
         result = {
-            "result": "PASS",
+            "result": "FAIL",
             "description": (
-                f"{n_flagged} CROSSTALK pixels flagged out of {n_total} "
-                f"({frac:.2f}%). All have flux > {threshold:.1f} e-/s."
+                f"{n_flagged} CROSSTALK flagged pixels out of {n_total} "
+                f"({frac_percent:.6f}%). This exceeds the allowed "
+                f"{threshold:.3f}% threshold."
             )
         }
 
     log_dqa_result("crosstalk dqa", result)
     return result
-
-
 class CreateSourceMaskConnections(pipeBase.PipelineTaskConnections,
                                   dimensions=("instrument", "exposure"),
                                   defaultTemplates={}):
@@ -861,24 +1053,35 @@ class CreateSourceMaskConnections(pipeBase.PipelineTaskConnections,
         storageClass="AstropyParquet",
         dimensions=["instrument", "dichroicpair", "spsplan", "slewgroup"],
     )
-    # ssocat = cT.Input(
-    #     name="ssocat",
-    #     doc="Input solar system object catalog.",
-    #     storageClass="AstropyParquet",
-    #     dimensions=["instrument"],
-    # )
-    # xtalk_coupling_matrix = cT.PrerequisiteInput(
-    #     name="xtalk_coupling_matrix",
-    #     doc="Crosstalk coupling matrix",
-    #     storageClass="SPHERExImage",
-    #     dimensions=("instrument", "detector"),
-    #     isCalibration=True
-    # )
+    ssocat = cT.Input(
+        name="ssocat",
+        doc="Input solar system object catalog.",
+        storageClass="AstropyParquet",
+        dimensions=["instrument", "observation"],
+    )
+    xtalk_class1 = cT.PrerequisiteInput(
+        name="xtalk_class1",
+        doc="Class 1 crosstalk amplitudes table.",
+        storageClass="Xtalk",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0,
+    )
+
+    xtalk_class2 = cT.PrerequisiteInput(
+        name="xtalk_class2",
+        doc="Class 2 crosstalk coupling table.",
+        storageClass="Xtalk",
+        dimensions=["instrument", "detector"],
+        isCalibration=True,
+        minimum=0,
+    )
     abs_gain_matrix = cT.PrerequisiteInput(
         name="abs_gain_matrix",
         storageClass="SPHERExImage",
         dimensions=["instrument", "detector"],
-        isCalibration=True
+        isCalibration=True,
+        minimum=0,
     )
     spximg_out = cT.Output(
         name="spximg_out",  # default dataset type for output
@@ -890,6 +1093,8 @@ class CreateSourceMaskConnections(pipeBase.PipelineTaskConnections,
 
 class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
                              pipelineConnections=CreateSourceMaskConnections):
+    """Configuration for CreateSourceMask task."""
+
     sr = Field(
         "High resolution sampling rate.",
         dtype=int,
@@ -940,34 +1145,67 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
         dtype=bool,
         default=True)
 
-    limiting_xtalk_current = Field(
-        doc="Limiting cross talk threshold in e-/s.",
+    mask_planets = Field(
+        doc="Do masking for bright planets/SSOs using compute_planet_mask_radius.",
+        dtype=bool,
+        default=True,
+    )
+
+    planet_name_keys = ListField(
+        doc=("Normalized (lowercase) planet/SSO names to mask. "),
+        dtype=str,
+        default=["mars", "jupiter", "saturn barycenter", "uranus", "neptune", "phoebe"],
+    )
+
+    planet_radii_jupiter = ListField(
+        doc="Planet mask radius (pixels) for Jupiter, det1..det6.",
         dtype=float,
-        default=400.0
+        default=[750., 500., 400., 400., 400., 400.],
+    )
+    planet_radii_saturn_barycenter = ListField(
+        doc="Planet mask radius (pixels) for Saturn barycenter, det1..det6.",
+        dtype=float,
+        default=[600., 400., 200., 150., 150., 150.],
+    )
+    planet_radii_mars = ListField(
+        doc="Planet mask radius (pixels) for Mars, det1..det6.",
+        dtype=float,
+        default=[600., 400., 200., 150., 150., 150.],
+    )
+    planet_radii_uranus = ListField(
+        doc="Planet mask radius (pixels) for Uranus, det1..det6.",
+        dtype=float,
+        default=[50., 28., 15., 15., 15., 15.],
+    )
+    planet_radii_neptune = ListField(
+        doc="Planet mask radius (pixels) for Neptune, det1..det6.",
+        dtype=float,
+        default=[30., 10., 5., 5., 5., 5.],
+    )
+    planet_radii_phoebe = ListField(
+        doc="Planet mask radius (pixels) for Phoebe, det1..det6.",
+        dtype=float,
+        default=[3., 3., 3., 3., 3., 3.],
+    )
+    planet_name_col = Field(
+        doc="Column name in ssocat containing the object name (e.g. 'Mars').",
+        dtype=str,
+        default="desig",
+    )
+
+    planet_flag_name = Field(
+        doc=(
+            "Which Flag bit to set for planet masking. "
+            "If this flag name does not exist on Flag, falls back to SOURCE."
+        ),
+        dtype=str,
+        default="SOURCE",
     )
 
     xtalk_amplitude_thresh = Field(
         doc="Crosstalk coupling amplitude threshold",
         dtype=float,
         default=1e-4
-    )
-
-    maxmag = Field(
-        doc="Faintest magnitude to consider for crosstalk, AB mag",
-        dtype=float,
-        default=19.0
-    )
-
-    minmag = Field(
-        doc="Brightest magnitude to consider for crosstalk, AB mag",
-        dtype=float,
-        default=-5.0
-    )
-
-    dmag = Field(
-        doc="Width of masking bin for crosstalk, AB mag",
-        dtype=float,
-        default=1.0
     )
 
     ghost_radius = Field(
@@ -1138,6 +1376,24 @@ class CreateSourceMaskConfig(pipeBase.PipelineTaskConfig,
         default=False
     )
 
+    xtalk_threshold = Field(
+        doc="Threshold in e-/s for Class 1 and Class 2 crosstalk images.",
+        dtype=float,
+        default=0.3,
+    )
+
+    xtalk_gaussian_sigma = Field(
+        doc="Gaussian sigma in pixels for crosstalk pre-filtering.",
+        dtype=float,
+        default=1.5,
+    )
+
+    class1_swir_detectors = ListField(
+        doc="Detector IDs on which to apply Class 1 crosstalk masking.",
+        dtype=int,
+        default=[1, 2, 3],
+    )
+
 
 class CreateSourceMaskTask(pipeBase.PipelineTask):
     """Implementation of L2 Create Source Mask.
@@ -1160,13 +1416,14 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "create-source-mask"
     ConfigClass = CreateSourceMaskConfig
     full_name = "Create Source Mask"
     ssdc_pipe_level = 2
-    ssdc_doc_tag = "SSDC-MS-019 v3.4"
+    ssdc_doc_tag = "SSDC-MS-019 v3.5"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1175,9 +1432,10 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
     def run(self,
             spximg: SPHERExImage,
             srccat: Table,
-            # xtalk_coupling_matrix: SPHERExImage,
-            abs_gain_matrix: SPHERExImage,
             ssocat: Table = None,
+            xtalk_class2: Table | None = None,
+            xtalk_class1: Table | None = None,
+            abs_gain_matrix: SPHERExImage | None = None,
             plot: bool = False,
             verbose: bool = False) -> pipeBase.Struct:
         """Update SOURCE flag to mask pixels containing signal from known
@@ -1206,8 +1464,8 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
         output: `Output`
             An `Output` object containing the corrected ``image``
             as an attribute of type `~spx_data.SPHERExImage`.
-        """
 
+        """
         if len(srccat) == 0:
             # If the catalog is empty, return the input image unchanged.
             spximg_out = copy.copy(spximg)
@@ -1228,9 +1486,6 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
         b_col = f"mag_det{det_id}"
         assert b_col in catalog.colnames, f"Catalog is missing column '{b_col}' for source brightness."
 
-        # Crosstalk masking parameters
-        t_int = spximg.header["TINT"]  # Integration time from header
-
         blended_params_dict = {1: self.config.blended_radius_params_det1,
                                2: self.config.blended_radius_params_det2,
                                3: self.config.blended_radius_params_det3,
@@ -1239,26 +1494,67 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
                                6: self.config.blended_radius_params_det6,
                                }
 
+        planet_mask_radii = {
+            "jupiter": list(self.config.planet_radii_jupiter),
+            "saturn barycenter": list(self.config.planet_radii_saturn_barycenter),
+            "mars": list(self.config.planet_radii_mars),
+            "uranus": list(self.config.planet_radii_uranus),
+            "neptune": list(self.config.planet_radii_neptune),
+            "phoebe": list(self.config.planet_radii_phoebe),
+        }
+
         # Mask construction (SOURCE / CROSSTALK / GHOST) is WCS-dependent.
         # If WCS blows up with InvalidCoordinateError and FINAST!=0, skip masks.
         try:
 
             source_mask = mask_sources(spximg=spximg,
                                        cat=catalog,
-                                       minmag=self.config.minmag,
-                                       maxmag=self.config.maxmag,
-                                       dmag=self.config.dmag,
                                        blended_params_dict=blended_params_dict,)
 
+            planet_mask = np.zeros_like(source_mask, dtype=bool)
+            if (self.config.mask_planets and ssocat_has_any_planets(ssocat,
+                                                                    self.config.planet_name_col,
+                                                                    self.config.planet_name_keys)):
+                planet_mask = mask_planets(
+                    spximg=spximg,
+                    ssocat=ssocat,
+                    planet_mask_radii=planet_mask_radii,
+                    name_col=self.config.planet_name_col,
+                    ra_col="RA",
+                    dec_col="DEC")
+
+            # Crosstalk masking
+            xtalk_mask = np.zeros_like(source_mask, dtype=bool)
             if self.config.mask_xtalk:
-                xtalk_coupling_matrix = None
-                xtalk_mask = mask_crosstalk(spximg=spximg,
-                                            cat=catalog,
-                                            limiting_xtalk_current=self.config.limiting_xtalk_current,
-                                            t_int=t_int,
-                                            xtalk_coupling_matrix=xtalk_coupling_matrix.data,
-                                            xtalk_amplitude_thresh=self.config.xtalk_amplitude_thresh,
-                                            abs_gain_matrix=abs_gain_matrix)
+                if xtalk_class2 is None:
+                    self.log.warning(
+                        "mask_xtalk=True but no xtalk_class2 was provided; "
+                        "skipping crosstalk masking for this run."
+                    )
+                elif abs_gain_matrix is None:
+                    self.log.warning(
+                        "mask_xtalk=True but no abs_gain_matrix was provided; "
+                        "skipping crosstalk masking for this run."
+                    )
+                else:
+                    # Convert calibrated MJy/sr image back to dark-subtracted e-/s
+                    # for crosstalk masking only.
+                    spximg_xtalk = copy.copy(spximg)
+                    gain = np.asarray(abs_gain_matrix.data, dtype=float)
+                    data = np.asarray(spximg.data, dtype=float)
+
+                    spximg_xtalk.data = np.full_like(data, np.nan, dtype=float)
+                    good = np.isfinite(gain) & (gain != 0) & np.isfinite(data)
+                    spximg_xtalk.data[good] = data[good] / gain[good]
+
+                    xtalk_mask = mask_crosstalk(
+                        spximg=spximg_xtalk,
+                        xtalk_class2=xtalk_class2,
+                        xtalk_class1=xtalk_class1,
+                        xtalk_threshold=self.config.xtalk_threshold,
+                        gaussian_sigma=self.config.xtalk_gaussian_sigma,
+                        class1_swir_detectors=tuple(self.config.class1_swir_detectors),
+                    )
 
             # Assemble DBS ghost parameter dicts from config
             dbs_params_edge = {
@@ -1329,6 +1625,12 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
             combined_mask = np.logical_or(source_mask, xtalk_mask)
         else:
             combined_mask = source_mask
+
+        # Include planet mask in the combined mask
+        # (so PXSRCMSK / filtering treat it as masked)
+        if self.config.mask_planets and planet_mask is not None:
+            combined_mask = np.logical_or(combined_mask, planet_mask)
+
         whpl_compmask = combined_mask > 0.1
 
         # Create compmask of same shape directly
@@ -1337,6 +1639,9 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
 
         # Masks
         whpl_type1mask = source_mask > 0.1  # SOURCE
+        # Also set SOURCE for planets
+        if self.config.mask_planets and planet_mask is not None:
+            whpl_type1mask |= planet_mask
         if self.config.mask_xtalk:
             whpl_type2mask = xtalk_mask > 0.1  # CROSSTALK
 
@@ -1477,13 +1782,15 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
 
         # save percentage of the masked pixels
         if self.config.save_srcmask_percent:
-            spximg_out.header["PXSRCMSK"] = (round((1-whpl_compmask.sum()/(nx*ny)) * 100, 2),
-                                             "Percentage of pixels with SOURCE flag")
+            srcmask_percent = round(100.0 * np.count_nonzero(whpl_type1mask) / (nx * ny), 2)
+            spximg_out.header["PXSRCMSK"] = (
+                srcmask_percent,
+                "Percentage of pixels with SOURCE flag"
+            )
 
         # Perform validation checks
         _ = dqa_check_masked_sources(spximg_out, srccat)
         _ = dqa_check_ghost_flux(spximg_out)
-        _ = dqa_check_crosstalk_flux(spximg_out)
 
         # Additional DBS GHOST_EXT coverage check for Bands 3 and 4
         if self.config.mask_ghosts and det_id in (3, 4):
@@ -1501,9 +1808,6 @@ class CreateSourceMaskTask(pipeBase.PipelineTask):
                                                      "number of source flagged pixels")
         # Number of pixels xtalk flagged
         if self.config.mask_xtalk:
-            # xtalk threshold
-            spximg_out.header["XTTHRESH"] = (self.config.limiting_xtalk_current,
-                                             "[e-/s] crosstalk threshold")
             numpix_flagged_xtalk = np.count_nonzero((spximg_out.flags & Flag.CROSSTALK))
             spximg_out.header["HIERARCH L2 N_XTALK"] = (numpix_flagged_xtalk,
                                                         "number of crosstalk flagged pixels")

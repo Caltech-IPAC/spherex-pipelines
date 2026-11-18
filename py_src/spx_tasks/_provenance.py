@@ -26,6 +26,7 @@ def get_calibration_inputs(input_refs: InputQuantizedConnection) -> list[tuple[s
     -------
     input_items :
         List of tuples with dataset type name and dataset UUID for each input.
+
     """
     calibrations = [(ref.datasetType.name, ref.id)
                     for _, ref in input_refs if ref.datasetType.isCalibration()]
@@ -43,6 +44,7 @@ def add_calibration_provenance(spx_image: SPHERExImage,
         SPHEREx image to which we are adding provenance information.
     input_items :
         List of tuples with dataset type name and dataset UUID for each input.
+
     """
     for name, item_id in input_items:
         history_line = f"[CALIB] {name} {item_id}"
@@ -61,6 +63,7 @@ def module_provenance(spxtask: Task) -> str:
     -------
     result : `str`
         Module name and version summary.
+
     """
     full_module_name = getattr(spxtask, "full_name", spxtask.getFullName())
     ssdc_doc_tag = getattr(spxtask, "ssdc_doc_tag", "SSDC-MS-XXX")
@@ -68,8 +71,7 @@ def module_provenance(spxtask: Task) -> str:
 
 
 def add_history(history_line_getter: Callable = module_provenance, fld_name: str = "spximg_out"):
-    """
-    A decorator to add HISTORY comment to the metadata (header) of a SPHERExImage.
+    """Decorate a method to add HISTORY comment to a SPHERExImage header.
 
     Parameters
     ----------
@@ -79,6 +81,7 @@ def add_history(history_line_getter: Callable = module_provenance, fld_name: str
     fld_name : `str`, optional
         The name of the output SPHEREx Image field in the output.
         Default is ``spximg_out``.
+
     """
 
     def decorator(method):
@@ -115,8 +118,7 @@ def add_history(history_line_getter: Callable = module_provenance, fld_name: str
 
 
 def add_psf_history(history_line_getter: Callable = module_provenance, field_name: str = "psf"):
-    """
-    A decorator to add HISTORY comments to the FITS header of a PSFZoneData instance.
+    """Decorate a method to add HISTORY comments to a PSFZoneData FITS header.
 
     Parameters
     ----------
@@ -125,6 +127,7 @@ def add_psf_history(history_line_getter: Callable = module_provenance, field_nam
         to the HISTORY field in the header. Defaults to `~module_provenance`.
     field_name : `str`, optional
         The name of the output PSFZoneData field in the output object. Default is "psf".
+
     """
     def decorator(method):
         @functools.wraps(method)

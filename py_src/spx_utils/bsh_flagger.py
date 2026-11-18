@@ -1,6 +1,5 @@
 __all__ = ["BSHConfig", "BSHFlagger", "apply_bsh_flags_to_spx"]
 
-
 # Standard library imports
 import copy
 
@@ -22,6 +21,7 @@ HaloMethod = Literal["border_expand", "dilation", "smooth_skeleton"]
 
 class BSHConfig(Config):
     """Configuration for Bloom, Snowball, and Halo (BSH) flagging."""
+
     max_trans_frac = Field(
         doc="Maximum allowed transient fraction.",
         dtype=float,
@@ -35,7 +35,7 @@ class BSHConfig(Config):
     max_bloom_loops = Field(
         doc="Maximum number of loops for regular bloom.",
         dtype=int,
-        default=15
+        default=25
     )
     satellite_halo_factor = Field(
         doc="Halo amplification for satellite track.",
@@ -79,7 +79,7 @@ class BSHConfig(Config):
     )
 
     def setDefaults(self):
-        """Validate configuration."""
+        """Set defaults and validate satellite_halomethod."""
         super().setDefaults()
         allowed_methods = {"border_expand", "dilation", "smooth_skeleton"}
         if self.satellite_halomethod not in allowed_methods:
@@ -88,18 +88,23 @@ class BSHConfig(Config):
 
 
 class BSHFlagger:
-    """SPHERE Bloom / Snowball / Halo detection and flagger.
+    """SPHEREx Bloom / Snowball / Halo detection and flagger.
 
     Notes
     -----
-    det = BSHDetector(spx, cfg)
-    det.detect_bloom()
-    det.detect_snowballs()
-    det.detect_nonoverflow_bloom()
-    det.mask_transient_halo()
-    flags are set in-place on spx.flags
-    diagnostics stored in layers (optional, good for testing)
+    Example usage::
+
+        bsh = BSHFlagger(spx, cfg)
+        bsh.start_bloom_flag()
+        bsh.get_snowball_flag()
+        bsh.get_nonoverflow_bloom_flag()
+        bsh.mark_transient_halo()
+        apply_bsh_flags_to_spx(spx, bsh)
+
+    Flags are set in-place on spx.flags via apply_bsh_flags_to_spx().
+    Diagnostics stored in bloom_flag, snowball_flag, halo_flag arrays.
     """
+
     def __init__(self, spx: SPHERExImage, cfg: Optional[BSHConfig] = None, verbose: bool = False):
         self.spx = spx
         self.cfg = cfg or BSHConfig()
@@ -224,9 +229,9 @@ class BSHFlagger:
         self.header['SNWCIRCL'] = (self.force_snow_circle, 'T if snowballs are forced circular')
         self.header['SATHALOM'] = (self.cfg.satellite_halomethod,
                                    'Method by which satellite halos are determined.')
-        self.header['SATSTRKS'] = (0, 'No Strong Satellite Streaks Detected')
+        self.header['SNWSTRK'] = (0, 'Saturating streaks from snowball-halo detection')
         self.header['SATHALOF'] = (self.cfg.satellite_halo_factor, 'Halo amplification for satellite track')
-        self.header['BRDRMIND'] = (self.cfg.border_diff_min, 'Bloom detection - min diff btwn border layers.')
+        self.header['BRDRMIND'] = (self.cfg.border_diff_min, 'Bloom detection - min diff btwn border layers')
 
     def _update_bloom_pix(self):
         self.bloom_rows = np.concatenate((self.bloom_rows, self.nn_rows))
@@ -250,12 +255,11 @@ class BSHFlagger:
         return INDEXESA_unique
 
     def _enlarge_curve_by_smoothed_skeleton(self):
-        '''
-        # Subroutine to identify SATELLITE HALOs by tracking path and
-        # assigning halo radii based upon width along path
-        # This version is smoothed so that noise variations in edges have
-        # little effect upon the end result.  (RECOMMENDED METHOD)
-        '''
+        """Identify satellite halos by tracking path and assigning halo radii.
+
+        This version is smoothed so that noise variations in edges have
+        little effect upon the end result. (RECOMMENDED METHOD)
+        """
         # Step 1: clean up small noise
         mask0 = np.zeros(self.shape, dtype=bool)
         mask0[self.bloom_rows, self.bloom_cols] = True
@@ -286,10 +290,10 @@ class BSHFlagger:
         (self.halo_rows, self.halo_cols) = np.where((new_mask | mask0))
 
     def _enlarge_curve_by_dilation(self, approx_halfwidth=None):
-        '''
-        # Subroutine to assign SATELLITE HALOS by finding the mean width along a track
-        # and assigning the same width to the halo all along the track (less than ideal)
-        '''
+        """Assign satellite halos by finding mean width along a track.
+
+        Assigns the same width to the halo all along the track (less than ideal).
+        """
         mask = np.zeros(self.shape, dtype=bool)
         mask[self.bloom_rows, self.bloom_cols] = True
 
@@ -313,18 +317,18 @@ class BSHFlagger:
         (self.halo_rows, self.halo_cols) = np.where(mask)
 
     def _spread_search_multi(self, use_dirs, use_vis, check_flags):
-        '''
-        # This subroutine uses the arrays use_vis and check_flags to find all
-        # nearest neighbors using the directions use_dirs.
-        # It will then update self.nn_rows and self.nn_cols to contain only the
-        # valid nearest neighbors (pixels that are False in use_vis).  It will
-        # also update the fraction of those valid nearest neighbors that are
-        # flagged in self.frac_flagged.
+        """Find nearest neighbors in multiple directions and update state.
 
-        # PASS IN EMPTY arrays [], [] for use_vis and check_flags if you want
-        # to ignore those.
-        '''
+        This method uses the arrays ``use_vis`` and ``check_flags`` to find all
+        nearest neighbors along the directions specified by ``use_dirs``. It
+        updates ``self.nn_rows`` and ``self.nn_cols`` to contain only valid
+        nearest neighbors (pixels that are ``False`` in ``use_vis``). It also
+        updates ``self.flag_frac`` with the fraction of valid nearest
+        neighbors that are flagged.
 
+        Pass empty lists (``[]``, ``[]``) for ``use_vis`` and ``check_flags`` to
+        ignore those checks.
+        """
         # Define NN Indexes array
         check_rows = np.array([], dtype=int)
         check_cols = np.array([], dtype=int)
@@ -387,12 +391,11 @@ class BSHFlagger:
             self.nn_cols = to_check_nn_cols
 
     def _grow_halo_border(self, r_max):
-        '''
-        # Subroutine to assign SATELLITE HALOS by growing the border of the
-        # snowball by a uniform number of pixels. This assumes that the track
-        # is always the same width.  (less than ideal)
-        '''
+        """Assign satellite halos by growing the border of the snowball uniformly.
 
+        Grows by a uniform number of pixels, assuming the track is always the
+        same width. (Less than ideal.)
+        """
         self.nn_rows = self.bloom_rows.copy()
         self.nn_cols = self.bloom_cols.copy()
 
@@ -414,13 +417,17 @@ class BSHFlagger:
             self.halo_cols = np.concatenate((self.halo_cols, self.nn_cols))
 
     def start_bloom_flag(self):
-        '''
-        # NOTE: This code sets different values for the different conditions of
-        # bloom and snowball detection.  This is used in evaluating accuracy.
-        # For IPAC use, set SRC_BLOOM flag for all bloom detections, SNOWBALL
-        # flag for detected snowball or high energy cosmic rays.  This version
-        # sends snowballs to the snowball code as different conditions applied.
-        '''
+        """Detect and flag bloom events based on overflow and transient timing.
+
+        This method identifies bloom candidates by analyzing overflow pixels
+        and transient timing patterns, assigning values to ``bloom_flag``
+        based on detection conditions (values 1-7 indicate different bloom
+        types). Potential snowballs are deferred to ``get_snowball_flag()``.
+
+        Updates FITS header keywords:
+            NBLMSRCS: Number of identified blooming sources.
+            NBLMPIX: Number of pixels flagged for bloom.
+        """
         # FLAG LAYER COMBOS PARTICULAR TO BLOOM FLAG
 
         late_transient = (self.transient & self.late & self.small
@@ -775,10 +782,8 @@ class BSHFlagger:
             print(f"{self.name}: Flagged {np.count_nonzero(self.bloom_flag)} pixels for bloom.")
             print(f"{self.name}: Found {self.count_snowball} snowball or high energy CR occurrences.")
 
-        self.header['NBLMSRCS'] = (self.count_bloom, 'Number of Bloomed Srcs')
+        self.header['NBLMSRCS'] = (self.count_bloom, 'Number of Saturating Bloomed Srcs')
         self.header['NBLMPIX'] = (np.count_nonzero(self.bloom_flag), 'Number of Pixels Bloom Flag')
-        self.header['NSNOWSRC'] = (self.count_snowball, 'Number of Snowball Srcs')
-        self.header['NBLM5SCS'] = (self.count_5bloom, 'Number of 5-Bloomed Srcs')
 
         self.bloom_flag[self.non_funct] = 0
         # n_bloom only used for diagnostics
@@ -786,21 +791,39 @@ class BSHFlagger:
         # for bloomed pixels with flags 2, 5, 6, 7.')
 
     def get_snowball_flag(self):
-        '''
-        # Only do this after bloom_flag_layer is complete
-        # START from initial snowball_flag layer produced by blooming.
-        # Read in last snowball count last_cnt from bloom flag detection algorithm.
+        """Detect and flag snowballs and high-energy cosmic rays.
 
-        # NOTE: This code sets different values for the different conditions of
-        # snowball detection.
-        # This is used in evaluating accuracy of detection.
-        # For IPAC use, set SNOWBALL flag for all identified snowballs / CRs,
-        # snowball_flag code 2 in this function.
-        # Set TFLAG_HALO for the halo, snowball_flag code 3 in this function.
-        '''
+        Must be called after ``start_bloom_flag()`` completes, as it excludes
+        pixels already flagged for bloom. Iterates through four snowball timing
+        categories and assigns ``snowball_flag`` values accordingly.
 
+        Snowball types detected (snow_type -> snowball_flag value):
+            0 -> 1: Early snowballs/CRs (center_val=7, bloom_val=5)
+            1 -> 2: Late snowballs/CRs (center_val=3, bloom_val=1)
+            2 -> 3: Very early snowballs (2->5 transition, low signal center)
+            3 -> 4: Very early snowballs (6->5 transition)
+
+        For each detected snowball, ``_apply_halo_flag()`` is called to set
+        the ``halo_flag`` array for surrounding pixels. Satellite streaks
+        (elongated features) receive special halo treatment.
+
+        Updates the following FITS header keywords:
+            NSNOWPIX: Total pixels flagged for snowball
+            SNW7-5CT: Early snowball pixel count
+            SNW3-1CT: Late snowball pixel count
+            SNW2-5CT: Very early snowball pixel count (frames ~5-7)
+            SNW6-5CT: Very early snowball pixel count (before frame ~10)
+            NSNOWSRC: Total snowball count
+        """
         if self.verbose:
             print(f"{self.name}: Searching for snowballs...")
+
+        # Let n_snw_#_# be the number of instances instead of the total number of pixels
+        # Start counts of snowball types.
+        n_snw_7_5 = 0
+        n_snw_3_1 = 0
+        n_snw_2_5 = 0
+        n_snw_6_5 = 0
 
         # START HERE AND DO THIS THRICE?
         for snow_type in range(4):
@@ -1027,6 +1050,16 @@ class BSHFlagger:
                     # Apply halo flag to snowball.
                     self._apply_halo_flag()
 
+                    # Update count of proper type.
+                    if snow_type == 0:
+                        n_snw_7_5 += 1
+                    elif snow_type == 1:
+                        n_snw_3_1 += 1
+                    elif snow_type == 2:
+                        n_snw_2_5 += 1
+                    elif snow_type == 3:
+                        n_snw_6_5 += 1
+
             if self.verbose:
                 print(f"{self.name}: Found {self.count_snowball-last_cnt} "
                       f"snowball occurrences with center flag {center_val} "
@@ -1036,35 +1069,31 @@ class BSHFlagger:
             print(f"{self.name}: Flagged a total of "
                   f"{np.count_nonzero(self.snowball_flag)} pixels for snowball.")
 
-        # Total snowball pixels
-        self.header['NSNOWPIX'] = (np.count_nonzero(self.snowball_flag), 'Number of Pixels Snowball Flag')
         self.snowball_flag[self.non_funct] = 0
 
-        # Snowball timing subtype counts
+        # Total snowball pixels
+        self.header['NSNOWPIX'] = (np.count_nonzero(self.snowball_flag), 'Number of Pixels Snowball Flag')
+
+        # Snowball timing subtype counts (updated in loop above)
         # Mapping from snow_type to snowball_flag value:
         #   snow_type = 0 -> snowball_flag == 1  (center_val=7, bloom_val=5)
         #   snow_type = 1 -> snowball_flag == 2  (center_val=3, bloom_val=1)
         #   snow_type = 2 -> snowball_flag == 3  (2 -> 5, very early)
         #   snow_type = 3 -> snowball_flag == 4  (6 -> 5, very early)
-        n_snw_7_5 = int(np.count_nonzero(self.snowball_flag == 1))
-        n_snw_3_1 = int(np.count_nonzero(self.snowball_flag == 2))
-        n_snw_2_5 = int(np.count_nonzero(self.snowball_flag == 3))
-        n_snw_6_5 = int(np.count_nonzero(self.snowball_flag == 4))
 
         self.header['SNW7-5CT'] = (n_snw_7_5, 'Early snowball count (first half of exposure)')
         self.header['SNW3-1CT'] = (n_snw_3_1, 'Late snowball count (second half of exposure)')
         self.header['SNW2-5CT'] = (n_snw_2_5, 'Very early snowball count (frames ~5-7)')
         self.header['SNW6-5CT'] = (n_snw_6_5, 'Very early snowball count (before frame ~10)')
+        self.header['NSNOWSRC'] = (self.count_snowball, 'Total Number of Snowball Srcs')
 
     def _apply_halo_flag(self):
-        '''
-        Apply halo flag to known bloom rows / bloom cols.
+        """Apply halo flag to known bloom rows / bloom cols.
         If suspicious that it is following a satellite track, apply halo appropriately.
         Satellite tracks with large numbers of pixels and linear features are
         included in snowball layer as they cause overflow and transient behavior
         in the same way as snowballs.  They also have halos!
-        '''
-
+        """
         # FOR THIS VERSION ONLY USE CIRCLE HALO
         halo_num = 2
 
@@ -1085,10 +1114,10 @@ class BSHFlagger:
 
         if r_max > r_:
             # WE have a SITUATION!  Eccentricity.
-            # Safely increment SATSTRKS whether header value is int or (int, str)
-            _sat = self.header.get('SATSTRKS', 0)
+            # Safely increment SNWSTRK whether header value is int or (int, str)
+            _sat = self.header.get('SNWSTRK', 0)
             _sat_count = _sat[0] if isinstance(_sat, tuple) else int(_sat)
-            self.header['SATSTRKS'] = (_sat_count + 1, 'Satellite Streaks Detected')
+            self.header['SNWSTRK'] = (_sat_count + 1, 'Saturating streaks from snowball-halo detection')
 
             # FOR NOW choose in function call.
             if self.cfg.satellite_halomethod == "border_expand":
@@ -1125,19 +1154,22 @@ class BSHFlagger:
             indexes = np.where((test_arr <= r_))
             self.halo_flag[min_row:max_row, min_col:max_col][indexes] += halo_num
 
-        self.header['NHALOPIX'] = (np.count_nonzero(self.halo_flag), 'Number of Pixels Halo Flag')
         self.halo_flag[self.non_funct] = 0
+        # Don't update halo count here.  Need to include transient halos.
 
     def get_nonoverflow_bloom_flag(self):
-        '''
-        # Only do this after bloom_flag_layer and snowball_flag_layer is complete
-        This code identifies blooming that does not include an overflow flag.
-        Thus it is only applied to images with reasonable transient fraction
-        as otherwise false detections are common.
-        # NOTE: This code sets different values for the different conditions
-        of bloom and snowball detection.  This is used in validating accuracy.
-        # For IPAC use, set SRC_BLOOM flag for all bloom detections
-        '''
+        """Identify blooming that does not include an overflow flag.
+
+        Must be called after ``start_bloom_flag()`` and ``get_snowball_flag()``
+        complete. Skipped if transient fraction exceeds ``max_trans_frac``.
+
+        Detects bloom events where early and late transients are present
+        without overflow, setting ``bloom_flag = 5`` for these pixels.
+
+        Updates FITS header:
+            NBLM5SCS (count of non-overflow bloom sources)
+            NBLMPIX (total number of bloom-flagged pixels)
+        """
         # Do not run this if the transient fraction is too high
         if self.trans_frac >= self.cfg.max_trans_frac:
             if self.verbose:
@@ -1289,11 +1321,22 @@ class BSHFlagger:
 
         self.bloom_flag[self.non_funct] = 0
 
+        # Record count of non-overflow bloom sources.
+        self.header['NBLM5SCS'] = (self.count_5bloom, 'Number of Non-Overflow-Bloomed Srcs')
+
+        # Update total bloom pixel count.
+        self.header['NBLMPIX'] = (np.count_nonzero(self.bloom_flag), 'Number of Pixels Bloom Flag')
+
     def mark_transient_halo(self):
-        '''
-        # AFTER SNOWBALL and BLOOM layers are completed, find remaining good-pixel
-        # transients and flag their nearest neighbors for halo.
-        '''
+        """Flag transient halos for remaining unflagged transient pixels.
+
+        Must be called after bloom and snowball flagging is complete.
+        Uses nearest-neighbor convolution to identify pixels adjacent to
+        transients and marks them in ``halo_flag``.
+
+        Updates FITS header keyword:
+            NHALOPIX: Number of pixels with halo flag.
+        """
         valid = ~self.non_funct
 
         transients = (
@@ -1320,16 +1363,19 @@ class BSHFlagger:
             print(f"{self.name}: Flagged a total of {n_flagged} pixels, "
                   f"{n_flagged/(2040*20.4):.2f}% for halo.")
 
+        # Record number of halo flagged pixels in header.
+        self.header['NHALOPIX'] = (np.count_nonzero(self.halo_flag), 'Number of Pixels Halo Flag')
+
 
 def apply_bsh_flags_to_spx(spx: SPHERExImage, bsh: BSHFlagger) -> None:
     """Project BSH masks into spx.flags bits.
 
-    NOTES
+    Notes
     -----
     Goal of this is to preserve the fine flag definitions in bsh_flagger
-    while assingning coarse spherex flags to the image.
-    """
+    while assigning coarse spherex flags to the image.
 
+    """
     # Bloom: any nonzero bloom_flag set BLOOM bit
     bloom_mask = (bsh.bloom_flag > 0)
     if np.any(bloom_mask):
@@ -1351,9 +1397,9 @@ def apply_bsh_flags_to_spx(spx: SPHERExImage, bsh: BSHFlagger) -> None:
         and hasattr(bsh, "halo_cols")
         and len(getattr(bsh, "halo_rows", [])) > 0
     ):
-        sat_streaks = (bsh.header.get("SATSTRKS", (0,))[0]
-                       if isinstance(bsh.header.get("SATSTRKS"), tuple)
-                       else bsh.header.get("SATSTRKS", 0))
+        sat_streaks = (bsh.header.get("SNWSTRK", (0,))[0]
+                       if isinstance(bsh.header.get("SNWSTRK"), tuple)
+                       else bsh.header.get("SNWSTRK", 0))
         if sat_streaks and sat_streaks > 0:
             # Create a boolean mask for satellite halos
             sat_halo_mask = np.zeros(spx.data.shape, dtype=bool)

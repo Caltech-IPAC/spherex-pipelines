@@ -49,13 +49,11 @@ class TestCreateVarianceMap(unittest.TestCase):
                            output.spximg_out.uncertainty.array / 16,
                            equal_nan=True)
 
-    # A test to verify the updated transient variance calculation.
+    # Test to verify the updated transient variance calculation.
     def test_transient_cases(self):
-        """Test the variance calculation for early and late transients."""
-        config = CreateVarianceMapConfig()
-        # Use a consistent sample time for easier manual calculation.
-        task = CreateVarianceMapTask(config=config)
-
+        """Test the variance calculation for early and late transients,
+        with and without the bright-source fractional variance boost.
+        """
         spximg = sample_data.get_sample_level1b_img()
         gain_factors = sample_data.get_sample_gain_factors(spximg)
         spximg.header["TCUT"] = 70
@@ -72,16 +70,21 @@ class TestCreateVarianceMap(unittest.TestCase):
         noise_map = np.full(noise_shape, read_noise_val, dtype=np.float32)
 
         # Create the ReadNoiseParameters object with both required extensions.
-        primary_header = fits.Header({'DETECTOR': 1})
+        primary_header = fits.Header({"DETECTOR": 1})
         fits_content = [
             fits.PrimaryHDU(header=primary_header),
-            fits.ImageHDU(data=noise_map, header=fits.Header({'EXTNAME': ReadNoiseParameters.single})),
-            fits.ImageHDU(data=noise_map, header=fits.Header({'EXTNAME': ReadNoiseParameters.full}))
+            fits.ImageHDU(
+                data=noise_map,
+                header=fits.Header({"EXTNAME": ReadNoiseParameters.single}),
+            ),
+            fits.ImageHDU(
+                data=noise_map,
+                header=fits.Header({"EXTNAME": ReadNoiseParameters.full}),
+            ),
         ]
         read_noise = ReadNoiseParameters(data=fits.HDUList(fits_content))
 
         # Set specific pixel flags and data for testing
-        rp = ReadoutParameters.from_metadata(spximg.meta)
         actv_ref_area = l1_utils.active_area_range(spximg, include_refs=True)
 
         # Define pixel coordinates within the active+ref area
@@ -97,33 +100,68 @@ class TestCreateVarianceMap(unittest.TestCase):
         spximg.data[actv_ref_area][early_transient_loc] = flux
         spximg.data[actv_ref_area][late_transient_loc] = flux
 
-        # Run task
-        output = task.run(spximg, gain_factors, read_noise=read_noise)
-        variance_map = output.spximg_out.uncertainty.array[actv_ref_area]
-
-        # --- Calculate expected values ---
-        # Shared values
+        # Calculate expected base values (without bright-source boost)
         N_LAB = 71.0
         elec_var_lab = read_noise_val
         t_sample = spximg.header["TSAMP"]
 
-        # 1. Early transient (N=4)
+        # Early transient
         n_early = float(spximg.meta["TRANDLY"] - spximg.meta["SURDLY"])
-        t_intg_early = n_early * t_sample  # Assuming t_sample is defined in your test
+        t_intg_early = n_early * t_sample
         elec_var_early = elec_var_lab * (t_intg_early**2) * (N_LAB / n_early)
         poisson_early = calculate_poisson_term(n=int(n_early))
-        expected_var_early = (elec_var_early + poisson_early * flux * t_intg_early) / t_intg_early**2
+        expected_var_early_base = (
+            elec_var_early + poisson_early * flux * t_intg_early
+        ) / t_intg_early**2
 
-        # 2. Late transient (N = TCUT - 2 = 68)
+        # Late transient
         n_late = float(spximg.header["TCUT"] - (spximg.meta["SURDLY"] - 1))
-        t_intg_late = n_late * t_sample  # Assuming t_sample is defined in your test
+        t_intg_late = n_late * t_sample
         elec_var_late = elec_var_lab * (t_intg_late**2) * (N_LAB / n_late)
         poisson_late = calculate_poisson_term(n=int(n_late))
-        expected_var_late = (elec_var_late + poisson_late * flux * t_intg_late) / t_intg_late**2
+        expected_var_late_base = (
+            elec_var_late + poisson_late * flux * t_intg_late
+        ) / t_intg_late**2
 
-        # Assert correctness
-        self.assertAlmostEqual(variance_map[early_transient_loc], expected_var_early, places=5)
-        self.assertAlmostEqual(variance_map[late_transient_loc], expected_var_late, places=5)
+        # Run without fractional boost
+        config_no_boost = CreateVarianceMapConfig()
+        config_no_boost.apply_variance_boost = False
+        task_no_boost = CreateVarianceMapTask(config=config_no_boost)
+
+        output_no_boost = task_no_boost.run(spximg, gain_factors, read_noise=read_noise)
+        variance_map_no_boost = output_no_boost.spximg_out.uncertainty.array[actv_ref_area]
+
+        self.assertAlmostEqual(
+            variance_map_no_boost[early_transient_loc],
+            expected_var_early_base,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            variance_map_no_boost[late_transient_loc],
+            expected_var_late_base,
+            places=5,
+        )
+
+        # Run with fractional boost
+        config_boost = CreateVarianceMapConfig()
+        config_boost.apply_variance_boost = True
+        task_boost = CreateVarianceMapTask(config=config_boost)
+
+        output_boost = task_boost.run(spximg, gain_factors, read_noise=read_noise)
+        variance_map_boost = output_boost.spximg_out.uncertainty.array[actv_ref_area]
+
+        variance_boost = (config_boost.frac_uncertainty_boost[1] * flux) ** 2
+
+        self.assertAlmostEqual(
+            variance_map_boost[early_transient_loc],
+            expected_var_early_base + variance_boost,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            variance_map_boost[late_transient_loc],
+            expected_var_late_base + variance_boost,
+            places=5,
+        )
 
     def test_calculate_poisson_term(self):
         with self.assertRaises(TypeError):

@@ -36,6 +36,7 @@ class FocalPlane:
     separation: Angle | Quantity
         Angular separation to each vertex (deg)
     """
+
     upper_right_pa: Angle | Quantity = origin.position_angle(upper_right).to(u.deg)
     lower_right_pa: Angle | Quantity = origin.position_angle(lower_right).to(u.deg)
     lower_left_pa: Angle | Quantity = origin.position_angle(lower_left).to(u.deg)

@@ -15,7 +15,7 @@ from spx_utils.coarse_astro_utils import calculate_pa_from_pc
 
 
 def get_idqr(spximgs: SPHERExImage | list[SPHERExImage]) -> IDQR:
-    """Utility function to create an IDQR from one or more SPHEREx images.
+    """Create an IDQR from one or more SPHEREx images.
 
     Parameters
     ----------
@@ -27,6 +27,7 @@ def get_idqr(spximgs: SPHERExImage | list[SPHERExImage]) -> IDQR:
     -------
     idqr : `IDQR`
         The IDQR with observations, pointing, and data quality details.
+
     """
     # Ensure input is always a list for uniform processing
     if not isinstance(spximgs, list):
@@ -89,8 +90,16 @@ def get_idqr(spximgs: SPHERExImage | list[SPHERExImage]) -> IDQR:
         obs_id = ObservationId(spx_obsid)
         sps_id = obs_id.sps_id
 
-        # SPS_TARGET
-        target_id = spximg.header.get("SPS_TARGET", 0)
+        # SPS_TARGET - get integer target ID for IDQR report
+        # First try SPS_TARGET_PEF (new format),
+        # then fall back to SPS_TARGET if integer (old format)
+        target_id = spximg.header.get("SPS_TARGET_PEF")
+        if target_id is None:
+            sps_target = spximg.header.get("SPS_TARGET")
+            if isinstance(sps_target, int):
+                target_id = sps_target
+            else:
+                target_id = 0
         if target_id == 0:
             logging.warning("No SPS target ID found. This is probably a simulated level1 image.")
 

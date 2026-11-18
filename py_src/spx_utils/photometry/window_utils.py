@@ -1,7 +1,7 @@
 """Utility functions for performing photometry on image subregions.
 """
 
-__all__ = ["midpoint", "slide_window", "estimate_loc_bkg", "run_tractor_window", "combine_measurements",
+__all__ = ["midpoint", "slide_window", "run_tractor_window", "combine_measurements",
            "combine_fits"]
 
 # Standard library imports
@@ -12,45 +12,50 @@ from typing import NamedTuple
 # Related third party imports
 from astropy.coordinates import SkyCoord
 from astropy.nddata import Cutout2D, VarianceUncertainty
-from astropy.stats import SigmaClip
 from astropy.table import Table
 from astropy.units import CompositeUnit, Quantity
 from astropy.wcs import WCS
 from lsst.pex.config import Config
-from photutils.background import Background2D
 import numpy as np
 from numba import njit
 
 # Local application/ library specific imports
-from spx_data import PSFZoneData, SPHERExImage
+from spx_data import PSFZoneData, SPHERExImage, EPSFModels
 from spx_utils.photometry.tractor_utils import tractor_fit_spherex
 from spx_utils import SourcePipelineClass
 
 
 # Memory-efficient tuple subclass to store window metadata
+# NOTE: Must subtract 0.5 to convert coordinates from pixel centers to edges.
 #   cut_<axis><N>:           central cutout boundaries
 #   window_<axis><N>:        window (cutout + frame edge) boundaries
-#   bkgd_<axis><N>:          local background estimation cutout boundaries
-#   x1, x2:                  left/right edge
-#   y1, y2:                  lower/upper edge
+#   x1, x2:                  left/right side zero-based detector pixel centers
+#   y1, y2:                  bottom/top side zero-based detector pixel centers
 WindowInfo = namedtuple(
     "WindowInfo",
     ['row', 'col', 'cut_x1', 'cut_x2', 'cut_y1', 'cut_y2', 'window_x1', 'window_x2', 'window_y1',
-     'window_y2', 'bkgd_x1', 'bkgd_x2', 'bkgd_y1', 'bkgd_y2'])
+     'window_y2'])
 
 
-@njit(cache=True)
-def _compute_mask(src_ximg, src_yimg, x1, x2, y1, y2):
-    """
-    Numba JIT-compiled mask function (lazy compile on first call)
-    to return window mask
+@njit(cache=True)  # pragma: not-coverage-visible
+def _compute_mask(src_ximg: np.ndarray, src_yimg: np.ndarray, x1: float, x2: float, y1: float,
+                  y2: float) -> np.ndarray:
+    """Numba JIT-compiled function (lazy compile on first call) to mask
+    sources within a window.
+
+    Parameters
+    ----------
     src_ximg, src_yimg : `numpy.ndarray`
-        Source positions in X, Y pixel coordinates on the detector, calculated
-        assuming zero-based indexes.
-    x1,x2,y1,y2: `float`
+        X, Y source positions, respectively, in zero-based detector pixel
+        coordinates.
+    x1, x2, y1 , y2 : `float`
         Window parameter offset positions.
-    """
 
+    Returns
+    -------
+    mask : `numpy.ndarray` of `bool`
+        Mask of source indices within the window.
+    """
     n = src_ximg.shape[0]
     mask = np.empty(n, dtype=np.bool_)
     for i in range(n):
@@ -60,19 +65,29 @@ def _compute_mask(src_ximg, src_yimg, x1, x2, y1, y2):
 
 
 def window_masking_np(src_ximg: np.ndarray, src_yimg: np.ndarray, src_cat_np: np.ndarray,
-                      window_params: NamedTuple):
-    """
+                      window_params: NamedTuple) -> tuple[np.ndarray, np.ndarray]:
+    """Exclude sources outside of a window.
+
+    Parameters
+    ----------
     src_ximg, src_yimg : `numpy.ndarray`
-        Source positions in X, Y pixel coordinates on the detector, calculated
-        assuming zero-based indexes.
+        X, Y source positions, respectively, in zero-based detector pixel
+        coordinates.
     src_cat_np : `np.ndarray`
         Numpy ndarray representation of reference catalog sources within
         or close to the image. Includes HEALPix index for each source.
     window_params : `collections.namedtuple`
         Named tuple with field names corresponding to different window
-        parameters. All X, Y values are pixel coordinates on the detector.
+        parameters. All X, Y values are zero-based detector pixel centers.
+
+    Returns
+    -------
+    window_mask : `numpy.ndarray` of `bool`
+        Mask of source indices within the window.
+    window_cat_np : `numpy.ndarray`
+        Structured array including data for sources within the window.
     """
-    x1 = window_params.window_x1 - 0.5
+    x1 = window_params.window_x1 - 0.5  # subtract 0.5 to account for pixel edges
     x2 = window_params.window_x2 - 0.5
     y1 = window_params.window_y1 - 0.5
     y2 = window_params.window_y2 - 0.5
@@ -87,7 +102,7 @@ def window_masking_np(src_ximg: np.ndarray, src_yimg: np.ndarray, src_cat_np: np
 
 
 def midpoint(x1: float, x2: float, y1: float, y2: float) -> tuple[float, float]:
-    """Calculates the midpoint of a window.
+    """Calculate the midpoint of a window.
 
     Parameters
     ----------
@@ -105,11 +120,12 @@ def midpoint(x1: float, x2: float, y1: float, y2: float) -> tuple[float, float]:
     `tuple`[`float`, `float`]
         The X, Y position of the midpoint. All values are returned in the same
         coordinate system assumed for the inputs.
+
     """
     return ((x1+x2)/2.0, (y1+y2)/2.0)
 
 
-def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> np.ndarray:
+def slide_window(spximg: SPHERExImage, config: Config) -> np.ndarray:
     """Slides a window across an image to identify boundaries for photometry.
 
     Parameters
@@ -118,8 +134,6 @@ def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> np.nd
         LVF image.
     config : `lsst.pex.config.Config`
         Contains fields with sliding window parameters.
-    use_local : `bool`
-        Whether or not to determine bounds for local background estimation.
 
     Returns
     -------
@@ -127,14 +141,16 @@ def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> np.nd
         Array of `collections.namedtuple` elements. The field names of each
         named tuple correspond to different window parameters. All X, Y values
         are pixel coordinates on the detector.
+
+    Notes
+    -----
+    The calculated window parameters correspond to zero-based detector pixel
+    centers. To determine exact boundaries including pixel edges, subtract 0.5.
     """
-    # NOTE: FITS NAXIS1 (NAXIS2) is numpy array axes 1 (0). See
-    # https://docs.astropy.org/en/stable/io/fits/usage/image.html for more.
-    cut_x1_vals = np.arange(0, spximg.data.shape[1], config.cut_side_length)
-    cut_y1_vals = np.arange(0, spximg.data.shape[0], config.cut_side_length)
+    cut_x1_vals = np.arange(0, spximg.data.shape[1], config.cut_side_length)  # FITS NAXIS 1 is numpy axis 1
+    cut_y1_vals = np.arange(0, spximg.data.shape[0], config.cut_side_length)  # FITS NAXIS 2 is numpy axis 0
     num_x_windows = len(cut_x1_vals)
     num_y_windows = len(cut_y1_vals)
-    bkg_border = config.bkg_side_length - config.cut_side_length
 
     window_idx = 0
     img_windows = np.empty(shape=(num_x_windows * num_y_windows), dtype=WindowInfo)
@@ -144,18 +160,12 @@ def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> np.nd
         if y_window == 0:  # along bottom edge
             window_y1 = cut_y1  # no frame below
             window_y2 = cut_y2 + config.frame_width
-            bkgd_y1 = cut_y1 if use_local else np.nan
-            bkgd_y2 = cut_y2 + bkg_border if use_local else np.nan
         elif y_window == num_y_windows - 1:  # along top edge
             window_y1 = cut_y1 - config.frame_width
             window_y2 = cut_y2  # no frame above
-            bkgd_y1 = cut_y1 - bkg_border if use_local else np.nan
-            bkgd_y2 = cut_y2 if use_local else np.nan
         else:
             window_y1 = cut_y1 - config.frame_width
             window_y2 = cut_y2 + config.frame_width
-            bkgd_y1 = cut_y1 - bkg_border/2.0 if use_local else np.nan
-            bkgd_y2 = cut_y2 + bkg_border/2.0 if use_local else np.nan
 
         # Slide window along X-axis
         for cut_x1, x_window in zip(cut_x1_vals, range(num_x_windows)):
@@ -163,84 +173,29 @@ def slide_window(spximg: SPHERExImage, config: Config, use_local: bool) -> np.nd
             if x_window == 0:  # along left edge
                 window_x1 = cut_x1  # no frame to left
                 window_x2 = cut_x2 + config.frame_width
-                bkgd_x1 = cut_x1 if use_local else np.nan
-                bkgd_x2 = cut_x2 + bkg_border if use_local else np.nan
             elif x_window == num_x_windows - 1:  # along right edge
                 window_x1 = cut_x1 - config.frame_width
                 window_x2 = cut_x2  # no frame to right
-                bkgd_x1 = cut_x1 - bkg_border if use_local else np.nan
-                bkgd_x2 = cut_x2 if use_local else np.nan
             else:
                 window_x1 = cut_x1 - config.frame_width
                 window_x2 = cut_x2 + config.frame_width
-                bkgd_x1 = cut_x1 - bkg_border/2.0 if use_local else np.nan
-                bkgd_x2 = cut_x2 + bkg_border/2.0 if use_local else np.nan
 
             # Populate array with corresponding window parameters
             img_windows[window_idx] = WindowInfo(
                 y_window, x_window, cut_x1, cut_x2, cut_y1, cut_y2, window_x1, window_x2, window_y1,
-                window_y2, bkgd_x1, bkgd_x2, bkgd_y1, bkgd_y2
+                window_y2
             )
             window_idx += 1
     return img_windows
 
 
-def estimate_loc_bkg(window_params: NamedTuple, img_data: np.ndarray, img_units: CompositeUnit,
-                     img_wcs: WCS, config: Config) -> Cutout2D:
-    """Estimates the local background for a window within a crowded image.
-
-    Parameters
-    ----------
-    window_params : `collections.namedtuple`
-        Named tuple with field names corresponding to different window
-        parameters. All X, Y values are pixel coordinates on the detector.
-    img_data : `numpy.ndarray`
-         Crowded SPHEREx image CCD data with no global background solution.
-    img_units : `astropy.units.core.CompositeUnit`
-        SPHEREx image CCD data units.
-    img_wcs : `astropy.wcs.WCS`
-        Object containing world coordinate system keywords.
-    config : `lsst.pex.config.Config`
-        Contains fields with local background estimation parameters.
-
-    Returns
-    -------
-    bkgd_cut : `astropy.nddata.Cutout2D`
-        Cutout of the local background estimation result with the same
-        origin/size as the window cutout.
-    """
-    # Create larger cutout for background estimation region
-    est_region_ctr = midpoint(window_params.bkgd_x1, window_params.bkgd_x2,
-                              window_params.bkgd_y1, window_params.bkgd_y2)
-    est_region_cut = Cutout2D(Quantity(value=img_data, unit=img_units, copy=False), position=est_region_ctr,
-                              size=(config.bkg_side_length, config.bkg_side_length), wcs=img_wcs)
-
-    # Estimate local background
-    sigma_clip = SigmaClip(sigma_lower=config.bkg_sc_sigma_lower, sigma_upper=config.bkg_sc_sigma_upper,
-                           maxiters=config.bkg_sc_maxiters)
-    bkgd = Background2D(est_region_cut.data, box_size=config.bkg_box_size, sigma_clip=sigma_clip,
-                        exclude_percentile=config.bkg_exclude_pct)
-
-    # Create local background cutout overlapping with window cutout
-    win_relative_bkgd = [window_params.window_x1-window_params.bkgd_x1,
-                         window_params.window_x2-window_params.bkgd_x1,
-                         window_params.window_y1-window_params.bkgd_y1,
-                         window_params.window_y2-window_params.bkgd_y1]
-    bkgd_ctr = midpoint(*win_relative_bkgd)
-    size = ((window_params.window_y2 - window_params.window_y1),
-            (window_params.window_x2 - window_params.window_x1))
-    bkgd_cut = Cutout2D(Quantity(value=bkgd.background, unit=img_units, copy=False), position=bkgd_ctr,
-                        size=size, wcs=est_region_cut.wcs)
-
-    return bkgd_cut
-
-
 def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: WCS,
                        img_var: VarianceUncertainty, img_flags: np.ndarray, window_params: NamedTuple,
                        src_ximg: np.ndarray, src_yimg: np.ndarray, src_cat: np.ndarray, cat_coords: SkyCoord,
-                       use_local: bool, config: Config, psf: PSFZoneData, detector: int,
-                       keep_frame_sources: bool = False):
-    """Sets up input parameters and runs Tractor fitting for a window.
+                       config: Config, psf: PSFZoneData | EPSFModels, detector: int,
+                       keep_frame_sources: bool = False, special_ids: set = None,
+                       exp_id: int = 0) -> dict | np.ndarray | None:
+    """Set up input parameters and runs Tractor fitting for a window.
 
     Parameters
     ----------
@@ -258,24 +213,30 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
         Named tuple with field names corresponding to different window
         parameters. All X, Y values are pixel coordinates on the detector.
     src_ximg, src_yimg : `numpy.ndarray`
-        Source positions in X, Y pixel coordinates on the detector, calculated
-        assuming zero-based indexes.
+        X, Y source positions, respectively, in zero-based detector pixel
+        coordinates.
     src_cat : `np.ndarray`
         Numpy ndarray representation of reference catalog sources within
         or close to the image. Includes HEALPix index for each source.
     cat_coords : `astropy.coordinates.SkyCoord`
         ICRS RA/DEC of nearby reference catalog sources, in degrees.
-    use_local : `bool`
-        Whether or not to perform local background subtraction.
     config : `lsst.pex.config.Config`
         Contains fields with local background estimation parameters.
-    psf : `spx_data.PSFZoneData`
-        SPHEREx PSF.
+    psf : `spx_data.psf.PSFZoneData` | `spx_data.epsf.EPSFModels`
+        SPHEREx legacy PSF or effective PSF (EPSF).
     detector : `int`
         Detector number (1-6).
     keep_frame_sources : `bool`
         If `True`, returns photometry for sources in the outer frame of the
         cutout. Default is `False`.
+    special_ids : `set`, optional
+        Set of filtered source IDs to photometer at the window level. If
+        not specified, all sources flagged for photometry in the input
+        catalog are photometered at the window level.
+    exp_id : `int`, optional
+        Per-image identifier passed through to ``tractor_fit_spherex`` to seed
+        the flux initialization deterministically per (source, image). Default
+        ``0``.
 
     Returns
     -------
@@ -286,10 +247,7 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
 
     """
     # Identify sources to photometer
-    # NOTE: Subtract 0.5 from edges since input source positions assume zero-
-    # based indexing.
     window_mask, window_cat_np = window_masking_np(src_ximg, src_yimg, src_cat, window_params)
-    # window_cat = Table(window_cat_np, copy=False)
     if len(window_cat_np) > 0:
         window_cat = Table(window_cat_np, copy=False)
         # Add columns for pixel positions
@@ -297,22 +255,33 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
         window_cat.add_column(col=src_yimg[window_mask], name="y_image", copy=False)
 
         # Flag sources in central cutout
-        central_mask = ((window_cat["x_image"] >= window_params.cut_x1 - 0.5)
+        central_mask = ((window_cat["x_image"] >= window_params.cut_x1 - 0.5)  # subtract 0.5 for pixel edges
                         & (window_cat["x_image"] <= window_params.cut_x2 - 0.5)
                         & (window_cat["y_image"] >= window_params.cut_y1 - 0.5)
                         & (window_cat["y_image"] <= window_params.cut_y2 - 0.5))
         window_cat.add_column(col=central_mask, name="central_source", copy=False)
+        if len(window_cat[central_mask]) == 0:
+            return None  # skip if no sources in central cutout
 
         # Filter source classes if necessary
         if config.class_filter != SourcePipelineClass.ALL.value:
             window_cls_flgs = set(itertools.chain.from_iterable(
-                SourcePipelineClass(int(val)).get_names_as_list() for val in window_cat["spherex_class"]))
+                SourcePipelineClass(int(val)).get_names_as_list()
+                for val in window_cat[central_mask]["spherex_class"]))
             filter_names = SourcePipelineClass(config.class_filter).get_names_as_list()
             class_in_window = any(spx_class in window_cls_flgs for spx_class in filter_names)
         else:
             class_in_window = True
 
-        if (len(window_cat[central_mask]) > 0) and class_in_window:
+        # Filter source IDs if necessary
+        if config.filter_by_ids and special_ids is not None:
+            ids_in_window = bool(special_ids.intersection(window_cat[central_mask]["SPHERExRefID"]))
+        else:
+            ids_in_window = True
+
+        # Only perform fitting if 1+ sources in the central cutout pass class
+        # and ID filters
+        if class_in_window and ids_in_window:
             # Create image cutout
             window_center = midpoint(window_params.window_x1, window_params.window_x2,
                                      window_params.window_y1, window_params.window_y2)
@@ -322,10 +291,9 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
             cutout = Cutout2D(Quantity(value=img_data, unit=img_units, copy=False), position=window_center,
                               size=size, wcs=img_wcs)
 
-            # Subtract local background for relevant pointings
-            if use_local:
-                bkgd_cutout = estimate_loc_bkg(window_params, img_data, img_units, img_wcs, config)
-                cutout.data = cutout.data - bkgd_cutout.data
+            # If using, fetch ePSF model for this window
+            if config.psf_extension == "EPSF" and isinstance(psf, EPSFModels):
+                psf = psf.model_for_xy(x=window_center[0], y=window_center[1])
 
             # Create variance and flag subregions
             slice_y, slice_x = cutout.slices_original
@@ -349,11 +317,10 @@ def run_tractor_window(img_data: np.ndarray, img_units: CompositeUnit, img_wcs: 
             window_origin = (window_params.window_x1, window_params.window_y1)
             tractor_results = tractor_fit_spherex(
                 spx_cutout=cutout, spx_variance=var_slice, spx_flags=flags_slice,
-                spx_bkgd=bkgd_cutout if use_local else None,
                 source_list=window_cat, detector=detector, cutout_origin=window_origin, psf=psf,
                 hips_name=f"hips{config.hips_order}",
                 keep_frame_sources=keep_frame_sources, return_fit=config.return_fit,
-                fit_shapes=config.fit_shapes)
+                fit_shapes=config.fit_shapes, exp_id=exp_id)
             return tractor_results
 
 
@@ -380,6 +347,7 @@ def combine_measurements(combined_arr: np.ndarray, result: dict | np.ndarray | N
     -------
     start, end : `tuple` of `int`
         Modified start/end indices.
+
     """
     # Filter out windows with no sources
     if result is not None:
@@ -410,6 +378,7 @@ def combine_fits(tractor_fits: dict, result: dict | None) -> dict:
     -------
     tractor_fits : `dict`
         Modified dictionary.
+
     """
     # Filter out windows with no sources:
     if result is not None:

@@ -52,6 +52,14 @@ Options:
                                   create errorSummary.yaml and symlink "error"
                                   to actual error file, "error-signal" = exit
                                   with SIGINT. [optional flag]
+  --use-deep / --no-use-deep      Controls whether deep-field data are
+                                  included in tool functions. Use --use-deep
+                                  to enable inclusion of deep-field data, or
+                                  --no-use-deep to exclude it.
+                                  --no-use-deep is equivalent to selecting only
+                                  all sky data. Disabled by
+                                  default; deep-field data are excluded unless
+                                  explicitly requested.
   --point TEXT                    Point-like target in format ra,dec[,name].
                                   [One of  --point OR --elliptical is
                                   required.]
@@ -74,12 +82,6 @@ Options:
                                   verbose. Translated within the science tools
                                   to logging control options.  [default: no-
                                   verbose]
-  --use-simulator-bandpass / --no-use-simulator-bandpass
-                                  If True, simulator bandpass model is used to
-                                  populate measurement wavelength and
-                                  bandwidth. Otherwise, spectral_wcs
-                                  calibration product is used.  [default: no-
-                                  use-simulator-bandpass]
   --add-image-ids / --no-add-image-ids
                                   If True, image ids are included in the
                                   resulting VOTable. Defaults to False.

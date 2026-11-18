@@ -23,19 +23,23 @@ class DetectorPixelData:
     its required_extensions and optional_extensions set.
 
     """
+
     required_extensions = []
     optional_extensions = []
 
     def __init__(self, data, detector: Union[int, None] = None):
+        """Initialize the detector pixel data.
 
-        """
-        Post initialization (instead of __init__ as this is a dataclass)
         This method sets the hdulist property, creates a detector
         and checks if all required extensions are present.
+
         Parameters
         ----------
         data : `~astropy.io.fits.HDUList`
-            Data representing multi extension FITS file
+            Data representing multi extension FITS file.
+        detector : `int` or None, optional
+            Detector ID (1-6). If None, detected from header.
+
         """
         self.hdulist: fits.HDUList = data
         if detector is not None:
@@ -47,13 +51,14 @@ class DetectorPixelData:
         pass
 
     def _check_required_extensions(self) -> None:
-        """
-        Compare extensions of HDUList to required
+        """Compare extensions of HDUList to required
         extensions and throwing exception in that case.
+
         Raises
         ------
         ValueError
             If there are missing extensions.
+
         """
         extnames = [hdu.header['EXTNAME'] for hdu in self.hdulist if 'EXTNAME' in hdu.header]
 
@@ -64,28 +69,34 @@ class DetectorPixelData:
     def get_extension_data(self, extname: str) -> np.ndarray:
         """In a multi-extension FITS file, return the numpy data associated with
         a given  extension.
+
         Parameters
         ----------
         extname : str
             FITS reserved keyword "EXTNAME"
+
         Returns
         -------
         result : `~numpy.ndarray`
             Numpy data in the requested extension
+
         """
         return self.hdulist[extname].data
 
     def get_extension_header(self, extname: str = None) -> fits.header.Header:
         """In a multi-extension FITS file, return the header associated with
         a given  extension.
+
         Parameters
         ----------
         extname : str
             FITS reserved keyword "EXTNAME"
+
         Returns
         -------
         fits.header.Header
             FITS extension header.
+
         """
         return self.hdulist[extname].header
 
@@ -100,15 +111,25 @@ class DetectorPixelData:
         self.hdulist[0].header["DETECTOR"] = value
 
     def _detect_detector(self) -> None:
-        """ Checks that the detector number/ID is contained in the PrimaryHDU header.
+        """Check that the detector number/ID is contained in the PrimaryHDU header.
 
         Raises
         ------
         ValueError
             ValueError if detector information is missing in the PrimaryHDU header.
+
         """
-        if self.hdulist[0].header["DETECTOR"] is None:
-            raise ValueError("DETECTOR information is missing in the header.")
+        detector = self.hdulist[0].header.get("DETECTOR")
+
+        if detector is None:
+            for hdu in self.hdulist[1:]:
+                detector = hdu.header.get("DETECTOR")
+                if detector is not None:
+                    self.hdulist[0].header["DETECTOR"] = detector
+                    break
+
+        if detector is None:
+            raise ValueError("DETECTOR information is missing from the header.")
 
     def validate(self):
         self._check_required_extensions()
@@ -116,10 +137,12 @@ class DetectorPixelData:
 
 
 class NonfuncData(DetectorPixelData):
+    """Per-detector bad-pixel masks with typed categories (1=bad, 0=good).
+
+    Full calibration product preserves all extensions, but pipeline
+    should primarily use the COMBINED mask.
     """
-    Per-detector permanently bad-pixel masks with typed categories.
-    1 = bad, 0 = good
-    """
+
     required_extensions = [
         "COMBINED",
         "DARKCURR",
@@ -127,8 +150,11 @@ class NonfuncData(DetectorPixelData):
         "SPECCAL",
         "TRANSIENT",
         "OVERFLOW",
+        "OPTEFF",
+        "OOS",
     ]
-    optional_extensions = []  # nothing optional for now
+
+    optional_extensions = []  # keep strict for now
 
     def get_combined_data(self) -> np.ndarray:
         """Return the COMBINED extension data (1=bad, 0=good)."""
@@ -136,40 +162,31 @@ class NonfuncData(DetectorPixelData):
 
     def get_combined_bad_mask(self) -> np.ndarray:
         """Boolean mask where True marks bad pixels from COMBINED."""
-        data = self.get_combined_data()
-        return (data == 1)
+        return self.get_combined_data() != 0
 
     def get_type_bad_masks(self) -> dict[str, np.ndarray]:
         """Return boolean masks for each category (True = bad)."""
         return {
-            "DARKCURR": (self.get_extension_data("DARKCURR") == 1),
-            "HIGHDRIFT": (self.get_extension_data("HIGHDRIFT") == 1),
-            "SPECCAL": (self.get_extension_data("SPECCAL") == 1),
-            "TRANSIENT": (self.get_extension_data("TRANSIENT") == 1),
-            "OVERFLOW": (self.get_extension_data("OVERFLOW") == 1),
+            ext: (self.get_extension_data(ext) != 0)
+            for ext in self.required_extensions
+            if ext != "COMBINED"
         }
 
 
 class NonLinearityParameters(DetectorPixelData):
-    """
-    Dataclass for NonLinearity Parameters
+    """Dataclass for NonLinearity Parameters."""
 
-    Parameters
-    ----------
-    DetectorPixelData
-        DetectorPixelData base class
-    """
     required_extensions = ['Q_nl', 'Qmax']
     optional_extensions = ['b1', 'b2', 'b3']
 
     def _check_optional_extensions(self):
-        """
-        Generalizable algorithm for checking if b_n-1, b_n-2 ... b_1 is present
+        """Check if b_n-1, b_n-2 ... b_1 extensions are present.
 
         Raises
         ------
         ValueError
             Error for when transient parameters are discontinuous
+
         """
         extnames = [hdu.header['EXTNAME'] for hdu in self.hdulist if 'EXTNAME' in hdu.header]
         # Generalizable algorithm for checking if b_n-1, b_n-2 ... b_1 is present
@@ -198,7 +215,9 @@ class ReadNoiseParameters(DetectorPixelData):
     ----------
     `DetectorPixelData`
         DetectorPixelData base class
+
     """
+
     single = "READNOISE-1"
     full = "READNOISE-2"
     required_extensions = [single, full]
@@ -207,20 +226,21 @@ class ReadNoiseParameters(DetectorPixelData):
 class PersistenceParameters(DetectorPixelData):
     """Persistence Parameters (required fixed calibration inputs).
 
-        Notes
-        -----
-        - Required calibration inputs: (fixed)
-            - c_n, tau_n, (2040x2040xN) => constant coefficients.
-            - b_prev1 = lookup table that returns b_{K-1} in "bins", (2040x2040xN).
-            - Made the following config parameters, if we want ability to easily modify.
-            - f_sat = slope when overflow flag triggered => 1 value (from primary hdu).
-            - f_oversat = slope when too high to be accurately determined => 1 value.
-            - I_Pthreshold = threshold above which persistence current affects slope.
-                Detector dependent, one value, get from primary header.
-            - I_Preset = threshold below which persistence current is negligible.
-                Detector dependent, one value, get from primary header.
-        - Optional : None
-     """
+    Notes
+    -----
+    - Required calibration inputs: (fixed)
+        - c_n, tau_n, (2040x2040xN) => constant coefficients.
+        - b_prev1 = lookup table that returns b_{K-1} in "bins", (2040x2040xN).
+        - Made the following config parameters, if we want ability to easily modify.
+        - f_sat = slope when overflow flag triggered => 1 value (from primary hdu).
+        - f_oversat = slope when too high to be accurately determined => 1 value.
+        - I_Pthreshold = threshold above which persistence current affects slope.
+            Detector dependent, one value, get from primary header.
+        - I_Preset = threshold below which persistence current is negligible.
+            Detector dependent, one value, get from primary header.
+    - Optional : None
+
+    """
 
     required_extensions = ["c_n", "tau_n", "b_prev1"]
 
@@ -247,7 +267,7 @@ class PersistenceParameters(DetectorPixelData):
     @property
     def i_pthresh(self) -> float:
         """Getter for input calibration persistence threshold, I_pthresh.
-           The threshold below which persistence current is negligible.
+        The threshold below which persistence current is negligible.
         """
         return self.hdulist[0].header.get("I_Pthrsh", 0.)
 
@@ -259,7 +279,7 @@ class PersistenceParameters(DetectorPixelData):
     @property
     def i_preset(self) -> float:
         """Getter for input calibration persistence reset, I_preset.
-           The threshold below which persistence current is negligible.
+        The threshold below which persistence current is negligible.
         """
         return self.hdulist[0].header.get("I_Preset", 0.)
 
@@ -281,7 +301,8 @@ class PersistenceParameters(DetectorPixelData):
     @property
     def f_ovrsat(self) -> float:
         """Getter for slope when too high to be accurately determined,
-           oversaturated flux (f_ovrsat)."""
+        oversaturated flux (f_ovrsat).
+        """
         return self.hdulist[0].header.get('f_ovrsat')
 
     @f_ovrsat.setter
@@ -312,6 +333,7 @@ class PersistenceStateModelPars:
     - Will be written out as FITS file.
 
     """
+
     a_n: np.ndarray[float] = None
     b_prev2: np.ndarray[float] = None
     b_prev1_data: np.ndarray = None
@@ -382,8 +404,7 @@ class PersistenceState(DetectorPixelData):
         self.hdulist[0].header["PREV2END"] = value
 
     def _load_required_extensions(self):
-        """
-        Load data from required extensions into the _persist_model object.
+        """Load data from required extensions into the _persist_model object.
         """
         for ext in self.required_extensions:
             data = self.get_extension_data(ext)
@@ -391,29 +412,31 @@ class PersistenceState(DetectorPixelData):
                 setattr(self._persist_model, ext, data)
 
     def _detect_num_prev(self) -> None:
-        """Checks that the number of previoius exposures is available in header.
+        """Check that the number of previoius exposures is available in header.
 
         Raises
         ------
         ValueError
             ValueError if not in primary hdu.
+
         """
         if self.hdulist[0].header.get('NUM_PREV') is None:
             raise ValueError("Exposure number is missing from header.")
 
     def _detect_prev1_end_time(self) -> None:
-        """Checks that previous exposure end time is availabe in header.
+        """Check that previous exposure end time is availabe in header.
+
         Raises
         ------
         ValueError
             ValueError if not in primary hdu.
+
         """
         if self.hdulist[0].header.get('PREV1END') is None:
             raise ValueError("Previous image end time is missing from header.")
 
     def update_state_extension(self, updated_state_data: np.ndarray, extname: str = None):
         """Update a given state extension in PersistenceData.
-        (choose what and when to writeout later)
 
         Parameters
         ----------
@@ -421,6 +444,7 @@ class PersistenceState(DetectorPixelData):
             Updated persistence state variable.
         extname : `str` | `None`, Default is `None`.
             State extension name.
+
         """
         self.hdulist[extname].data = updated_state_data
 
@@ -467,6 +491,8 @@ class PersistenceState(DetectorPixelData):
 
 
 class PersistenceLookupTable(DetectorPixelData):
+    """Lookup table for persistence model parameters (deprecated)."""
+
     required_extensions = ['min_fluence', 'max_fluence', 'exp_model_amps']
 
     @deprecated(

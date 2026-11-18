@@ -9,7 +9,8 @@ from spx_data import PersistenceLookupTable
 
 class PersistenceLookupTableFormatter(FileFormatter):
     """Interface for reading astropy table objects from FITS files
-    and combining specific extensions."""
+    and combining specific extensions.
+    """
 
     extension = ".fits"
     supportedExtensions = frozenset({".fits.gz", ".fits"})
@@ -33,6 +34,7 @@ class PersistenceLookupTableFormatter(FileFormatter):
         astropy.table.Table
             A combined table from the first and third extensions of the FITS file,
             or None if the file could not be opened.
+
         """
         try:
             data = PersistenceLookupTable(fits.open(path))

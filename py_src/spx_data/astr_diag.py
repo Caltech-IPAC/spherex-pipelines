@@ -9,7 +9,8 @@ from typing import Optional, List, Tuple
 
 class WCSLinear(BaseModel):
     """A base model for WCS linear transformations
-       that accepts either CD or PC formalism."""
+    that accepts either CD or PC formalism.
+    """
 
     # PC Matrix formalism
     PC1_1: Optional[float] = None
@@ -41,6 +42,7 @@ class WCSLinear(BaseModel):
 
 class SipModel(BaseModel):
     """Pydantic model for SIP (Simple Imaging Polynomial) distortion parameters."""
+
     A_ORDER: int
     B_ORDER: int
     AP_ORDER: int
@@ -54,6 +56,7 @@ class SipModel(BaseModel):
 
 class CoarseAstrometry(WCSLinear):
     """Pydantic model for the coarse astrometry WCS solution."""
+
     CRVAL1: float
     CRVAL2: float
     CTYPE1: str
@@ -63,6 +66,7 @@ class CoarseAstrometry(WCSLinear):
 
 class FineAstrometry(WCSLinear):
     """Pydantic model for the fine astrometry WCS solution."""
+
     CRVAL1: float
     CRVAL2: float
     CTYPE1: str
@@ -72,6 +76,7 @@ class FineAstrometry(WCSLinear):
 
 class ScampResults(BaseModel):
     """Pydantic model for the results from SCAMP."""
+
     dAXIS1_arcsec: float
     dAXIS2_arcsec: float
     CONTRAST: float
@@ -81,6 +86,7 @@ class ScampResults(BaseModel):
 
 class AstrometryNetResults(BaseModel):
     """Pydantic model for the results from solve-field."""
+
     num_matches: int
     pixel_scale: float
     clip_trans: bool
@@ -88,6 +94,7 @@ class AstrometryNetResults(BaseModel):
 
 class CoarseCenter(BaseModel):
     """Pydantic model for the location of the coarse center on the fine image."""
+
     x_pixel: float
     y_pixel: float
     coordinate_base: str
@@ -96,6 +103,7 @@ class CoarseCenter(BaseModel):
 
 class QuadrantStat(BaseModel):
     """Per-quadrant (or total) astrometric statistics in arcsec."""
+
     std_arcsec: Optional[float] = None
     rms_arcsec: Optional[float] = None
     n_matches: int
@@ -109,6 +117,7 @@ class QuadrantStat(BaseModel):
 
 class QuadrantAstrometryStats(BaseModel):
     """Container for total and per-quadrant astrometric statistics."""
+
     TOTAL: QuadrantStat
     Q1: Optional[QuadrantStat] = None
     Q2: Optional[QuadrantStat] = None
@@ -120,6 +129,7 @@ class AstrDiag(BaseModel):
     """Pydantic model to store the Astrometry Diagnostics (AstrDiag) data,
     fields are optional to allow for storing partial results on failure.
     """
+
     # This part is always available, so it's not optional
     coarse_astrometry: CoarseAstrometry
     n_calibrators: int

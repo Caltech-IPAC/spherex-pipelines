@@ -7,7 +7,7 @@ from spx_data.astr_diag import (WCSLinear, SipModel, CoarseAstrometry, FineAstro
 
 
 def get_mock_sip_model() -> SipModel:
-    """Returns a valid mock SipModel object."""
+    """Return a valid mock SipModel object."""
     return SipModel(
         A_ORDER=2, B_ORDER=2, AP_ORDER=2, BP_ORDER=2,
         CRPIX=(1024.0, 1024.0),
@@ -19,7 +19,7 @@ def get_mock_sip_model() -> SipModel:
 
 
 def get_mock_coarse_astrometry() -> CoarseAstrometry:
-    """Returns a valid mock CoarseAstrometry object using CD matrix."""
+    """Return a valid mock CoarseAstrometry object using CD matrix."""
     return CoarseAstrometry(
         CRVAL1=150.1, CRVAL2=2.2,
         CTYPE1="RA---TAN", CTYPE2="DEC--TAN",
@@ -29,7 +29,7 @@ def get_mock_coarse_astrometry() -> CoarseAstrometry:
 
 
 def get_mock_fine_astrometry() -> FineAstrometry:
-    """Returns a valid mock FineAstrometry object using PC matrix."""
+    """Return a valid mock FineAstrometry object using PC matrix."""
     return FineAstrometry(
         CRVAL1=150.1001, CRVAL2=2.2001,
         CTYPE1="RA---TAN-SIP", CTYPE2="DEC--TAN-SIP",
@@ -40,7 +40,7 @@ def get_mock_fine_astrometry() -> FineAstrometry:
 
 
 def get_mock_scamp_results() -> ScampResults:
-    """Returns a valid mock ScampResults object."""
+    """Return a valid mock ScampResults object."""
     return ScampResults(dAXIS1_arcsec=0.1,
                         dAXIS2_arcsec=0.2,
                         CONTRAST=10.0,
@@ -49,12 +49,12 @@ def get_mock_scamp_results() -> ScampResults:
 
 
 def get_mock_astrometry_net_results() -> AstrometryNetResults:
-    """Returns a valid mock AstrometryNetResults object."""
+    """Return a valid mock AstrometryNetResults object."""
     return AstrometryNetResults(num_matches=500, pixel_scale=6.15, clip_trans=False)
 
 
 def get_mock_coarse_center() -> CoarseCenter:
-    """Returns a valid mock CoarseCenter object."""
+    """Return a valid mock CoarseCenter object."""
     return CoarseCenter(
         x_pixel=100.5, y_pixel=200.0,
         coordinate_base="0-based",
@@ -63,8 +63,7 @@ def get_mock_coarse_center() -> CoarseCenter:
 
 
 def test_wcs_linear_validator():
-    """
-    Tests the custom validator on the WCSLinear base model.
+    """Tests the custom validator on the WCSLinear base model.
     """
     # Test success with CD matrix only
     cd_data = {"CD1_1": 1.0, "CD1_2": 0.0, "CD2_1": 0.0, "CD2_2": 1.0}
@@ -90,8 +89,7 @@ def test_wcs_linear_validator():
 
 
 def test_astr_diag_minimal_success():
-    """
-    Tests creating an AstrDiag instance with only the required fields.
+    """Tests creating an AstrDiag instance with only the required fields.
     This simulates a partial or failed pipeline run.
     """
     coarse_astro = get_mock_coarse_astrometry()
@@ -117,8 +115,7 @@ def test_astr_diag_minimal_success():
 
 
 def test_astr_diag_full_success():
-    """
-    Tests creating an AstrDiag instance with all fields populated.
+    """Tests creating an AstrDiag instance with all fields populated.
     This simulates a successful pipeline run.
     """
     diag = AstrDiag(
@@ -144,8 +141,7 @@ def test_astr_diag_full_success():
 
 
 def test_astr_diag_missing_required_field():
-    """
-    Tests that Pydantic raises a ValidationError if required fields
+    """Tests that Pydantic raises a ValidationError if required fields
     (like n_calibrators, n_transients, or FINAST) are missing.
     """
     coarse_astro = get_mock_coarse_astrometry()

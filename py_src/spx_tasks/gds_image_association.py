@@ -30,13 +30,14 @@ def separate_mnemonics_by_type(sband_table: Table):
 
     Parameters
     ----------
-    sband_table : `Table`
-    Input table containing 'Type' and 'Mnemonic' columns.
+    sband_table : `~astropy.table.Table`
+        Input table containing 'Type' and 'Mnemonic' columns.
 
     Returns
     -------
     `dict`
-    A dictionary where keys are unique Type values, and values are lists of Mnemonics.
+        Dictionary where keys are unique Type values, values are Mnemonic lists.
+
     """
     grouped_mnemonics = {}
     for row in sband_table:
@@ -51,8 +52,7 @@ def separate_mnemonics_by_type(sband_table: Table):
 def populate_headers(spximg_out: SPHERExImage,
                      pos: list, vel: list,
                      val_type: Literal["START", "MID", "END"]):
-    """
-    Populate FITS header fields with spacecraft position and velocity metadata.
+    """Populate FITS header fields with spacecraft position and velocity metadata.
 
     This function updates the FITS header of the `spximg_out` object with
     spacecraft position (X_SC, Y_SC, Z_SC) and velocity (VX_SC, VY_SC, VZ_SC)
@@ -82,8 +82,8 @@ def populate_headers(spximg_out: SPHERExImage,
     - Velocity: `VX_SC`, `VY_SC`, `VZ_SC` (or suffixed with `_START` or `_END`)
 
     Each header key is also accompanied by a descriptive comment.
-    """
 
+    """
     if val_type == "MID":
         suffix = ""
     else:
@@ -113,8 +113,7 @@ def populate_headers(spximg_out: SPHERExImage,
 
 
 def get_pos_velocity(julian_date: int, df: pd.DataFrame, spk: Table):
-    """
-    Get position and velocity vectors for a given Julian date.
+    """Get position and velocity vectors for a given Julian date.
 
     Parameters
     ----------
@@ -138,6 +137,7 @@ def get_pos_velocity(julian_date: int, df: pd.DataFrame, spk: Table):
     -----
     - This function assumes the `df['time']` column is in datetime format.
     - It selects the time closest to the provided Julian date.
+
     """
     # Find the velocity information corresponding to a particular time
     observation_time = Time(julian_date, format='jd').to_datetime()
@@ -174,6 +174,7 @@ def merge_columns(table: Table, new_col_name: str, col1: str, col2: str):
     Notes
     -----
     Operates on the combined table in-place.
+
     """
     merged_column = []
     for v1, v2 in zip(table[col1], table[col2]):
@@ -188,7 +189,7 @@ def merge_columns(table: Table, new_col_name: str, col1: str, col2: str):
 
 
 def doy_to_isot(sgt_datetime: str) -> str:
-    """Converts ground track-formatted date/time strings to ISO 'T' format.
+    """Convert ground track-formatted date/time strings to ISO 'T' format.
 
     Parameters
     ----------
@@ -201,6 +202,7 @@ def doy_to_isot(sgt_datetime: str) -> str:
     `str`
         Converted date/time string in year/month/day ISO 'T' format
         (YYYY-MM-DDTHH:MM:SS).
+
     """
     dt = datetime.strptime(sgt_datetime, "%Y-%jT%H:%M:%S.%f")
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")
@@ -276,6 +278,8 @@ class GdsImageAssociationConnections(pipeBase.PipelineTaskConnections,
 
 class GdsImageAssociationConfig(pipeBase.PipelineTaskConfig,
                                 pipelineConnections=GdsImageAssociationConnections):
+    """Configuration for GdsImageAssociation task."""
+
     useSband = Field(
         dtype=bool,
         default=False,
@@ -321,6 +325,7 @@ class GdsImageAssociationTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "gds-image-association"
@@ -363,6 +368,7 @@ class GdsImageAssociationTask(pipeBase.PipelineTask):
         output: `~lsst.pipe.base.Struct`
             An object containing the ``spximg_out`` of type `~spx_data.SPHERExImage`
             with a binary table extension that includes GDS Sband data.
+
         """
         spximg_out = copy.deepcopy(spximg)
 
@@ -447,11 +453,13 @@ class GdsImageAssociationTask(pipeBase.PipelineTask):
             merge_columns(combined_table, 'Last', 'numerical_Last', 'flag_Last')
             merge_columns(combined_table, 'Type', 'numerical_Type', 'flag_Type')
             merge_columns(combined_table, 'Description', 'numerical_Description', 'flag_Description')
+            merge_columns(combined_table, 'Variability', 'numerical_Variability', 'flag_Variability')
 
             # Define the desired column order
             desired_order = [
                 'Keyword', 'Description', 'First', 'Last', 'Mid',
-                'Min', 'Max', 'Median', 'Mean', 'Bitmap', 'FlagOptions', 'Type'
+                'Min', 'Max', 'Median', 'Mean', 'Std', 'Variability',
+                'Bitmap', 'FlagOptions', 'Type'
             ]
 
             # Ensure that all columns in `desired_order` exist in `combined_table`
@@ -466,17 +474,20 @@ class GdsImageAssociationTask(pipeBase.PipelineTask):
         else:
             self.log.info("Skipping S-band aggregation because useSband is False.")
         if self.config.usePlannedObs:
-            # Retrieve SPS target ID and flags
-            target_id = planned_observation.target_id
+            # Retrieve SPS target name and flags
+            target_name = planned_observation.get_target_name()
             sps_flags_str = planned_observation.get_flag_names()
             in_sband_obs = planned_observation.in_sband
             non_survey_obs = planned_observation.non_survey
 
-            self.log.info(f"Target ID: {target_id}")
+            self.log.info(f"Target name: {target_name}")
             self.log.info(f"Flags: {sps_flags_str}")
             # Add this metadata to the SPHERExImage header or output structure if needed
-            spximg_out.header["HIERARCH SPS_TARGET"] = target_id
-            spximg_out.header.comments['SPS_TARGET'] = "Target ID assigned by Survey Planning"
+            spximg_out.header["HIERARCH SPS_TARGET"] = target_name
+            spximg_out.header.comments['SPS_TARGET'] = "Extended target ID from Survey Planning"
+            # Integer target ID for ODIR/IDQR reports (removed after L2 DQA)
+            spximg_out.header["HIERARCH SPS_TARGET_PEF"] = planned_observation.target_id
+            spximg_out.header.comments['SPS_TARGET_PEF'] = "Integer target ID from PEF"
             spximg_out.header["HIERARCH SPS_FLAGS"] = sps_flags_str
             spximg_out.header.comments["SPS_FLAGS"] = "Flags defined by Survey Planning"
             spximg_out.header["HIERARCH OBS_IN_SBAND"] = str(in_sband_obs)

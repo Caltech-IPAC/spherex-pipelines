@@ -10,45 +10,45 @@ from lsst.daf.butler import (
     Butler, DatasetRef, Timespan
 )
 from astropy.wcs import WCS
+from spx_butler.defaults import DatasetTypes as dsTypes
+from spx_data import SPSFlag
 from spx_utils.tempfile_utils import get_temp_path
-from spx_apps.photometry_tool.temp_butler import get_unique_dataset_refs, \
+from spx_apps.photometry_tool.temp_butler import (
+    get_unique_dataset_refs,
+    get_unique_calibration_refs,
     export_datasets
+)
 from spx_apps.mosaic_tool.exceptions import EmptyMosaicQueryError
 
 BUTLER_CONFIG = "resource://spx_butler/configs"
 BUTLER_YAML = "butler.yaml"
 DIMENSION_YAML = "dimensions.yaml"
 
-# Default defaults based on SPHEREx (approx 6.2") and buffer default of 2
-# arcminutes.
-DEFAULT_PIXEL_SCALE_DEG = 6.2
-DEFAULT_BUFFER_DEG = 2.0
+# Default defaults based on SPHEREx (6.15") and buffer default of 2'.
+DEFAULT_PIXEL_SCALE_DEG = 6.15 / 3600
+DEFAULT_BUFFER_DEG = 2.0 / 60
 
 
 def compute_polygon_wcs_angular(center_ra, center_dec, width_deg, height_deg, rotation_deg,
                                 pixel_scale_deg=DEFAULT_PIXEL_SCALE_DEG,
-                                buffer_deg=os.getenv("SPXMOSAIC_BUFFER_SIZE", 2)):
+                                buffer_deg=float(os.getenv("SPXMOSAIC_BUFFER_DEG", DEFAULT_BUFFER_DEG))):
+    """Algorithm:
+    1. Find the “ideal” corners of the requested region by assuming tha the
+    width and height (5 degrees maximum) are the true angular extents of
+    the mosaic footprint on the sky.
+    Set a tangent WCS, rotate it and extrapolate the half angle from the boresight,
+    and let astropy do the work to determine what the corners of the polygon are.
+
+    2. Given the pixel size requested for the pixels at the center of the image,
+    determine the number of pixels needed in the TAN projection to actually cover
+    the requested region,
+    rounding up to full pixels. This will be on average 1/2 a pixel farther out
+    in each direction.
+    That's the actual mosaic grid that we're going to fill out.
+
+    3. Expand out from #2 by a configurable margin - by 2 arcminutes as default- to
+    construct the query polygon to be used with the Butler.
     """
-    Algorithm:
-        1. Find the “ideal” corners of the requested region by assuming tha the
-        width and height (5 degrees maximum) are the true angular extents of
-        the mosaic footprint on the sky.
-        Set a tangent WCS, rotate it and extrapolate the half angle from the boresight,
-        and let astropy do the work to determine what the corners of the polygon are.
-
-        2. Given the pixel size requested for the pixels at the center of the image,
-        determine the number of pixels needed in the TAN projection to actually cover
-        the requested region,
-        rounding up to full pixels. This will be on average 1/2 a pixel farther out
-        in each direction.
-        That's the actual mosaic grid that we're going to fill out.
-
-        3. Expand out from #2 by a configurable margin - by 2 arcminutes as default- to
-        construct the query polygon to be used with the Butler.
-    """
-    pixel_scale_deg = pixel_scale_deg / 3600  # Converting to arcsec
-    buffer_deg = buffer_deg / 60  # Converting to arcmin
-
     # 1. Setup WCS centered on the target
     w = WCS(naxis=2)
     w.wcs.crval = [center_ra, center_dec]
@@ -121,12 +121,17 @@ def lvf_lookup(
         instrument="spx",
         level2_dataset_type="level2",
         collections="*",
+        use_deep: bool = False,
         verbose=False
 ) -> tuple[Table, list[list[DatasetRef]]]:
     """Get coverage table and dataset references."""
-
     base_where = f"instrument='{instrument}'"
     bind = None
+
+    if not use_deep:
+        # Select all-sky observations only
+        flgval = SPSFlag.ALL_SKY
+        base_where += f" AND observation.sps_flag % {2*flgval} >= {flgval}"
 
     if time_interval is not None:
         stime: Time = time_interval[0]
@@ -158,7 +163,8 @@ def lvf_lookup(
             collections.split(","),
             where=where,
             bind=bind,
-            find_first=find_first
+            find_first=find_first,
+            explain=False
         )
         refs = [r for r in level2_datasets]
         dataset_refs.append(refs)
@@ -181,19 +187,20 @@ def collect_inputs_for_temp_butler(
         time_interval: Optional[tuple[Time, Time]] = None,
         detectors: Optional[list[int]] = None,
         pixel_scale_deg: float = DEFAULT_PIXEL_SCALE_DEG,
+        use_deep    : bool = False
 ) -> dict:
     """Find and export all necessary inputs from a source Butler to run
     mosaic tool.
 
     Parameters include pixel_scale_deg and buffer_deg to control polygon generation.
     """
-    instrument = os.getenv("SPXPHOTO_INSTRUMENT", "spx")
+    instrument = os.getenv("SPXMOSAIC_INSTRUMENT", "spx")
     if instrument not in ["spx", "simu"]:
         raise ValueError(f"Unsupported instrument: {instrument}")
 
-    lvf_dataset_type_name = os.getenv("SPXPHOTO_L2_DATASET_TYPE", "level2")
+    lvf_dataset_type_name = os.getenv("SPXMOSAIC_L2_DATASET_TYPE", "level2")
     butler = Butler(butler_repo)
-    input_coll = os.getenv("SPXPHOTO_INPUT_COLL", "IRSA-qr2-visible")
+    input_coll = os.getenv("SPXMOSAIC_INPUT_COLL", "IRSA-qr2-visible")
 
     region_str = None
 
@@ -219,6 +226,7 @@ def collect_inputs_for_temp_butler(
         instrument=instrument,
         level2_dataset_type=lvf_dataset_type_name,
         collections=input_coll,
+        use_deep=use_deep,
         verbose=True
     )
 
@@ -227,12 +235,22 @@ def collect_inputs_for_temp_butler(
 
     unique_dataset_refs = get_unique_dataset_refs(dataset_refs)
 
+    # Unique calibration product references
+    calibration_collections = os.getenv("SPXMOSAIC_CALIBRATION_COLL", "IRSA-qr2-tools")
+    unique_calibration_refs = get_unique_calibration_refs(
+        butler,
+        calibration_collections,
+        [dsTypes.spectral_wcs, dsTypes.spectral_channels],
+        detectors=detectors,
+        instrument=instrument
+    )
+
     timestamp = datetime.datetime.now().strftime("%y%m%dT%H%M%S")
     temp_butler_root = tempfile.mkdtemp(prefix=f"{timestamp}_butler_", dir=tmp_dir)
     export_file = get_temp_path(prefix=f"{timestamp}_export_", suffix=".yaml", dir=tmp_dir)
 
     export_datasets(butler,
-                    dataset_refs=(unique_dataset_refs),
+                    dataset_refs=(unique_dataset_refs + unique_calibration_refs),
                     export_file=export_file,
                     export_directory=str(temp_butler_root))
 

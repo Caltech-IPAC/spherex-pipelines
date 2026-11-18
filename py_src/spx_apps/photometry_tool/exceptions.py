@@ -12,7 +12,9 @@ class EmptyLVFQueryResultError(Exception):
         The instrument name.
     dataset_type : `str`
         The dataset type name.
+
     """
+
     def __init__(self, n_src: int, instrument: str, dataset_type: str) -> None:
         self.n_src = n_src
         self.instrument = instrument
@@ -38,6 +40,7 @@ class PipetaskError(Exception):
     short_descr : `str`
         Short description of the failure.
     err : `subprocess.CalledProcessError`
+
     """
 
     def __init__(self, short_desc: str, err: subprocess.CalledProcessError) -> None:
@@ -58,6 +61,7 @@ class VOTableSearchError(Exception):
         The search substring.
     start_idx : `int`
         The index of the character where the search began.
+
     """
 
     def __init__(self, substring: str, start_idx: int) -> None:

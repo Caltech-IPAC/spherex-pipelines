@@ -113,6 +113,7 @@ def process_single_observation(row: dict,
         Mean wavelength in the bandpass in microns.
     color_correction : `float`
         Color correction factor due to zodiacal light.
+
     """
     wl = np.array([row["WAVELENGTH"]]) << wl_unit
 
@@ -177,16 +178,15 @@ def calc_pred_flux_and_color_corr_parallel(spectab: Table,
         - "DETECTOR": Detector ID.
         - "WAVELENGTH": Observed wavelength in `wl_unit`.
         - "SOURCE_ID": Unique identifier for the source.
-    bandpass_model : `SPinst.Tabular_Bandpass``
+    bandpass_model : `SPinst.Tabular_Bandpass`
         Bandpass model function with signature:
         `bandpass_model(x, y, array=None, sparse=True)`.
-        Returns:
-        - `wls`: Wavelengths in the bandpass.
-        - `trans`: Transmission values at the corresponding wavelengths.
+        Returns `wls` (wavelengths in the bandpass) and `trans`
+        (transmission values at the corresponding wavelengths).
     zodi_model : `SPsky.zodicalc.ModifiedKelsallModelWithHPFT`
         Zodiacal light model function with signature:
         `zodi_model(time, coord, wavelength, obspos=None, sunpos=None)`.
-    wl_unit : `astropy.units.Unit`
+    wl_unit : `~astropy.units.Unit`
         Unit of the observed wavelength, typically `u.um`.
     njobs : `int`, optional
         Number of parallel jobs to use. Default is 8.
@@ -199,6 +199,7 @@ def calc_pred_flux_and_color_corr_parallel(spectab: Table,
         - "predicted_fluxes": Predicted fluxes for each observation (in mJy).
         - "wavelength_mean": Mean wavelengths for each observation (in microns).
         - "zodi_cc": Color correction factors for each observation.
+
     """
     coords = SkyCoord(obstab["RA"], obstab["DEC"], frame=ICRS()).geocentrictrueecliptic
     times = Time(obstab["JD"], format="jd")
@@ -282,6 +283,7 @@ def calc_pred_flux_and_color_corr_local(spectab: Catalog_to_Simulate,
     Notes
     -----
     Keeping this function during validation, will be removed after assessment.
+
     """
     coords = SkyCoord(obstab["RA"], obstab["DEC"], unit="deg", frame=ICRS()).geocentrictrueecliptic
     times = Time(obstab["JD"], format="jd")
@@ -376,6 +378,8 @@ def flux_engineering_units_local(obstab: Table,
         - "DETECTOR" : Detector IDs.
     flat_fields : `np.ndarray`
         An array of flat field data for each detector.
+    flat_field_spline : `~scipy.interpolate.UnivariateSpline`
+        Spline interpolator for flat field values.
     detector_id : `int`
         Detector id number.
     initial_distortion_table : `astropy.table.Table`
@@ -398,6 +402,7 @@ def flux_engineering_units_local(obstab: Table,
     and the pixel solid angle (`omega_pix`). The calculation uses
     instrument parameters including aperture size, pixel scale, and
     filter properties. Flat-field corrections are applied to the flux measurements.
+
     """
     xx, yy = np.meshgrid(np.arange(2049) - 0.5, np.arange(2049) - 0.5)
     obstab["flux_eng"] = np.zeros(len(obstab)) << (u.electron / u.s)
@@ -442,7 +447,7 @@ def flux_engineering_units_local(obstab: Table,
     # TODO 6.1 use Gain matrix from module L2.16
     Mjysr_to_e_per_s = (_area * _pix_sr * eta_total / R) * _factor
     Mjysr_to_e_per_s_value = Mjysr_to_e_per_s[ii-1]
-    logging.info(f"Mjysr_to_e_per_s = {Mjysr_to_e_per_s[ii-1] }")
+    logging.info(f"Mjysr_to_e_per_s = {Mjysr_to_e_per_s[ii-1]}")
 
     # Assert if all elements in the array are nearly equal to cal_value
     differences = np.abs(Mjysr_to_e_per_s_value.value - cal_value)
@@ -486,6 +491,7 @@ def compute_corr_gain_and_weight_local(obstab: Table) -> Table:
           predicted flux to flux in  engineering units (dimensionless).
         - "weight" : The weight, computed as the inverse square of the
           flux error (dimensionless).
+
     """
     # Compute gain_factor and weight
     gain_factor = obstab["predicted_fluxes"] / obstab['flux_eng']
@@ -549,6 +555,7 @@ def generate_binned_calibration_data_local(obstab: Table,
         - "z_bin" : The weighted average zodiacal light color
           correction factor in each bin.
         - "omega_bin" : The weighted average pixel solid angle in each bin (steradians).
+
     """
     xx, yy = np.meshgrid(np.arange(2049) - 0.5, np.arange(2049) - 0.5)
 
@@ -561,18 +568,12 @@ def generate_binned_calibration_data_local(obstab: Table,
     cal = T["gain_factor"]
     z = T["zodi_cc"]
     omega = T["omega_pix"]
-    vals_gain = (
-        np.histogram(wl, weights=(w * cal), bins=bin_edge)[0]
-        / np.histogram(wl, weights=(w), bins=bin_edge)[0]
-    )
-    vals_zodi = (
-        np.histogram(wl, weights=(w * z), bins=bin_edge)[0]
-        / np.histogram(wl, weights=(w), bins=bin_edge)[0]
-    )
-    vals_omega = (
-        np.histogram(wl, weights=(w * omega), bins=bin_edge)[0]
-        / np.histogram(wl, weights=(w), bins=bin_edge)[0]
-    )
+    # Compute denominator once; empty bins yield NaN (expected behavior)
+    denom = np.histogram(wl, weights=w, bins=bin_edge)[0]
+    with np.errstate(invalid='ignore'):
+        vals_gain = np.histogram(wl, weights=(w * cal), bins=bin_edge)[0] / denom
+        vals_zodi = np.histogram(wl, weights=(w * z), bins=bin_edge)[0] / denom
+        vals_omega = np.histogram(wl, weights=(w * omega), bins=bin_edge)[0] / denom
     Tbin = Table(
         data=[bin_edge[:-1], bin_edge[1:], vals_gain, vals_zodi, vals_omega],
         names=["wl_min", "wl_max", "a_bin", "z_bin", "omega_bin"],
@@ -600,6 +601,7 @@ def load_spline_from_file(filename: str) -> UnivariateSpline:
     -------
     spline : `UnivariateSpline`
         The reconstructed spline.
+
     """
     # Load the knots, coefficients, and degree
     data = np.load(filename)
@@ -648,6 +650,8 @@ class UpdatePhotometricCalibrationConnections(pipeBase.PipelineTaskConnections,
 
 class UpdatePhotometricCalibrationConfig(pipeBase.PipelineTaskConfig,
                                          pipelineConnections=UpdatePhotometricCalibrationConnections):
+    """Configuration for UpdatePhotometricCalibration task."""
+
     param_int = Field(
         doc="An example of int configuration parameter."
         "An example of a two-line doc.",
@@ -698,6 +702,7 @@ class UpdatePhotometricCalibrationTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "update-photometric-calibration"
@@ -716,11 +721,13 @@ class UpdatePhotometricCalibrationTask(pipeBase.PipelineTask):
             ff_prev_spline: UnivariateSpline = None,
             initial_distortion_table: Table = None,
             sip: Sip = None) -> pipeBase.Struct:
-        """
-        Notes
+        """Compute photometric calibration data.
+
+        Note
         ----
         - calspec_sources provides metadata about the sources
         - calspec_spectra provides the high-resolution spectra for those sources.
+
         """
         # Reload the spline if not provided
         if ff_prev_spline is None:
@@ -768,7 +775,8 @@ class UpdatePhotometricCalibrationTask(pipeBase.PipelineTask):
         # Loop through templates and simulate sources
         for L in calspec_spectra:
             TT = Table.read(L)
-            mag = (TT["fnu"]).to(u.ABmag)
+            with np.errstate(invalid='ignore'):
+                mag = (TT["fnu"]).to(u.ABmag)
             for row in calspec_sources:
                 if row["name"] in L:
                     name = row["name"]

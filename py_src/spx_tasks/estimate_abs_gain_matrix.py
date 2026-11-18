@@ -8,10 +8,11 @@ import os
 import time
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator, Optional
+from typing import Iterable
 
 # Related third party imports
 from astropy import log
+from astropy.io.fits import HDUList
 from astropy.table import Table
 from astropy import units as u
 from scipy.optimize import curve_fit
@@ -30,7 +31,7 @@ from astropy.modeling import models, fitting
 from astropy.stats import sigma_clip
 
 # Local application/library specific imports
-from spx_data import SPHERExImage, get_wavelength_mesh, Flag
+from spx_data import SPHERExImage, Flag, RegionMaskIterable
 from spx_tasks.filter_by_mask import FilterByMaskTask
 from spx_utils.solar_elongation import compute_tilt_function, tilt_correct
 # from spx_data.spx_param import get_pix_scale
@@ -82,45 +83,6 @@ def query_fit_data(x_data, y_data, z_data, fit_func=poly_22):
 # ==============================================================================
 # Flat-Field Algorithm
 
-class RegionMaskIterable:
-    """Iterable that yields (region_id, mask) pairs on each pass."""
-
-    def __init__(self,
-                 array_id: int,
-                 npix_x: int,
-                 npix_y: int,
-                 num_regions: int,
-                 region_list: Optional[list[int]] = None):
-        # Heavy work done **once**
-        self.lambda_mesh = get_wavelength_mesh(array_id, npix_x, npix_y)
-        lmin, lmax = np.min(self.lambda_mesh), np.max(self.lambda_mesh)
-        self.edges = np.linspace(lmin, lmax, num_regions + 1)
-
-        self.num_regions = num_regions
-        self.region_list = set(region_list) if region_list else None
-
-    def __iter__(self) -> Iterator[tuple[int, np.ndarray]]:
-        """
-        Lazily generate (region_id, mask) pairs that partition an image into
-        wavelength intervals.
-
-        Return a fresh generator each time the iterable is looped over.
-
-        Yields
-        ------
-        (region_id, mask) : tuple[int, np.ndarray[bool, 2-D]]
-        * `region_id` – integer index of the wavelength bin
-        * `mask`      – boolean array, True where the pixel belongs to that bin
-        """
-        mesh = self.lambda_mesh
-        edges = self.edges
-        rlist = self.region_list
-        for region_id in range(self.num_regions):
-            if rlist is not None and region_id not in rlist:
-                continue
-            mask = (mesh >= edges[region_id]) & (mesh < edges[region_id + 1])
-            yield region_id, mask
-
 
 class ImageFiltering:
     @staticmethod
@@ -160,6 +122,7 @@ class ImageFiltering:
             Corresponding longitudes for filtered images.
         filtered_obstimes : list[np.ndarray]
             Corresponding observation times for filtered images.
+
         """
         filtered_dataset = []
         filtered_latitudes = []
@@ -191,14 +154,14 @@ class ImageFiltering:
         return filtered_dataset, filtered_latitudes, filtered_longitudes, filtered_obstimes, filtered_wcs
 
 
-def define_spectral_bins(spximg: SPHERExImage, config: Config, verbose: bool = False) -> (
+def define_spectral_bins(central_wl: np.ndarray, config: Config, verbose: bool = False) -> (
         tuple)[Iterable[tuple[int, np.ndarray]], Iterable[tuple[int, np.ndarray]]]:
-    """Define spectral bins based on LVF information.
+    """Define spectral bins based on wavelength information.
 
     Parameters
     ----------
-    spximg : `~spx_data.SPHERExImage`
-        Input SPHEREx image.
+    central_wl : `~numpy.ndarray`
+        2D array of per-pixel central wavelengths.
     config : `Config`
         Configuration for estimate flat field module.
     verbose :`bool`
@@ -208,25 +171,26 @@ def define_spectral_bins(spximg: SPHERExImage, config: Config, verbose: bool = F
     -------
     result :
         Region mask dictionaries for nominal and fine resolution.
+
     Notes
     -----
-    Get information from one of the images and define the region dictionary
-    corresponding to the 64 / 256 wavelength bins.
+    Define the region dictionary corresponding to the 64 / 256 wavelength bins.
+
     """
-    region_msk_iter = RegionMaskIterable(spximg.getArrayId(),
-                                         spximg.data.shape[0],
-                                         spximg.data.shape[1],
-                                         config.num_regions,  # default is 64.
-                                         region_list=config.region_list)
+    region_msk_iter = RegionMaskIterable(
+        central_wl=central_wl,
+        num_regions=config.num_regions,  # default is 64.
+        region_list=config.region_list
+    )
     if verbose is True:
         print('region_msk_iter created.')
 
     # Finer dictionary of wavelengths split into 256 regions
-    region_msk_iter_fine = RegionMaskIterable(spximg.getArrayId(),
-                                              spximg.data.shape[0],
-                                              spximg.data.shape[1],
-                                              config.num_regions_fine,  # 256.
-                                              region_list=config.region_list_fine)
+    region_msk_iter_fine = RegionMaskIterable(
+        central_wl=central_wl,
+        num_regions=config.num_regions_fine,  # 256.
+        region_list=config.region_list_fine
+    )
     if verbose is True:
         print('region_msk_iter_fine created.')
 
@@ -247,6 +211,7 @@ def stack_and_normalize_images_batch(filtered_dataset: list, batch_size: int = 1
     -------
     normalized_stack : np.ma.MaskedArray
         Mean-normalized image stack.
+
     """
     image_shape = filtered_dataset[0].shape
     stack_sum = np.zeros(image_shape, dtype=np.float32)
@@ -285,6 +250,7 @@ def stack_and_normalize_images(filtered_dataset: list) -> np.ndarray:
     -------
     normalized_stack : ~numpy.ndarray
         Normalized SPHEREx stacked images.
+
     """
     image_shape = filtered_dataset[0].shape
     stack_sum = np.zeros(image_shape, dtype=np.float32)
@@ -336,6 +302,7 @@ def compute_avg_flux_and_wavelength(region_msk_iter: Iterable[tuple[int, np.ndar
     -------
     `tuple[~numpy.ndarray, ~numpy.ndarray]`
         Average fluxes and wavelengths.
+
     """
     flux_list = []
     wav_list = []
@@ -374,13 +341,16 @@ def compute_fine_grid_spectral_response(region_msk_iter_fine: dict,
         List of fluxes.
     gf : `np.ndarray`
         Estimated 1D gain function from binned calibration data.
-    lambda_mesh : ~numpy.ndarray
+    lambda_mesh : `~numpy.ndarray`
         Two dimensional wavelength mesh with central wavelength at any position.
+    apply_gf : `bool`, optional
+        If True, divide fluxes by gain function. Default is True.
 
     Returns
     -------
-    spectral_response_fine : ~numpy.ndarray
+    spectral_response_fine : `~numpy.ndarray`
         Smooth functional fit to response variation across stacked images.
+
     """
     # First, get the central wavelengths on the 256 wavelength region split.
     wvs_fine = []
@@ -421,16 +391,19 @@ def divide_out_spectral_response(filtered_dataset: list,
     Parameters
     ----------
     filtered_dataset : `list`
-        Input filtered and SPHEREx images.
-    region_msk_iter : `dict`
-        Dictionary for wavelength region masks.
-    spectral_response_fine : ~numpy.ndarray
+        Input filtered SPHEREx images.
+    region_msk_iter_fine : `dict`
+        Dictionary for fine wavelength region masks.
+    spectral_response_fine : `~numpy.ndarray`
         Smooth spectral response across image.
+    use_linear_regression : `bool`
+        If True, use linear regression for spectral response estimation.
 
     Returns
     -------
-    `None`
+    None
         Modifies the `filtered_dataset` in-place.
+
     """
     # for image in filtered_dataset:
     #     cnt = 0
@@ -469,8 +442,7 @@ def cut_images_with_excessive_signal_variation(filtered_dataset: list,
                                                percent: float,
                                                verbose: bool,
                                                return_indices: bool = False) -> tuple:
-    """
-    Cut images with excessive signal variation and optionally return surviving indices.
+    """Cut images with excessive signal variation, optionally return indices.
 
     Parameters
     ----------
@@ -491,6 +463,7 @@ def cut_images_with_excessive_signal_variation(filtered_dataset: list,
         Subset of input list with valid images.
     indices (optional) : list[int]
         Indices of kept images within input list.
+
     """
     filtered_images = []
     kept_indices = []
@@ -523,14 +496,17 @@ def _has_excessive_signal_variation(image: SPHERExImage, sigma: int, percent: fl
     image : `~spx_data.SPHERExImage`
         Input SPHEREx image.
     sigma : `int`
-        Simga value at which to apply excessive signal check.
+        Sigma value at which to apply excessive signal check.
     percent : `float`
         Threshold of percentage of pixels with excessive noise.
+    verbose : `bool`
+        If True, print verbose output.
 
     Returns
     -------
     `bool`
-        True if execssive signal in image is found.
+        True if excessive signal in image is found.
+
     """
     # `image' is a numpy masked array
     # img_mean = image.mean()
@@ -569,6 +545,7 @@ def compute_ff_delta_streaming(filtered_images: list, chunk_size: int = 10) -> n
     -------
     ff_delta : np.ndarray
         Mean-normalized flat-field delta image.
+
     """
     image_shape = filtered_images[0].shape
     stacked_mean = np.zeros(image_shape, dtype=np.float32)
@@ -603,6 +580,7 @@ def compute_ff_delta(filtered_images: list) -> np.ndarray:
     -------
     ff_delta : ~numpy.ndarray
         Per-pixel delta on flat-field image.
+
     """
     stacked_images = np.ma.stack(filtered_images, axis=0)
     # ff_delta = sigma_clipped_stats(stacked_images, axis=0, sigma=2)[0]
@@ -634,6 +612,7 @@ def estimate_1D_gain_function(binned_calibration_data: Table) -> np.ndarray:
     -------
     gf : `np.ndarray`
         The 1D gain function Rk for each spectral bin.
+
     """
     # Extract the calibration data for gain factors in each spectral bin
     cal = binned_calibration_data['a_bin']
@@ -665,8 +644,7 @@ def initialize_regression_fitparam(shape):
 
 
 def compute_regression_fit(fit_param):
-    """
-    Compute slope and intercept from regression accumulators.
+    """Compute slope and intercept from regression accumulators.
 
     Parameters
     ----------
@@ -677,6 +655,7 @@ def compute_regression_fit(fit_param):
     -------
     tuple[np.ndarray, np.ndarray]
         Slope (b = flat-field), Intercept (a = dark current)
+
     """
     n = fit_param["n"]
     Mx = fit_param["Mx"]
@@ -717,8 +696,7 @@ def initialize_sigma_param(shape):
 
 
 def update_average_param_linear_scaled(avg_param, y, region_msk_iter_fine):
-    """
-    Update average parameters using zodi_data as x, scaled per fine region
+    """Update average parameters using zodi_data as x, scaled per fine region
     by median(y_region) / median(x_region).
     """
     temp_mask = ~np.isnan(y.data) & ~y.mask
@@ -838,8 +816,7 @@ def update_regression_fitparam_linear_scaled(fit_param, y, average, sigma,
 
 
 def detect_cluster_dbscan(data, threshold=6, min_cluster_pixels=100, eps=10, debug=False):
-    """
-    Detects large bright clusters using DBSCAN on unmasked bright pixels.
+    """Detect large bright clusters using DBSCAN on unmasked bright pixels.
 
     Parameters
     ----------
@@ -857,6 +834,7 @@ def detect_cluster_dbscan(data, threshold=6, min_cluster_pixels=100, eps=10, deb
     Returns
     -------
     bool : True if large bright cluster detected
+
     """
     # Ensure masked pixels are excluded from stats
     if not np.ma.isMaskedArray(data):
@@ -897,10 +875,7 @@ def detect_cluster_dbscan(data, threshold=6, min_cluster_pixels=100, eps=10, deb
 
 
 def fit_background(data, xx, yy, mask_bkg):
-    """
-    fit background with 2nd-order polynomials
-    """
-
+    """Fit background with 2nd-order polynomials."""
     x, y = xx[mask_bkg], yy[mask_bkg]
     z = data[mask_bkg]
     zunc = z*0 + sigma_clipped_stats(z)[2]
@@ -915,21 +890,38 @@ def fit_background(data, xx, yy, mask_bkg):
 def compute_proportional_coefficient(imageA, imageB, mask=None,
                                      lsigma=5, hsigma=3, max_iter=10,
                                      return_mask=True, verbose=False):
-    """
-    Computes the proportional coefficient 'k' that minimizes the chi-square difference
+    """Compute the proportional coefficient 'k' that minimizes the chi-square difference
     between imageB and k * imageA.
 
-    Parameters:
-    - imageA (np.ndarray): The reference 2D image.     = template
-    - imageB (np.ndarray): The target 2D image to fit  = data
-    - mask (np.ndarray, optional): A boolean mask to
-      specify which pixels to include in the fit.
+    Parameters
+    ----------
+    imageA : `~numpy.ndarray`
+        The reference 2D image (template).
+    imageB : `~numpy.ndarray`
+        The target 2D image to fit (data).
+    mask : `~numpy.ndarray`, optional
+        A boolean mask specifying which pixels to include in the fit.
+    lsigma : `float`, optional
+        Lower sigma threshold for clipping. Default is 5.
+    hsigma : `float`, optional
+        Upper sigma threshold for clipping. Default is 3.
+    max_iter : `int`, optional
+        Maximum number of iterations. Default is 10.
+    return_mask : `bool`, optional
+        If True, return the final mask. Default is True.
+    verbose : `bool`, optional
+        If True, print verbose output. Default is False.
 
-    Returns:
-    - k (float): The best-fit proportional coefficient.
-    - chi2 (float): The minimized chi-square value.
+    Returns
+    -------
+    k : `float`
+        The best-fit proportional coefficient.
+    chi2 : `float`
+        The minimized chi-square value.
+    mask : `~numpy.ndarray`, optional
+        Final mask (only if return_mask is True).
+
     """
-
     if mask is None:
         mask = np.ones_like(imageA, dtype=np.bool)
 
@@ -1008,6 +1000,13 @@ class EstimateAbsGainMatrixConnections(pipeBase.PipelineTaskConnections,
         doc="Output relative flat field estimate.",
         storageClass="SPHERExImage",
         dimensions=("instrument", "detector"),
+        isCalibration=True
+    )
+    spectral_wcs = cT.PrerequisiteInput(
+        name="spectral_wcs",
+        doc="Spectral WCS with lookup table.",
+        storageClass="AstropyImage",
+        dimensions=["instrument", "detector"],
         isCalibration=True
     )
     ff_est = cT.Output(
@@ -1113,6 +1112,8 @@ class EstimateAbsGainMatrixSharedConfig(Config):
 class EstimateAbsGainMatrixConfig(EstimateAbsGainMatrixSharedConfig,
                                   pipeBase.PipelineTaskConfig,
                                   pipelineConnections=EstimateAbsGainMatrixConnections):
+    """Configuration for EstimateAbsGainMatrix task."""
+
     pass
 
 
@@ -1137,6 +1138,7 @@ class EstimateAbsGainMatrixTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `pipeBase.Struct` object.
+
     """
 
     _DefaultName = "estimate-flat-field"
@@ -1178,6 +1180,7 @@ class EstimateAbsGainMatrixTask(pipeBase.PipelineTask):
             dataset: list[DeferredDatasetHandle],
             abs_cal: SPHERExImage,
             photo_calib: Table,
+            spectral_wcs: HDUList,
             sigma_cut: int = 4,
             percent_cut: float = 0.05,
             verbose: bool = False,
@@ -1190,16 +1193,22 @@ class EstimateAbsGainMatrixTask(pipeBase.PipelineTask):
 
         Parameters
         ----------
-        dataset : `list[~lsst.daf.butler.DeferredDatasetHandle]`
+        dataset : `list` of `~lsst.daf.butler.DeferredDatasetHandle`
             List of deferred SPHEREx images.
-        ff_prev : `~spx_data.SPHERExImage`
-            Initial flat field estimate.
-        sigma_cut : `int`, default = 2
-            Sigma value at which to apply excessive variation cut.
-        percent_cut : `float`, default 0.05
-            Percentage threshold at which to apply excessive variation cut.
-        verbose : `bool`, default = False
-            Print out processing details.
+        abs_cal : `~spx_data.SPHERExImage`
+            Absolute calibration image.
+        photo_calib : `~astropy.table.Table`
+            Photometric calibration table.
+        spectral_wcs : `~astropy.io.fits.HDUList`
+            Spectral WCS calibration with central wavelength and bandwidth.
+        sigma_cut : `int`, optional
+            Sigma value at which to apply excessive variation cut. Default is 4.
+        percent_cut : `float`, optional
+            Percentage threshold for excessive variation cut. Default is 0.05.
+        verbose : `bool`, optional
+            Print out processing details. Default is False.
+        corr_solar_elong : `bool`, optional
+            If True, correct for solar elongation. Default is False.
 
         Returns
         -------
@@ -1219,8 +1228,8 @@ class EstimateAbsGainMatrixTask(pipeBase.PipelineTask):
           - Source mask for each one (module operates on source-masked images).
           - The most recent FF solution used to correct the input images
             for this detector.
-        """
 
+        """
         log.disabled = True
         t0_total = time.time()
         timings = {}
@@ -1358,10 +1367,12 @@ class EstimateAbsGainMatrixTask(pipeBase.PipelineTask):
         # Step 3: Define spectral bins.
         t0 = time.time()
         print("Define spectral bins")
-        region_msk_iter, region_msk_iter_fine = define_spectral_bins(dataset[0].get(), self.config)
-        # assert region_msk_iter.num_regions == self.config.num_regions
-        # assert region_msk_iter_fine.num_regions == self.config.num_regions_fine
-        lambda_mesh: np.ndarray = get_wavelength_mesh(self.array_id, self.npix_x, self.npix_y)
+        # Get central wavelength from spectral_wcs calibration
+        lambda_mesh: np.ndarray = spectral_wcs["CWAVE"].data
+        # Crop to match image dimensions if needed
+        if lambda_mesh.shape != (self.npix_x, self.npix_y):
+            lambda_mesh = lambda_mesh[:self.npix_x, :self.npix_y]
+        region_msk_iter, region_msk_iter_fine = define_spectral_bins(lambda_mesh, self.config)
         timings["Define spectral bins"] = time.time() - t0
 
         # Correct for He I line

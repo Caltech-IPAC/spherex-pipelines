@@ -8,6 +8,8 @@ import re
 # Related third party imports
 import numpy as np
 import astropy.units as u
+import healpy as hp
+from astropy.io.fits import HDUList
 from astropy.table import Table, Column, vstack
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
@@ -22,7 +24,7 @@ import lsst.pipe.base as pipeBase
 from spx_butler import getSkyPixIds, instrument, REFCAT_SKYPIX_NAME
 from spx_data import SPHERExImage, ReadoutParameters
 from spx_data.spx_version import SSDC_PIPELINES_VERSION
-from spx_utils import SourcePipelineClass as c
+from spx_utils import SourcePipelineClass
 from spx_utils.refcat_utils import get_magnitudes, EmptySourceCatalogError
 from spx_utils import log_dqa_result, get_corrected_linear_wcs, north_aligned_pa_from_wcs
 from spx_data.observation_id import ObservationId
@@ -39,6 +41,14 @@ FLOAT64_PRESERVE_COLS = {
     "ref_dec",
 }
 
+# Input refcat columns required to create external IDs/shape parameters
+DERIVED_INPUTS = ["Gaia_DR3_source_id", "LegacySurvey_uid", "PS1_DR1_StackObject_objID",
+                  "CatWISE_source_id", "AllWISE_designation", "2MASS_designation", "shape_e1",
+                  "shape_e2"]
+
+# Input refcat columns required to apply proper motion corrections to positions
+PM_CORR_INPUTS = ["ra", "dec", "pmra", "pmdec", "parallax", "ref_epoch"]
+
 
 def _downgrade_float_columns(tbl: Table,
                              keep_double: set[str] = FLOAT64_PRESERVE_COLS) -> None:
@@ -50,6 +60,7 @@ def _downgrade_float_columns(tbl: Table,
         Table to be modified in place.
     keep_double : `set[str]`
         Column names that must remain float64.
+
     """
     for name in tbl.colnames:
         col = tbl[name]
@@ -77,6 +88,7 @@ def add_external_ids(input_tab: Table):
     Returns
     -------
     None
+
     """
     coord_src = input_tab["coord_src"]
 
@@ -119,6 +131,7 @@ def add_shape_params(input_tab: Table):
     Returns
     -------
     None
+
     """
     # Set default value to represent LS point sources
     ab_ratio = np.full(len(input_tab), 0.0, dtype="float32")
@@ -167,6 +180,27 @@ class QueryReferenceCatalogConnections(pipeBase.PipelineTaskConnections,
         dimensions=["instrument"],
         isCalibration=True
     )
+    cosmo_mask = cT.PrerequisiteInput(
+        name="cosmo_mask",
+        doc="List of HiPS8 tiles in cosmology selection mask.",
+        storageClass="AstropyImage",
+        dimensions=["instrument"],
+        isCalibration=True
+    )
+    hi_density_mask = cT.PrerequisiteInput(
+        name="hi_density_mask",
+        doc="List of HiPS8 tiles in high-density selection mask.",
+        storageClass="AstropyImage",
+        dimensions=["instrument"],
+        isCalibration=True
+    )
+    special_ids = cT.PrerequisiteInput(
+        name="special_ids",
+        doc="Array of reference catalog IDs to select for photometry.",
+        storageClass="NumpyArray",
+        dimensions=["instrument"],
+        isCalibration=False
+    )
     catalog = cT.Output(
         name="srccat",  # default dataset type for output
         doc="Output catalog with the sources overlapping the footprints "
@@ -175,9 +209,16 @@ class QueryReferenceCatalogConnections(pipeBase.PipelineTaskConnections,
         dimensions=("instrument", "dichroicpair", "spsplan", "slewgroup")
     )
 
+    def __init__(self, *, config=None):
+        super().__init__(config=config)
+
+        if not config.select_special_ids:
+            del self.special_ids
 
 class QueryReferenceCatalogConfig(pipeBase.PipelineTaskConfig,
                                   pipelineConnections=QueryReferenceCatalogConnections):
+    """Configuration for QueryReferenceCatalog task."""
+
     pixmargin = Field(
         doc="Margin in pixels."
         "The sources will be added to the catalog table if they fall "
@@ -191,18 +232,6 @@ class QueryReferenceCatalogConfig(pipeBase.PipelineTaskConfig,
         default="SPHERExRefID"
     )
 
-    sel_mag_thres = Field(
-        doc="LS_z magnitude threshold for including sources into the output catalog."
-            " The sources with this or higher magnitudes will be excluded.",
-        dtype=float,
-        default=23)
-
-    sel_color_thres = Field(
-        doc="z - W1 color lower threshold for including sources into the output catalog."
-            " The sources with tis or lower color will be excluded.",
-        dtype=float,
-        default=1.5)
-
     ra_col = Field(
         doc="Name of the Right Ascension column.",
         dtype=str,
@@ -213,18 +242,15 @@ class QueryReferenceCatalogConfig(pipeBase.PipelineTaskConfig,
         dtype=str,
         default="dec")
 
-    # "Gaia_DR3_source_id" and "LS_z" are only needed to verify photometry
-    # selection
     extra_cols = ListField(
-        doc="Names of additional columns to include in the output.",
+        doc="Names of additional refcat columns to include in the output.",
         dtype=str,
         default=("Gaia_DR3_source_id", "LegacySurvey_uid", "PS1_DR1_StackObject_objID", "CatWISE_source_id",
                  "AllWISE_designation", "2MASS_designation", "ra_error", "dec_error", "coord_src", "pmra",
                  "pmdec", "parallax", "flag_brightneighbor", "dist_nearest", "spherex_class",
-                 # "Gaia_DR3_source_id", "LS_z",
                  "PS1_y", "PS1_z", "WISE_W1", "WISE_W2", "Gaia_RP",
                  "PS1_y_error", "PS1_z_error", "WISE_W1_error", "WISE_W2_error", "Gaia_RP_error",
-                 "sersic", "shape_r", "shape_e1", "shape_e2", "ref_epoch", "for_l3phot"))
+                 "sersic", "shape_r", "shape_e1", "shape_e2", "ref_epoch", "SNR_MAX"))
 
     save_derived_inputs = Field(
         doc="Save columns used to calculate or construct derived columns. "
@@ -263,12 +289,37 @@ class QueryReferenceCatalogConfig(pipeBase.PipelineTaskConfig,
         default=2040)
 
     selection_cuts = Field(
-        doc="If True, performs magnitude and color selection on the output catalog.",
+        doc="If True, performs class, SNR, and bright neighbor selection on the output catalog."
+            " Default is True.",
         dtype=bool,
         default=True)
 
     allow_empty = Field(
         doc="If True, allows output catalog to be empty without raising an error.",
+        dtype=bool,
+        default=False)
+
+    mask_hips_order = Field(
+        doc="HEALPix order to use for applying cosmology/high-density selection masks.",
+        dtype=int,
+        default=8
+    )
+
+    maxmag = Field(
+        doc="Faintest magnitude to consider for masking, AB mag",
+        dtype=float,
+        default=19.0
+    )
+
+    minmag = Field(
+        doc="Brightest magnitude to consider for masking, AB mag",
+        dtype=float,
+        default=-5.0
+    )
+
+    select_special_ids = Field(
+        doc="If True, all targets in the `special_ids` input will be selected"
+            "for photometry, even if they fail other selection cuts.",
         dtype=bool,
         default=False)
 
@@ -299,6 +350,7 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "query-reference-catalog"
@@ -313,8 +365,7 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
 
     @timeMethod
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
-        """
-        - Handles I/O with the Butler.
+        """- Handles I/O with the Butler.
         - Fetches inputs, calls the `run` method for the core algorithm,
           and saves the outputs.
         """
@@ -388,7 +439,7 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
 
         self.log.info(f"Loaded {len(refcat_shards_handles)} reference catalog shards handles into memory.")
 
-        # Take the run/collection name from the first refcat shard (they must all match)
+        # Take run/collection name from first refcat shard (must all match)
         first_handle = refcat_shards_handles[0]
         dsref = getattr(first_handle, "ref", None) or getattr(first_handle, "datasetRef", None)
         if dsref is None:
@@ -404,12 +455,20 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
             raise RuntimeError("Cannot compute slewgroup_mjd_avg: no planned observations after filtering.")
         slewgroup_mjd_avg = mid_sum / mid_count
 
+        # HDU lists and special IDs for selection
+        cosmo_hdul = butlerQC.get(inputRefs.cosmo_mask)
+        hi_density_hdul = butlerQC.get(inputRefs.hi_density_mask)
+        special_ids = butlerQC.get(inputRefs.special_ids) if self.config.select_special_ids else None
+
         # Call the run method with in-memory data
         output: Output = self.run(wcs_list,
                                   refcat_shards_handles,
                                   dichroicpair,
                                   slewgroup_mjd_avg,
-                                  refcat_run_name)
+                                  cosmo_hdul,
+                                  hi_density_hdul,
+                                  refcat_run_name,
+                                  special_ids)
 
         # Save the outputs back to the Butler (N to 3)
         self.log.info("runQuantum: Saving outputs to the Butler.")
@@ -424,24 +483,46 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
             refcatShards: list[DeferredDatasetHandle],
             dichroicpair: int,
             slewgroup_mjd_avg: float,
-            refcat_run_name: str | None = None) -> Output:
-        """
+            cosmo_hdul: HDUList,
+            hi_density_hdul: HDUList,
+            refcat_run_name: str | None = None,
+            special_ids: np.ndarray | None = None) -> Output:
+        """Find reference catalog sources within the bounding box enclosing the
+        images in a slew group.
 
         Parameters
         ----------
-        wcs_list: `list` [`~astropy.wcs WCS`]
+        wcs_list : `list` [`~astropy.wcs.WCS`]
             List of WCS for quantum.
-        refcatShards: `list` [`lsst.daf.butler.DeferredDatasetHandle`]
+        refcatShards : `list` [`lsst.daf.butler.DeferredDatasetHandle`]
             List of the deferred dataset handles to the catalog shards.
             Table representing the shard can be obtained from the
             deferred dataset handle, using get method.
+        dichroicpair : `int`
+            Dichroic pair number (1-3).
+        slewgroup_mjd_avg : `float`
+            Average MJD of the slew group (used for proper motion correction).
+        cosmo_hdul : `astropy.io.fits.HDUList`
+            Cosmology selection HDU list. Mask is accessible via "MASK" column
+            of "COSMO_MASK" extension.
+        hi_density_hdul : `astropy.io.fits.HDUList`
+            High-density selection HDU list. Mask is accessible via "MASK"
+            column of "HI_DENSITY_MASK" extension.
+        refcat_run_name : `str`, optional
+            Name of run collection holding the reference catalog shards.
+        special_ids : `numpy.ndarray` or `None`, optional
+            Array of reference IDs to select for photometry.
 
         Returns
         -------
-        output: Output
+        output : `Output`
             Output that contains `~spx_data.SPHERExImage` with the catalog
             layer.
+
         """
+        # Guard against silent failures due to optional inputs
+        if self.config.select_special_ids and special_ids is None:
+            raise ValueError("select_special_ids is True, but no special_ids array was provided.")
 
         # Pixel margin
         pixmargin = self.config.pixmargin
@@ -453,7 +534,8 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
         matchedtbl = None
         for shard in refcatShards:
             try:
-                tbl = sourcesInXYBox(xyBox, shard, self.config, dichroicpair)
+                tbl = sourcesInXYBox(xyBox, shard, self.config, dichroicpair, cosmo_hdul, hi_density_hdul,
+                                     special_ids)
                 if matchedtbl is None:
                     matchedtbl = tbl
                 else:
@@ -463,7 +545,7 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
                 self.log.error(f"Error processing reference catalog shard: {e}")
                 continue
 
-        if len(matchedtbl) == 0:
+        if matchedtbl is None or len(matchedtbl) == 0:
             if self.config.allow_empty:
                 self.log.warning("No reference catalog sources found in bounding box.")
                 return Output(catalog=None)
@@ -471,16 +553,14 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
                 raise EmptySourceCatalogError("No refcat sources were found and 'allow_empty' is False.")
 
         # Construct "derived" columns for photometry
-        derived_inputs = ["Gaia_DR3_source_id", "LegacySurvey_uid", "PS1_DR1_StackObject_objID",
-                          "CatWISE_source_id", "AllWISE_designation", "2MASS_designation", "shape_e1",
-                          "shape_e2"]
-        if all(col in matchedtbl.colnames for col in derived_inputs):
+        if all(col in matchedtbl.colnames for col in DERIVED_INPUTS):
             add_external_ids(matchedtbl)
             add_shape_params(matchedtbl)
             if not self.config.save_derived_inputs:
-                matchedtbl.remove_columns(derived_inputs)
+                matchedtbl.remove_columns(DERIVED_INPUTS)
 
-        if all(col in matchedtbl.colnames for col in ["ra", "dec", "pmra", "pmdec", "parallax", "ref_epoch"]):
+        # Apply proper motion corrections
+        if all(col in matchedtbl.colnames for col in PM_CORR_INPUTS):
             # Check for stars with GAIA proper motions
             matchedtbl.rename_column("ra", "ref_ra")
             matchedtbl.rename_column("dec", "ref_dec")
@@ -551,8 +631,9 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
         self.metadata.add("numSources", len(matchedtbl))
 
         # Downcast float columns to float32 where safe to do so
-        # call ``_downgrade_float_columns`` after all proper-motion corrections,
-        # derived columns, and DQA checks, so that calculations use higher precision
+        # NOTE: We call ``_downgrade_float_columns`` after all proper-motion
+        #       corrections, derived columns, and DQA checks, so that
+        #       calculations use higher precision.
         # DEBUG: print column dtypes before downcast
         if self.config.debug:
             col_info_before = {name: str(matchedtbl[name].dtype) for name in matchedtbl.colnames}
@@ -585,8 +666,7 @@ class QueryReferenceCatalogTask(pipeBase.PipelineTask):
                           obs_from_sps: ObservationId,
                           array_id: int,
                           sip: Sip = None) -> WCS:
-        """
-        Build a local WCS (CRPIX centered) for a dichroic detector,
+        """Build a local WCS (CRPIX centered) for a dichroic detector,
         and then add SIP distortion.
         Dichroicpairs are 1=left, 2=center, 3=right.
         """
@@ -609,6 +689,7 @@ def _parse_refcat_version(run_name: str) -> str | None:
     `str` or `None`
         Normalized version string beginning with ``"v"`` (e.g., ``"v0.73"``),
         or ``None`` if no version token is recognized.
+
     """
     # Match refcat_v073 -> v0.73
     m = re.search(r'refcat_v(\d{3})', run_name)
@@ -636,6 +717,7 @@ def dqa_check_source_count(catalog: Table) -> dict:
     -------
     result_qa : `dict`
         Dictionary containing DQA result and description.
+
     """
     from spx_tasks.query_reference_catalog import QueryReferenceCatalogConfig
     config = QueryReferenceCatalogConfig()
@@ -685,8 +767,8 @@ def dqa_check_source_count(catalog: Table) -> dict:
 
 
 def _mean_sky_center(coords: SkyCoord) -> SkyCoord:
-    """
-    Compute a robust mean sky position from many RA/Dec points, avoiding RA-wrap.
+    """Compute a robust mean sky position from many RA/Dec points, avoiding
+    RA-wrap.
 
     Parameters
     ----------
@@ -700,9 +782,11 @@ def _mean_sky_center(coords: SkyCoord) -> SkyCoord:
 
     Notes
     -----
-    The mean is taken in 3D by converting each input coordinate to a unit vector
-    on the celestial sphere, averaging those vectors, and converting the result
-    back to ICRS RA/Dec. This prevents errors near the 0°/360° RA boundary.
+    The mean is taken in 3D by converting each input coordinate to a unit
+    vector on the celestial sphere, averaging those vectors, and converting the
+    result back to ICRS RA/Dec. This prevents errors near the 0°/360° RA
+    boundary.
+
     """
     # robust mean on unit vectors to avoid RA wrap issues
     x = np.cos(coords.ra.radian) * np.cos(coords.dec.radian)
@@ -735,6 +819,7 @@ def _circ_mean_deg(angs) -> float:
     -----
     Computes the mean direction on the circle by averaging sine/cosine
     components and converting back with ``atan2``.
+
     """
     a = np.radians(angs)
     return np.degrees(np.arctan2(np.mean(np.sin(a)), np.mean(np.cos(a))))
@@ -765,6 +850,7 @@ def _footprint_world(w, nx=2040, ny=2040, nedge=16) -> SkyCoord:
     ``nedge`` points are taken along each edge (bottom, top, left, right)
     using the Astropy WCS low-level 0-based pixel convention
     (pixel centers at *.5).
+
     """
     # sample the border more finely than 4 corners
     xs = np.linspace(-0.5, nx-0.5, nedge)
@@ -782,8 +868,8 @@ def _footprint_world(w, nx=2040, ny=2040, nedge=16) -> SkyCoord:
 
 
 def _bbox_world_for_detector(w_det: WCS, rp, pixmargin: float) -> tuple[SkyCoord, float]:
-    """Build a symmetric, margin-inflated bounding box for a single detector and
-       return it as a sky polygon, along with the detector's north-aligned PA.
+    """Build a symmetric, margin-inflated bounding box for a single detector
+    and return it as a sky polygon, along with the detector's north-aligned PA.
 
     Parameters
     ----------
@@ -807,6 +893,7 @@ def _bbox_world_for_detector(w_det: WCS, rp, pixmargin: float) -> tuple[SkyCoord
         The detector's north-aligned position angle (degrees, 0-360),
         i.e., the direction of the image +y axis measured east of celestial
         north at the detector's center.
+
     """
     # Use the detector’s WCS as the plane
     w_ref = w_det
@@ -873,24 +960,37 @@ def xyBoundingBox(wcs_list: list[WCS],
 def sourcesInXYBox(xyBox,
                    refcatShard: DeferredDatasetHandle,
                    config: QueryReferenceCatalogConfig,
-                   dichroicpair: int) -> Table:
+                   dichroicpair: int,
+                   cosmo_hdul: HDUList,
+                   hi_density_hdul: HDUList,
+                   special_ids: np.ndarray | None) -> Table:
     """Get refcat sources within the bounding box.
 
     Parameters
     ----------
-    xyBox: tuple[WCS, float, float, float, float]
-        WCS and zero-based boundaries: xmin, xmax, ymin, ymax
-    refcatShard: `~lsst.daf.butler.DeferredDatasetHandle`
-    config: `QueryReferenceCatalogConfig`
+    xyBox : `tuple` [`~astropy.wcs.WCS`, `float`, `float`, `float`, `float`]
+        WCS and zero-based boundaries: xmin, xmax, ymin, ymax.
+    refcatShard : `~lsst.daf.butler.DeferredDatasetHandle`
+        Deferred reference catalog shard data.
+    config : `QueryReferenceCatalogConfig`
         Configuration parameters.
-    dichroicpair: `int`
+    dichroicpair : `int`
         Dichroic pair ID.
+    cosmo_hdul : `astropy.io.fits.HDUList`
+        Cosmology selection HDU list. Mask is accessible via "MASK" column of
+        "COSMO_MASK" extension.
+    hi_density_hdul : `astropy.io.fits.HDUList`
+        High-density selection HDU list. Mask is accessible via "MASK" column
+        of "HI_DENSITY_MASK" extension.
+    special_ids : `numpy.ndarray` or `None`
+        Array of reference catalog IDs to select for photometry.
 
     Returns
     -------
-    table: astropy table
-    """
+    table : `~astropy.table.Table`
+        Filtered reference catalog sources.
 
+    """
     tbl = refcatShard.get()
 
     id_col = config.id_col
@@ -910,44 +1010,63 @@ def sourcesInXYBox(xyBox,
         keep |= (ix >= xmin) & (ix < xmax) & \
                 (iy >= ymin) & (iy < ymax)
 
-    # limit the sources to those that we want to photometer
+    # Retrieve magnitudes for all sources in bounding box
+    mag_swir, mag_mwir = get_magnitudes(dichroicpair, tbl, keep)  # relative to bbox keep
+
+    # Source masking selection
+    tbl.add_column(
+        Column(data=np.full(shape=len(tbl), fill_value=0),
+               name="do_mask_swir",
+               dtype=np.uint8,
+               description="Flag indicating if a source should be masked in SWIR")
+    )
+    tbl.add_column(
+        Column(data=np.full(shape=len(tbl), fill_value=0),
+               name="do_mask_mwir",
+               dtype=np.uint8,
+               description="Flag indicating if a source should be masked in MWIR")
+    )
+    tbl["do_mask_swir"][keep] = (config.minmag * u.ABmag < mag_swir) & (mag_swir < config.maxmag * u.ABmag)
+    tbl["do_mask_mwir"][keep] = (config.minmag * u.ABmag < mag_mwir) & (mag_mwir < config.maxmag * u.ABmag)
+
+    # Photometry selection
     tbl.add_column(
         Column(data=np.full(shape=len(tbl), fill_value=0 if config.selection_cuts else 1),
-               name="for_l3phot",
+               name="do_phot",
                dtype=np.uint8,
-               description="Flag indicating if a source should be photometered during L3"))
+               description="Flag indicating if a source should be photometered"))
     if config.selection_cuts:
-        selected = do_select(tbl, config)
-        keep &= selected
+        do_select(tbl, config, cosmo_hdul["COSMO_MASK"].data["MASK"],
+                  hi_density_hdul["HI_DENSITY_MASK"].data["MASK"], special_ids)
 
+    # Before `keep` is updated, make a relative mask into mag arrays
+    # (mag array length != full table length; mag arrays are within the bbox)
+    mag_keep = ((tbl["do_phot"] == 1) | (tbl["do_mask_swir"] == 1) | (tbl["do_mask_mwir"] == 1))[keep]
+
+    # Update absolute mask: keep sources in bbox that pass 1+ selection cuts
+    keep &= (tbl["do_phot"] == 1) | (tbl["do_mask_swir"] == 1) | (tbl["do_mask_mwir"] == 1)
+
+    # Construct core columns
     c1 = Column(tbl[id_col].data[keep], name=id_col, dtype=tbl[id_col].dtype, unit=tbl[id_col].unit)
     c2 = Column(ra[keep], name='ra', dtype=tbl[ra_col].dtype, unit=tbl[ra_col].unit)
     c3 = Column(dec[keep], name='dec', dtype=tbl[dec_col].dtype, unit=tbl[dec_col].unit)
-
     cols = [c1, c2, c3]
 
-    # Retrieve magnitudes
-    mag_swir, mag_mwir = get_magnitudes(dichroicpair, tbl, keep)
+    # Add magnitude columns; store as float32 to reduce size
+    det1, det2 = instrument.from_dichroicpair(dichroicpair)  # get detector IDs for this dichroic pair
+    c4 = Column(mag_swir[mag_keep].value.astype(np.float32),
+                name=f"mag_det{det1}", dtype=np.float32)
+    c5 = Column(mag_mwir[mag_keep].value.astype(np.float32),
+                name=f"mag_det{det2}", dtype=np.float32)
+    cols.append(c4)
+    cols.append(c5)
 
-    # Get detector IDs in this dichroic pair
-    det1, det2 = instrument.from_dichroicpair(dichroicpair)
+    # Add selection columns
+    cols.append(tbl["do_phot"][keep])
+    cols.append(tbl["do_mask_swir"][keep])
+    cols.append(tbl["do_mask_mwir"][keep])
 
-    # Rename magnitude columns appropriately; store as float32 to reduce size
-    mag_swir = Column(mag_swir.value.astype(np.float32),
-                      name=f"mag_det{det1}", dtype=np.float32)
-    mag_mwir = Column(mag_mwir.value.astype(np.float32),
-                      name=f"mag_det{det2}", dtype=np.float32)
-
-    cols.append(mag_swir)
-    cols.append(mag_mwir)
-
-    # since catalog is shared between images in the group
-    # pixel coordinates of the sources must be calculated where they are needed
-    # c3 = Column(ix[keep], name='ix', dtype='float32')
-    # c4 = Column(iy[keep], name='iy', dtype='float32')
-    # cols = [c1, c2, c3, c4]
-
-    # discard duplicates, preserve order
+    # Discard duplicate requested refcat column names if already present
     extra_col_names = list(dict.fromkeys(config.extra_cols).keys())
     if id_col in extra_col_names:
         extra_col_names.remove(id_col)
@@ -955,7 +1074,8 @@ def sourcesInXYBox(xyBox,
         extra_col_names.remove(ra_col)
     if dec_col in extra_col_names:
         extra_col_names.remove(dec_col)
-    # preserve the order of extra columns
+
+    # Preserve the order of extra columns
     for cn in extra_col_names:
         col = Column(tbl[cn].data[keep], name=cn, dtype=tbl[cn].dtype, unit=tbl[cn].unit)
         cols.append(col)
@@ -963,27 +1083,10 @@ def sourcesInXYBox(xyBox,
     return Table(cols)
 
 
-def do_select(tbl: Table, config: QueryReferenceCatalogConfig) -> np.array:
-    """Return numpy array of booleans indicating whether a table row should be
-    selected.
-
-    Eventually, we might want to have a flag that tells us which sources
-    to photometer. For now, we will use this function filter the ref cat table.
-
-    A source should be selected if it meets the following criteria:
-    (ASTROMETRIC OR PSF OR PHOTOMETRIC OR CALSPEC OR BRIGHT OR COSMOLOGY OR
-       ICES OR SECONDARY OR STELLAR OR CLUSTER
-    OR IN_GAIA
-    OR LS_z_mag < 23 (AB)
-    OR ((z-W1) > 1.5)) AND ~(NO_ICES)
-
-    Note the selection on bits (which may or may not be set), LS_z_mag
-    brightness, and one color, if it can be determined. Also note the "IN_GAIA"
-    condition. Any source with a valid GAIA ID should be included.
-
-    Details on the mag / color cuts:
-    LS_z_mag = -2.5*log10(LS_z)+23.9 (If LS_z exists)
-    z - W1 = -2.5 * log10(LS_z / WISE_W1) (If both LS_z and WISE_W1 exist)
+def do_select(tbl: Table, config: QueryReferenceCatalogConfig, cosmo_mask: np.ndarray,
+              hi_density_mask: np.ndarray, special_ids: np.ndarray | None):
+    """Populate numpy array of booleans indicating whether a table row should
+    be selected.
 
     Parameters
     ----------
@@ -991,48 +1094,77 @@ def do_select(tbl: Table, config: QueryReferenceCatalogConfig) -> np.array:
         Input table with one row per source.
     config : `QueryReferenceCatalogConfig`
         Configuration parameters.
+    cosmo_mask : `numpy.ndarray`
+        Cosmology selection mask. Indices correspond to galactic, nested,
+        NSIDE=2**`config.mask_hips_order` tile IDs.
+    hi_density_mask : `numpy.ndarray`
+        High-density selection mask. Indices correspond to galactic, nested,
+        NSIDE=2**`config.mask_hips_order` tile IDs.
+    special_ids : `numpy.ndarray` or `None`
+        Array of reference catalog IDs to select for photometry.
 
-    Returns
-    -------
-    result : `~numpy.ndarray`
-        1-d numpy array with the length matching the number of rows. ``True``
-        value indicates that the row should be included into selection.
     """
-    spherex_class_bitmask = (c.ASTROMETRIC | c.PSF | c.PHOTOMETRIC | c.CALSPEC | c.BRIGHT
-                             | c.COSMOLOGY | c.ICES | c.SECONDARY | c.STELLAR | c.CLUSTER)
+    # Calculate galactic, nested, NSIDE=2**`config.mask_hips_order` tile IDs
+    # NOTE: To ensure consistent inclusion in cosmology/high-density masks over
+    #       time, we calculate the tile IDs using reference epoch coordinates.
+    src_coords = SkyCoord(ra=tbl["ra"], dec=tbl["dec"], unit="deg", frame="icrs")
+    src_tiles = hp.ang2pix(2**config.mask_hips_order, src_coords.galactic.l.degree,
+                           src_coords.galactic.b.degree, nest=True, lonlat=True)
+    hi_density_tiles = np.nonzero(hi_density_mask == 1)[0]
+    cosmo_tiles = np.nonzero(cosmo_mask == 1)[0]
 
-    def to_mag(v):
-        result = np.full(v.shape, np.nan)
-        positive_mask = v > 0
-        result[positive_mask] = -2.5 * np.log10(v[positive_mask]) + 23.9
-        return result
+    # Determine selection group based on tile membership
+    # NOTE: If a source falls into both masks, the cosmology selection rules
+    #       take precedence.
+    in_cosmo = np.isin(src_tiles, cosmo_tiles)  # all sources in cosmology mask (even if they overlap)
+    in_hi_density = np.isin(src_tiles, hi_density_tiles) & ~in_cosmo  # sources only in high-density mask
+    other_regions = ~in_hi_density & ~in_cosmo  # sources in neither mask
 
-    def to_color(v1, v2):
-        result = np.full(v1.shape, np.nan)
-        positive_mask = (v1 > 0) & (v2 > 0)
-        result[positive_mask] = -2.5 * np.log10(v1[positive_mask] / v2[positive_mask])
-        return result
+    # Create bitmask for source classes to photometer
+    spx_cls_bitmask = (
+        SourcePipelineClass.ASTROMETRIC
+        | SourcePipelineClass.PSF
+        | SourcePipelineClass.PHOTOMETRIC
+        | SourcePipelineClass.CALSPEC
+        | SourcePipelineClass.BRIGHT
+        | SourcePipelineClass.COSMOLOGY
+        | SourcePipelineClass.ICES
+        | SourcePipelineClass.SECONDARY
+        | SourcePipelineClass.STELLAR
+        | SourcePipelineClass.CLUSTER
+    )
 
-    def is_selected_by_mag_or_color(v1, v2):
-        return (to_mag(v1) < config.sel_mag_thres) | (to_color(v1, v2) > config.sel_color_thres)
+    # Select sources using different criteria for different regions
+    if np.any(in_cosmo):
+        # Cosmology -> 1+ classes in bitmask AND not an ices contaminant
+        tbl["do_phot"][in_cosmo] = (
+            ((tbl["spherex_class"][in_cosmo] & spx_cls_bitmask) > 0)
+            & ((tbl["spherex_class"][in_cosmo] & SourcePipelineClass.NO_ICES) == 0))
 
-    selected = (tbl["Gaia_DR3_source_id"] >= 0) | (tbl['spherex_class'] & spherex_class_bitmask > 0)
+    if np.any(in_hi_density):
+        # High-density -> (1+ classes in bitmask OR (survey SNR >= 5 AND no
+        #                 bright neighbors)) AND not an ices contaminant
+        # NOTE: The full-mission `SNR_MAX` is 2x the per-survey SNR. Since we
+        #       want a per-survey SNR cut of 5, we use `SNR_MAX >= 10`.
+        tbl["do_phot"][in_hi_density] = (
+            (
+                ((tbl["spherex_class"][in_hi_density] & spx_cls_bitmask) > 0)
+                | ((tbl["SNR_MAX"][in_hi_density] >= 10)
+                   & (tbl["flag_brightneighbor"][in_hi_density] == 0))
+            )
+            & ((tbl["spherex_class"][in_hi_density] & SourcePipelineClass.NO_ICES) == 0))
 
-    ls_z_missing = (tbl["LS_z"] < 0).all()
-    if not ls_z_missing:
-        selected |= is_selected_by_mag_or_color(tbl["LS_z"], tbl["WISE_W1"])
+    if np.any(other_regions):
+        # Outside of both masks -> (1+ classes in bitmask OR survey SNR >= 5)
+        #                          AND not an ices contaminant
+        tbl["do_phot"][other_regions] = (
+            (
+                ((tbl["spherex_class"][other_regions] & spx_cls_bitmask) > 0)
+                | (tbl["SNR_MAX"][other_regions] >= 10)
+            )
+            & ((tbl["spherex_class"][other_regions] & SourcePipelineClass.NO_ICES) == 0))
 
-    not_no_ices = (tbl["spherex_class"] & c.NO_ICES == 0)
-    selected &= not_no_ices
-
-    # Set an initial flag to photometer all selected sources
-    tbl["for_l3phot"][selected] = 1
-
-    # Exclude galactic plane sources that are not in 2MASS or WISE
-    g_lat = SkyCoord(tbl["ra"], tbl["dec"], unit="deg", frame="icrs").galactic.b.deg
-    no_phot = ((np.abs(g_lat) < 12.)
-               & (tbl["CatWISE_source_id"] == b"N/A")
-               & (tbl["2MASS_designation"] == b"N/A")
-               & ~ (tbl["spherex_class"] & spherex_class_bitmask > 0))
-    tbl["for_l3phot"][no_phot] = 0
-    return selected
+    # After standard selection, apply any special ID-based selection overrides
+    if config.select_special_ids and special_ids is not None:
+        id_mask = np.isin(tbl[config.id_col], special_ids)
+        tbl["do_phot"][id_mask] = 1

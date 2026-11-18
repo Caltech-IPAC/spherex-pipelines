@@ -22,7 +22,9 @@ class ExposureBoundary(BaseModel):
     bounds : `list[tuple[float, float]]`
         RA and Dec in degrees of points defining exposure boundaries counter-clockwise:
         bottom-left, bottom-right, top-right, top-left.
+
     """
+
     expid: int
     center: tuple[float, float]
     bounds: list[tuple[float, float]]
@@ -46,6 +48,7 @@ def ra_dec_to_unit_vector(ra_deg, dec_deg) -> UnitVector3d:
     Returns
     -------
         Unit vector representing RA and Dec.
+
     """
     # Convert degrees to radians
     ra_rad = math.radians(ra_deg)
@@ -73,6 +76,9 @@ def get_exposure_boundary_info(wcs: WCS, corners_only: bool = False) -> (
 
     Returns
     -------
+    tuple
+        Tuple of (corners_x, corners_y, center_x, center_y) in sky coordinates.
+
     """
     if wcs.array_shape:
         npix_y, npix_x = wcs.array_shape
@@ -101,6 +107,7 @@ def add_exposure_boundary_info(metadata: TaskMetadata, wcs: WCS) -> None:
         TaskMetadata instance.
     wcs :
         WCS object with `array_shape` attribute set to `(n_pixels_y, n_pixels_x)`
+
     """
     center_ra, center_dec, ra_lst, dec_lst = get_exposure_boundary_info(wcs)
     metadata.add("center_ra", center_ra)

@@ -7,8 +7,7 @@ from spx_butler import ra_dec_to_unit_vector
 def get_healpix6_ids(primary_calibrators: dict,
                      pixelization: PixelizationABC,
                      list_tiles: bool = False) -> list:
-    """
-    Convert RA/DEC positions of primary calibrators to HEALPix level 6 IDs.
+    """Convert RA/DEC positions of primary calibrators to HEALPix level 6 IDs.
 
     Parameters
     ----------
@@ -23,6 +22,7 @@ def get_healpix6_ids(primary_calibrators: dict,
     -------
     `list`
         List of unique HEALPix level 6 IDs.
+
     """
     healpix_ids = set()
     for name, (ra, dec) in primary_calibrators.items():

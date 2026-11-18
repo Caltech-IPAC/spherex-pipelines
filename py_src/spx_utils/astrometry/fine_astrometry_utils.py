@@ -37,8 +37,7 @@ def _parse_astronet_matches(stdout: str) -> int:
 
 
 def _parse_astronet_pixel_scale(stdout: str) -> float | None:
-    """
-    Parses solve-field stdout for the solve-field pixel scale.
+    """Parse solve-field stdout for the solve-field pixel scale.
 
     Finds all lines like:
     'RA,Dec = (285.622,-55.7909), pixel scale 6.25305 arcsec/pix.'
@@ -81,17 +80,35 @@ def astronet_run(input_image: str | Path,
 
     Parameters
     ----------
-    input_image : str or Path
+    input_image : `str` or `~pathlib.Path`
         Path to the FITS image with initial CRVALs.
-    stripped_image : str or Path
+    stripped_image : `str` or `~pathlib.Path`
         Output path for the SEP + Gaussian-convolved fake source image.
-    wcs_output : str or Path
+    wcs_output : `str` or `~pathlib.Path`
         Output path for the solved WCS header file.
-    index_dir : str
+    index_dir : `str`
         Path to the directory containing astrometry.net index files.
-    crpix : tuple
-        CRPIX values used in the solve-field header.
-    ...
+    crpix : `tuple`, optional
+        CRPIX values used in the solve-field header. Default is (1020.5, 1020.5).
+    pixel_scale_bounds : `tuple`, optional
+        Pixel scale bounds in arcsec/pixel. Default is (6.0, 6.3).
+    tweak_order : `int`, optional
+        SIP polynomial tweak order. Default is 3.
+    pixel_error : `int`, optional
+        Pixel error tolerance. Default is 2.
+    downsample : `int`, optional
+        Downsample factor. Default is 2.
+    extension : `int`, optional
+        FITS extension number. Default is 0.
+    radius : `float`, optional
+        Search radius in degrees. Default is 10.0.
+    sigma_extraction : `float`, optional
+        Sigma for source extraction. Default is 100.
+    verbose : `bool`, optional
+        If True, print verbose output. Default is True.
+    array_id : `int`, optional
+        Detector array ID. Default is 1.
+
     """
     print(f"Detector = {array_id}")
 
@@ -123,6 +140,8 @@ def astronet_run(input_image: str | Path,
 
     min_sources = 1000
     max_sources = 2000
+
+
     sigma_extraction_current = sigma_extraction
     converged = False
 
@@ -226,6 +245,8 @@ def astronet_run_b(input_image: str | Path,
                    verbose: bool = True,
                    array_id: int = 1,
                    num_sources_per_chunk: int = 2000,
+                   astronet_initial_sigma: float | None = None,
+                   astronet_nsigma: int | None = None,
                    ) -> tuple[Path | None, Path, int, float | None]:
     """Run astrometry.net `solve-field` on a stripped source image.
 
@@ -268,6 +289,18 @@ def astronet_run_b(input_image: str | Path,
         downsample_factor = 2
         radius = 10
 
+    if array_id == 6:
+        num_sources_per_chunk = 1000  # or 1500, not ncalibrators
+        astronet_initial_sigma = 25   # or 50
+        pixel_error = 2
+        radius = 10
+
+    if astronet_initial_sigma is not None:
+        initial_sigma = astronet_initial_sigma
+
+    if astronet_nsigma is not None:
+        nsigma = astronet_nsigma
+
     # Store the *base* parameters
     base_params = {
         "radius": radius,
@@ -293,7 +326,7 @@ def astronet_run_b(input_image: str | Path,
 
         if attempt == 0:
             print("\nAttempt 1: With Gaussian filter (if applicable) and base radius")
-            if array_id in [2, 3, 4, 5] and gaussian_kernel is not None:
+            if array_id in [2, 3, 4, 5, 6] and gaussian_kernel is not None:
                 print("Applying Gaussian filter to noisy image...")
                 img_proc = convolve(img_proc, gaussian_kernel, boundary='extend')
 
@@ -303,15 +336,15 @@ def astronet_run_b(input_image: str | Path,
             solve_field_params["downsample"] = 1
 
         elif attempt == 1:
-            if array_id in [1, 6]:
+            if array_id in [1]:
                 continue
-            print(f"\nAttempt: Top {num_sources_per_chunk} sources, NO Gaussian filter")
+            print(f"\nAttempt 2: Top {num_sources_per_chunk} sources, NO Gaussian filter")
             solve_field_params = base_params.copy()
             solve_field_params["radius"] = 10
             solve_field_params["downsample"] = 1
 
         elif attempt == 2:
-            print("\nAttempt: NO filter, tighter radius, increase sigma.")
+            print("\nAttempt 3: NO filter, tighter radius, increase sigma.")
             # We use the clean 'img_proc'
             solve_field_params = base_params.copy()
             initial_sigma = 10
@@ -453,6 +486,7 @@ def se_run(img_path: str | Path,
            detect_thresh: str = '12',
            override_loop: bool = False,
            **kwargs) -> None:
+    """Run SExtractor on an image with adaptive threshold tuning."""
 
     def run_sextractor(detect_thresh_local: str, img_ldac_local: str):
         sextractor_config_file = get_data_file("astrometry/default.sex", package="spx_utils")
@@ -546,7 +580,6 @@ def se_run(img_path: str | Path,
 
     return new_thresh
 
-
 def scamp_run(img_ldac,
               refcat_ldac,
               output,
@@ -570,7 +603,7 @@ def scamp_run(img_ldac,
               checkplot_dev: str = 'NULL',
               write_xml: str = 'N'
               ) -> None:
-
+    """Run SCAMP to perform astrometric calibration against a reference catalog."""
     # Define the SCAMP command with its options
     # https://faun.rc.fas.harvard.edu/ameisner/scamp.pdf
     scamp_config_file = get_data_file("astrometry/scamp.conf", package="spx_utils")
@@ -601,6 +634,7 @@ def scamp_run(img_ldac,
         '-CHECKPLOT_DEV', checkplot_dev,
         '-WRITE_XML', write_xml,
     ]
+    print("RUNNING SCAMP:")
     print(f"distort_degrees = {distort_degrees}")
     print(f"position_maxerr = {position_maxerr}")
     print(f"posangle_maxerr = {posangle_maxerr}")
@@ -664,8 +698,7 @@ def parse_scamp_shift(stderr: str) -> tuple[float, float]:
 
 
 def parse_scamp_counts(stderr: str) -> tuple[int, int]:
-    """
-    Parse SCAMP stderr and extract:
+    """Parse SCAMP stderr and extract:
     - Number of detections loaded from the input image LDAC.
     - Number of standards loaded from the reference LDAC.
 
@@ -675,6 +708,7 @@ def parse_scamp_counts(stderr: str) -> tuple[int, int]:
         Number of detections loaded from the image.
     standards_loaded : int
         Number of standards loaded from the reference catalog.
+
     """
     detections_loaded = None
     standards_loaded = None
@@ -695,8 +729,7 @@ def parse_scamp_counts(stderr: str) -> tuple[int, int]:
 
 
 def check_scamp_matched_warning(stderr: str) -> bool:
-    """
-    Check if SCAMP output contains the 'not enough matched detections' warning.
+    """Check if SCAMP output contains the 'not enough matched detections' warning.
 
     Parameters
     ----------
@@ -707,6 +740,7 @@ def check_scamp_matched_warning(stderr: str) -> bool:
     -------
     bool
         True if the warning is found, False otherwise.
+
     """
     pattern = r"> WARNING: Not enough matched detections in instrument A1"
     found = re.search(pattern, stderr)
@@ -716,13 +750,13 @@ def check_scamp_matched_warning(stderr: str) -> bool:
 
 
 def parse_scamp_contrast(stderr: str) -> float | None:
-    """
-    Extract the final contrast value (last number on the line) from SCAMP output.
+    """Extract the final contrast value (last number on the line) from SCAMP output.
 
     Returns
     -------
     contrast : float or None
         The final contrast value (typically around 1.0), or None if not found.
+
     """
     print(">>> TRY GET CONT.")
     for line in stderr.splitlines():
@@ -746,7 +780,8 @@ def parse_scamp_contrast(stderr: str) -> float | None:
 
 def parse_scamp_daxis(stderr: str) -> tuple[float, float] | None:
     """Parse SCAMP stderr and extract external dAXIS1 and dAXIS2
-       from astrometric stats."""
+    from astrometric stats.
+    """
     # Look for the external astrometric stats block
     pattern = (
         r"----- Astrometric stats \(external\):.*?"
@@ -767,8 +802,7 @@ def parse_scamp_daxis(stderr: str) -> tuple[float, float] | None:
 
 
 def parse_scamp_nstars_external(stderr: str) -> int | None:
-    """
-    Extract the number of external matched stars (nstars) from the
+    """Extract the number of external matched stars (nstars) from the
     "All detections" column in the "Astrometric stats (external)" block.
 
     Parameters
@@ -780,6 +814,7 @@ def parse_scamp_nstars_external(stderr: str) -> int | None:
     -------
     nstars : int or None
         Number of matched external stars ("All detections"), or None if not found.
+
     """
     # This pattern now looks for the (external) block first to avoid
     # matching the (internal) block by mistake.
@@ -807,8 +842,7 @@ def parse_scamp_nstars_external(stderr: str) -> int | None:
 
 
 def parse_scamp_nstars_external_high_sn(stderr: str) -> int | None:
-    """
-    Extract the number of external matched stars (nstars) from the
+    """Extract the number of external matched stars (nstars) from the
     "High S/N" column in the "Astrometric stats (external)" block.
 
     Parameters
@@ -820,6 +854,7 @@ def parse_scamp_nstars_external_high_sn(stderr: str) -> int | None:
     -------
     nstars_high_sn : int or None
         Number of matched external "High S/N" stars, or None if not found.
+
     """
     # This pattern looks for the (external) block, then matches all
     # 7 preceding fields to capture the 8th and final field (High S/N nstars).

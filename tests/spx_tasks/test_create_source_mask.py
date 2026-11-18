@@ -1,11 +1,10 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import numpy as np
 from astropy.table import Table
 from spx_data import SPHERExImage, Flag
 from spx_tasks import CreateSourceMaskTask, CreateSourceMaskConfig
 from spx_tests.sample_data import get_sample_level1b_img
-import astropy.units as u
 from spx_tasks.create_source_mask import mask_dbs_ghosts, dqa_check_dbs_ghost_ext_corners
 
 
@@ -15,9 +14,6 @@ class TestCreateSourceMaskTask(unittest.TestCase):
         # Mock SPHERExImage
         self.spximg = get_sample_level1b_img(seed_number=42, bad_flags=True, no_refs=True)
         self.spximg.data = np.random.uniform(low=10, high=1000, size=self.spximg.data.shape)
-        # Mock Absolute Gain Matrix
-        gm_data = np.ones(self.spximg.data.shape, dtype=np.float32)
-        self.gain_matrix = SPHERExImage(gm_data, unit=u.Unit("MJy / sr") / u.Unit("electron / s"))
 
         # Mock catalog
         nx, ny = self.spximg.data.shape
@@ -27,22 +23,15 @@ class TestCreateSourceMaskTask(unittest.TestCase):
             "ra": [150.0, 151.0, 152.0],
             "dec": [-10.0, -10.5, -11.0],
             "mag_det1": [2.0, 3.0, 4.0],  # Brightness for sources
-            "dQ": [80000, 70000, 10000],  # High enough values to exceed thresholds
+            "do_mask_swir": [1, 0, 1],
+            "do_mask_mwir": [0, 0, 0]
         })
 
         # Mock crosstalk matrix
-        self.xtalk_matrix = MagicMock()
-        self.xtalk_matrix.data = np.random.rand(4, 4, 4)
 
         # Configuration
         self.config = CreateSourceMaskConfig()
-        self.config.minmag = 0.0
-        self.config.maxmag = 20.0
-        self.config.dmag = 1.0
-        # Lower threshold for crosstalk
-        self.config.limiting_xtalk_current = 400.0
         # Increase likelihood of coupling
-        self.config.xtalk_amplitude_thresh = 1e-4
         self.config.ghost_radius = 2
         self.config.edge_mag_limit = 11.0
         self.config.edge_offset_min = 10.0
@@ -75,9 +64,6 @@ class TestCreateSourceMaskTask(unittest.TestCase):
             source_mask = mask_sources(
                 spximg=self.spximg,
                 cat=self.catalog,
-                minmag=self.config.minmag,
-                maxmag=self.config.maxmag,
-                dmag=self.config.dmag,
                 blended_params_dict=blended_params_dict,
                 plot_this=False,
             )
@@ -86,6 +72,8 @@ class TestCreateSourceMaskTask(unittest.TestCase):
 
         # New check: blended model was actually used
         self.assertGreater(mock_blended.call_count, 0)
+        called_mags = [float(call.args[0]) for call in mock_blended.call_args_list]
+        self.assertEqual(called_mags, [2.0, 4.0])
 
         # Sanity check it was called with mags from the current band
         band = self.spximg.getArrayId()
@@ -95,41 +83,75 @@ class TestCreateSourceMaskTask(unittest.TestCase):
         self.assertIn(first_called_mag, mags.tolist())
 
     def test_mask_crosstalk(self):
-        """Test the mask_crosstalk function."""
+        """Test the new table-driven mask_crosstalk function."""
         from spx_tasks.create_source_mask import mask_crosstalk
 
-        crosstalk_mask = mask_crosstalk(
-            spximg=self.spximg,
-            cat=self.catalog,
-            limiting_xtalk_current=self.config.limiting_xtalk_current,
-            t_int=self.spximg.header["TINT"],
-            xtalk_coupling_matrix=self.xtalk_matrix.data,
-            xtalk_amplitude_thresh=self.config.xtalk_amplitude_thresh,
-            abs_gain_matrix=self.gain_matrix
+        self.spximg.setArrayId(array_id=1)
+
+        ny, nx = 256, 320
+        self.spximg.data = np.zeros((ny, nx), dtype=float)
+        self.spximg.flags = np.zeros((ny, nx), dtype=np.int32)
+
+        chwidth = nx // 32
+
+        src_chan = 3
+        x0 = src_chan * chwidth
+        x1 = x0 + chwidth
+        self.spximg.data[100:110, x0:x1] = 100.0
+
+        tgt_chan = 7
+
+        # Build Class 2 as a table with 32 columns x 32 rows
+        class2 = np.zeros((32, 32), dtype=float)
+        class2[src_chan, tgt_chan] = 0.02
+
+        xtalk_class2 = Table(
+            {str(i): class2[:, i] for i in range(32)}
         )
+
+        # Build Class 1 as a table with Channel / Coupling Amplitude columns
+        class1 = np.zeros(32, dtype=float)
+        class1[src_chan] = 0.02
+
+        xtalk_class1 = Table({
+            "Channel": np.arange(1, 33, dtype=int),
+            "Coupling Amplitude": class1,
+        })
+
+        with patch(
+            "spx_tasks.create_source_mask._prepare_xtalk_full_frame",
+            return_value=(self.spximg.data.copy(), (slice(0, ny), slice(0, nx))),
+        ):
+            crosstalk_mask = mask_crosstalk(
+                spximg=self.spximg,
+                xtalk_class2=xtalk_class2,
+                xtalk_class1=xtalk_class1,
+                xtalk_threshold=0.3,
+                gaussian_sigma=0.0,
+                class1_swir_detectors=(1, 2, 3),
+            )
 
         self.assertIsInstance(crosstalk_mask, np.ndarray)
-        # Ensure some mask applied
-        self.assertTrue(np.any(crosstalk_mask > 0))
+        self.assertEqual(crosstalk_mask.dtype, bool)
+        self.assertEqual(crosstalk_mask.shape, self.spximg.data.shape)
+        self.assertTrue(np.any(crosstalk_mask))
 
-    def test_run_task(self):
-        """Test the full pipeline task."""
-        task = CreateSourceMaskTask(config=self.config)
-
-        # Run the task
-        output = task.run(
-            spximg=self.spximg,
-            srccat=self.catalog,
-            ssocat=None,
-            # xtalk_coupling_matrix=self.xtalk_matrix,
-            abs_gain_matrix=self.gain_matrix,
-            plot=False,
-            verbose=False,
+        tgt_x0 = tgt_chan * chwidth
+        tgt_x1 = tgt_x0 + chwidth
+        self.assertTrue(
+            np.any(crosstalk_mask[100:110, tgt_x0:tgt_x1]),
+            "Expected Class 2 crosstalk mask in target channel."
         )
 
-        # Validate the output
-        spximg_out = output.spximg_out
-        self.assertIsInstance(spximg_out, SPHERExImage)
+        self.assertTrue(
+            np.any(crosstalk_mask[132:142, x0:x1]),
+            "Expected Class 1 crosstalk mask shifted by +32 pixels."
+        )
+
+        self.assertFalse(
+            np.any(crosstalk_mask[:32, x0:x1]),
+            "Bottom 32 rows should be unmasked for Class 1."
+        )
 
     def test_mask_dbs_ghosts(self):
         """Test the mask_dbs_ghosts function."""
@@ -342,7 +364,8 @@ class TestCreateSourceMaskTask(unittest.TestCase):
 
     def test_run_task_wcs_failure_finast_nonzero_skips_masks(self):
         """If masking throws WCS error and FINAST!=0,
-           task should skip masking and return cleanly."""
+        task should skip masking and return cleanly.
+        """
         task = CreateSourceMaskTask(config=self.config)
 
         # Ensure FINAST != 0 to activate the skip branch
@@ -363,7 +386,6 @@ class TestCreateSourceMaskTask(unittest.TestCase):
             output = task.run(
                 spximg=self.spximg,
                 srccat=self.catalog,
-                abs_gain_matrix=self.gain_matrix,
                 plot=False,
                 verbose=False,
             )
@@ -391,7 +413,8 @@ class TestCreateSourceMaskTask(unittest.TestCase):
 
     def test_run_task_wcs_failure_finast_zero_reraises(self):
         """If masking throws and FINAST==0, the task should raise error,
-           and treat as real bug."""
+        and treat as real bug.
+        """
         task = CreateSourceMaskTask(config=self.config)
 
         # Ensure FINAST == 0
@@ -408,12 +431,106 @@ class TestCreateSourceMaskTask(unittest.TestCase):
                 task.run(
                     spximg=self.spximg,
                     srccat=self.catalog,
-                    abs_gain_matrix=self.gain_matrix,
                     plot=False,
                     verbose=False,
                 )
 
         mock_mask_sources.assert_called_once()
+
+    def test_run_task_planet_masking_sets_source_flag(self):
+        """Test that bright planet masking (mask_planets) contributes to Flag.SOURCE."""
+        from spx_tasks.create_source_mask import mask_planets
+
+        task = CreateSourceMaskTask(config=self.config)
+
+        # Make this test only about planet masking
+        self.config.mask_planets = True
+        self.config.mask_xtalk = False
+        self.config.mask_ghosts = False  # isolate; also avoids other flags changing
+
+        # A minimal ssocat table. run() expects RA/DEC columns named "RA"/"DEC"
+        # and uses config.planet_name_col (default "desig").
+        ssocat = Table({
+            "RA": [150.0],
+            "DEC": [-10.0],
+            "desig": ["Jupiter"],  # must match compute_planet_mask_radius accepted names
+        })
+
+        ny, nx = self.spximg.data.shape
+        # Pick a safe in-bounds pixel position for the planet center
+        planet_x = float(nx // 2)
+        planet_y = float(ny // 2)
+
+        # Force a small radius for just this test
+        # fast and independent of detector geometry
+        forced_radius = 6.0
+
+        # Expected mask computed from the ``real mask_planets()``,
+        # with deterministic WCS + radius.
+        with (
+            patch(
+                "spx_tasks.create_source_mask.mask_sources",
+                return_value=np.zeros_like(self.spximg.data, dtype=bool),
+            ) as mock_mask_sources,
+            patch(
+                "spx_tasks.create_source_mask.compute_planet_mask_radius",
+                return_value=forced_radius,
+            ) as mock_planet_radius,
+            patch.object(
+                self.spximg.wcs,
+                "world_to_pixel_values",
+                return_value=(np.array([planet_x]), np.array([planet_y])),
+            ) as mock_wcs,
+        ):
+            planet_mask_radii = {
+                "jupiter": list(self.config.planet_radii_jupiter),
+                "saturn barycenter": list(self.config.planet_radii_saturn_barycenter),
+                "mars": list(self.config.planet_radii_mars),
+                "uranus": list(self.config.planet_radii_uranus),
+                "neptune": list(self.config.planet_radii_neptune),
+                "phoebe": list(self.config.planet_radii_phoebe)}
+
+            expected_planet_mask = mask_planets(
+                spximg=self.spximg,
+                ssocat=ssocat,
+                planet_mask_radii=planet_mask_radii,
+                name_col=self.config.planet_name_col,
+                ra_col="RA",
+                dec_col="DEC",
+            )
+
+            output = task.run(
+                spximg=self.spximg,
+                srccat=self.catalog,
+                ssocat=ssocat,
+                plot=False,
+                verbose=False,
+            )
+
+        spximg_out = output.spximg_out
+        self.assertIsInstance(spximg_out, SPHERExImage)
+
+        # Sanity check: did go through the planet codepath
+        mock_mask_sources.assert_called_once()
+        mock_planet_radius.assert_called()  # called at least once per planet row
+        mock_wcs.assert_called()            # planet WCS conversion executed
+
+        # The task sets Flag.SOURCE for planets (see: whpl_type1mask |= planet_mask)
+        out_source_mask = (spximg_out.flags & Flag.SOURCE) > 0
+
+        # Planet mask should match exactly because we patched mask_sources -> all False
+        np.testing.assert_array_equal(
+            out_source_mask,
+            expected_planet_mask,
+            err_msg="Output SOURCE mask did not match expected planet mask."
+        )
+
+        # Ensure planet masking actually masked something
+        self.assertGreater(
+            int(np.count_nonzero(out_source_mask)),
+            0,
+            "Planet masking produced zero masked pixels unexpectedly."
+        )
 
 
 if __name__ == "__main__":

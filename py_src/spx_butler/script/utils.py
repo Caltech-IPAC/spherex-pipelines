@@ -25,11 +25,12 @@ def apply_config_overrides(config: pexConfig.Config, config_override_file: str, 
 
 
 def show_config(config: pexConfig.Config) -> None:
-    """Dump configuration to standard output
+    """Dump configuration to standard output.
 
     Parameters
     ----------
-    config : pexConfig.Config
+    config : `pexConfig.Config`
+        The configuration object to display.
 
     """
     stream = sys.stdout

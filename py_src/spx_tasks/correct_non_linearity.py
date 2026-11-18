@@ -50,6 +50,8 @@ class CorrectNonLinearityConnections(pipeBase.PipelineTaskConnections,
 
 class CorrectNonLinearityConfig(pipeBase.PipelineTaskConfig,
                                 pipelineConnections=CorrectNonLinearityConnections):
+    """Configuration for CorrectNonLinearity task."""
+
     t_exp = Field(
         "Time the detector accumulated charge, measured in seconds.",
         dtype=float,
@@ -82,6 +84,7 @@ def dqa_check_nonlinear_flux_with_residuals(spximg_before,
     -------
     `dict`
         DQA result with status and message.
+
     """
     # Select all pixels not flagged NONLINEAR
     corr_mask = (
@@ -153,6 +156,7 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "correct-non-linearity"
@@ -170,7 +174,7 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
             nonlin_pars: NonLinearityParameters,
             gain_factors: GainFactors,
             ) -> pipeBase.Struct:
-        """Applies non-linearity correction to active area pixel flux.
+        """Apply non-linearity correction to active area pixel flux.
 
         Parameters
         ----------
@@ -202,6 +206,7 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
           e.g. there are 18 total non-linearity parameter image arrays.
         - Input calibration parameters in active area shape,
           while input image is in L1 shape.
+
         """
         spximg_before = spximg.copy()
         self.log.debug("Running createVarianceMap with input image ID: %s",
@@ -214,12 +219,11 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
         q_nl = nonlin_pars.get_extension_data('Q_nl')
         nl_thresh = nonlin_pars.get_extension_data('Qmax')
 
-        if nonlin_pars.get_extension_data('b1') is not None:
-            trnsnt_1 = nonlin_pars.get_extension_data('b1').flatten()
-        if nonlin_pars.get_extension_data('b2') is not None:
-            trnsnt_2 = nonlin_pars.get_extension_data('b2').flatten()
-        if nonlin_pars.get_extension_data('b3') is not None:
-            trnsnt_3 = nonlin_pars.get_extension_data('b3').flatten()
+        # all extensions must exist in practice
+        # (KeyError would have been raised otherwise)
+        trnsnt_1 = nonlin_pars.get_extension_data('b1')
+        trnsnt_2 = nonlin_pars.get_extension_data('b2')
+        trnsnt_3 = nonlin_pars.get_extension_data('b3')
 
         # Get SUR count at which transient detection begins.
         if "TRANDLY" in spximg.header:
@@ -343,7 +347,7 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
             linear_mask = ~over_qmax
 
             if np.any(linear_mask):
-                if label == "trnsnt" and np.all([trnsnt_1, trnsnt_2, trnsnt_3]):
+                if label == "trnsnt" and any(np.any(arr) for arr in [trnsnt_1, trnsnt_2, trnsnt_3]):
                     tr1 = trnsnt_1[mask]
                     tr2 = trnsnt_2[mask]
                     tr3 = trnsnt_3[mask]
@@ -372,7 +376,7 @@ class CorrectNonLinearityTask(pipeBase.PipelineTask):
         spximg.meta["NL_DQA"] = (qa_result["result"], "Nonlinearity DQA status (PASS/FAIL)")
         spximg.meta["corlim"] = (qa_result["corlim"], "Max allowed fractional correction for DQA")
         spximg.meta["medres"] = (qa_result["medres"],
-                                 "Median fractional correction residual after NL correction")
+                                 "Median fractional NL correction residual")
 
         if qa_result["result"] == "PASS":
             spximg.meta["n_corr"] = (qa_result["n_corr"],

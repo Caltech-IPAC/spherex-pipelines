@@ -14,7 +14,7 @@ from spx_butler.script.createCalibratorTaggedCollection import (
 
 @pytest.fixture
 def runner():
-    """Provides a Click test runner."""
+    """Provide a Click test runner."""
     return CliRunner()
 
 

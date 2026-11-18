@@ -60,7 +60,7 @@ class SlackWebhookNotifier:
 
     @staticmethod
     def _format_message(message: str, title: str) -> dict:
-        """Formats a message for the Slack bot to notify a channel about.
+        """Format a message for the Slack bot to notify a channel about.
 
         Parameters
         ----------
@@ -74,6 +74,7 @@ class SlackWebhookNotifier:
         `dict`
             Payload that includes message written to the Slack channel by the
             Slack bot.
+
         """
         return {
             "attachments": [
@@ -119,7 +120,7 @@ class SlackWebhookNotifier:
     def send_notification(
         self, message: str, title: str = "Processing Summary"
     ) -> None:
-        """Sends the notification to channel through Slack bot.
+        """Send the notification to channel through Slack bot.
 
         Parameters
         ----------
@@ -127,6 +128,7 @@ class SlackWebhookNotifier:
             Message bot will present.
         title : `str`
             Title of message, by default "Processing Summary".
+
         """
         payload = self._format_message(message, title)
 
@@ -181,6 +183,7 @@ class SlackBotNotifier:
         -------
         `SlackResponse`
             Slack URL to upload files to.
+
         """
         upload_url = slack_client.files_getUploadURLExternal(
             token=self.bot_token,
@@ -212,7 +215,7 @@ class SlackBotNotifier:
         retry_error_callback=log_final_error,
     )
     def _upload_file_to_url(self, file: Path, upload_url: SlackResponse) -> None:
-        """Uploads file to specified Slack URL.
+        """Upload file to specified Slack URL.
 
         Parameters
         ----------
@@ -220,6 +223,7 @@ class SlackBotNotifier:
             Path to file to upload.
         upload_url : `SlackResponse`
             Upload url.
+
         """
         payload = {
             "filename": file.name,
@@ -258,6 +262,7 @@ class SlackBotNotifier:
             Upload url.
         message : `str`
             Slack message to send.
+
         """
         slack_client.files_completeUploadExternal(
             token=self.bot_token,
@@ -275,6 +280,7 @@ class SlackBotNotifier:
             Path to file to upload.
         message : `str`
             Slack message to send.
+
         """
         try:
             slack_client = WebClient(token=self.bot_token)

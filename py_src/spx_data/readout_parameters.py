@@ -50,7 +50,9 @@ class ReadoutParameters:
         Derived. Total number of rows in a data frame.
     Kframe : `int`
         Derived. Total number of columns in a data frame.
+
     """
+
     nref: int = readout_params.Nvisit_row
     nskip: int = readout_params.Nskip
     Mphan: int = readout_params.Mphan
@@ -93,6 +95,7 @@ class ReadoutParameters:
         -------
         result : `list of tuples`
             List of (name, value, description) tuples describing the parameters.
+
         """
         return [
             ("NSKIP", self.nskip, "Number of rows skipped after a full row is read"),
@@ -130,6 +133,7 @@ class ReadoutParameters:
         Either the number of readout channels or the number of columns
         in a readout channel must be in the metadata.
         Throws and exception if both are not availabe.
+
         """
         nchannel = meta.get("NCHANNEL")
         wchannel = meta.get("WCHANNEL")

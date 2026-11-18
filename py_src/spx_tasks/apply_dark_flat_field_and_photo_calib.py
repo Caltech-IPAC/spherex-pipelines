@@ -35,6 +35,7 @@ def dqa_check_flat_field(spximg: SPHERExImage,
     -------
     dqa_result : `dict`
         Result dictionary with 'result' and 'description' for Level2DQA.
+
     """
     array_id = spximg.getArrayId()
     median = np.median(abs_gain_matrix.data)
@@ -71,7 +72,9 @@ class ArrayCalValues:
     -----
     Coded here because we will not have access
     to these numbers with in-orbit data taking.
+
     """
+
     cal_values: dict = field(default_factory=lambda: {
         1: 8.286700087641215,
         2: 8.38949569816677,
@@ -113,6 +116,8 @@ class ApplyDarkFlatFieldAndPhotoCalibConnections(pipeBase.PipelineTaskConnection
 
 class ApplyDarkFlatFieldAndPhotoCalibConfig(pipeBase.PipelineTaskConfig,
                                             pipelineConnections=ApplyDarkFlatFieldAndPhotoCalibConnections):
+    """Configuration for ApplyDarkFlatFieldAndPhotoCalib task."""
+
     dqa_threshold = Field(
         "Percentage tolerance for dqa test",
         dtype=float,
@@ -140,6 +145,7 @@ class ApplyDarkFlatFieldAndPhotoCalibTask(pipeBase.PipelineTask):
     - Pass module inputs as arguments of the ``run`` method.
     - Module outputs are returned by the ``run`` method as
       attributes of a `~dataclasses.dataclass` object.
+
     """
 
     _DefaultName = "apply-photometric-calibration"
@@ -174,10 +180,10 @@ class ApplyDarkFlatFieldAndPhotoCalibTask(pipeBase.PipelineTask):
         spximg_out.unit *= abs_gain_matrix.unit
         # Convert variance unit from (e/s)**2 to (MJy/sr)**2
         spximg_out.uncertainty.unit *= abs_gain_matrix.unit**2
-        # Output SPHERExImage
 
         # L2 DQA
         _ = dqa_check_flat_field(spximg_out, abs_gain_matrix)
+        # Output SPHERExImage
         spximg_out.header["BUNIT"] = "MJy/sr"
 
         return pipeBase.Struct(spximg_out=spximg_out)

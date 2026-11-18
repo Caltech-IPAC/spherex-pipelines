@@ -8,7 +8,7 @@ from click import File
 
 # Functions
 def make_plan_table(plan_file: File, plan_format: str) -> Table:
-    """Makes an astropy table from a plan file.
+    """Make an astropy table from a plan file.
 
     Parameters
     ----------
@@ -21,5 +21,6 @@ def make_plan_table(plan_file: File, plan_format: str) -> Table:
     -------
     plan_tab: astropy.table.Table
         Table of plan file observations
+
     """
     return Table.read(plan_file.read(), format=plan_format)
