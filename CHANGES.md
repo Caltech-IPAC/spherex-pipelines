@@ -1,3 +1,10 @@
+## SPHEREx Pipelines  (2026-05-13)
+
+
+### New Features
+- Support the new "go-back" flag for Survey 3/4 ops in PEF ingestion. [[#SP-2129](https://jira.ipac.caltech.edu/browse/SP-2129)]
+
+
 ## SPHEREx Pipelines 6.5.6 (2026-03-23)
 
 

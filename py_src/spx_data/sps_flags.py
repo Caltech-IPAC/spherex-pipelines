@@ -14,6 +14,8 @@ class SPSFlag(IntFlag):
     EARTH_STRAYLIGHT = 1 << 5  # observation is a part of Earth Stray Light test
     MOON_STRAYLIGHT = 1 << 6  # observation is a part of Moon Stray Light test
     SPECIAL = 1 << 7  # Targeted observations of comet 3I/Atlas
+    GO_BACK_S12 = 1 << 8  # # Go back observations for Surveys 1/2,
+    # to be executed in Surveys 3/4 (or later)
 
     @classmethod
     def from_string(cls, sps_flag: str) -> int:
@@ -39,7 +41,14 @@ class SPSFlag(IntFlag):
         -----
         The flag logic will be updated as the PEF item information evolves.
         SPS flags: deep_south, deep_north, all_sky, downlink, saa,
-        earth_straylight, moon_straylight, special.
+        earth_straylight, moon_straylight, special, go_back_s12.
+
+        According to current policy, the PEF "go-back"
+        mechanism will only be used on all-sky targets
+        from previous surveys, so we add the all_sky flag
+        to our copy of the SPS flags to make it clear
+        that go-backs are part of the all-sky survey.
+
         """
         flag_list = [x.strip() for x in sps_flag.split(',')]
         flag_dict = {
@@ -50,14 +59,18 @@ class SPSFlag(IntFlag):
             'saa': SPSFlag.SAA,
             'earth_straylight': SPSFlag.EARTH_STRAYLIGHT,
             'moon_straylight': SPSFlag.MOON_STRAYLIGHT,
-            'special': SPSFlag.SPECIAL
+            'special': SPSFlag.SPECIAL,
+            'go_back_s12': SPSFlag.GO_BACK_S12
         }
+        go_back_dict = {'go_back_s12': SPSFlag.GO_BACK_S12}
         sps_flag_int = 0
         for flag in flag_list:
             if flag not in flag_dict:
                 raise ValueError(f'Not a valid metadata flag: {flag}')
+            if flag in go_back_dict:
+                # Add all_sky flag when go_back flag occurs.
+                sps_flag_int |= SPSFlag.ALL_SKY
             sps_flag_int |= flag_dict[flag]
-
         return int(sps_flag_int)
 
     @classmethod

@@ -28,6 +28,7 @@ dependencies = [
     "joblib",
     "kete==1.0.6",
     "lsst_ctrl_mpexec",
+    "lsst-ctrl-bps-parsl==30.2026.300",
     "lsst_pipe_base",
     "lsst_daf_butler[postgres]",
     "matplotlib",

@@ -58,7 +58,7 @@ variety of constraints, but we make every effort to ensure that the public versi
 accurate copy of the code actually executed.
 
 For the initial public software release, including snapshots of R6.4, R6.5.3, R6.5.4, R6.5.5,
-and R6.5.6, a limited number of retroactive changes were made from the as-executed code,
+R6.5.6, and R6.5.7, a limited number of retroactive changes were made from the as-executed code,
 including removing internal execution environment details and a very small number of
 incorrect comments.
 These changes have also been made to the head of internal development, and we expect that
