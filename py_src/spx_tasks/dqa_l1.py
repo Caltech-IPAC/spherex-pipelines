@@ -91,7 +91,7 @@ class DQAL1Config(pipeBase.PipelineTaskConfig, pipelineConnections=DQAL1Connecti
     nan_flag_mask = Field(
         doc="Bitmask of flags that justify NaN or Inf values in L1.",
         dtype=int,
-        default=(Flag.MISSING_DATA | Flag.NONFUNC | Flag.SUR_ERROR)
+        default=(Flag.MISSING_DATA | Flag.NONFUNC | Flag.SUR_ERROR | Flag.PHANMISS)
     )
 
     max_transient_pix = Field(
@@ -211,7 +211,7 @@ class DQAL1Task(pipeBase.PipelineTask):
 
         # Flag array has the correct size and bit depth
         shape_cond = (spximg.flags.shape == (2072, 2176))
-        bit_cond = (spximg.flags.dtype == np.int32)
+        bit_cond = (spximg.flags.dtype == np.int16)
         message = f"Flag array has shape {spximg.flags.shape} and "\
                   f"element type {spximg.flags.dtype.name}."
         flags_test_1 = {
@@ -219,6 +219,8 @@ class DQAL1Task(pipeBase.PipelineTask):
             "description": "Flag array has the correct shape (2072, 2176) and bit depth (16)."
         }
         log_threshold_test(self.log.logger, flags_test_1, warning_message=message)
+        if not (shape_cond & bit_cond):
+            dqa_result = False
 
         nan_check_pass, nan_percentage = DQAL1Task().check_nan_percent(spximg)
         if nan_check_pass is False:

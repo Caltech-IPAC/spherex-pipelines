@@ -25,7 +25,16 @@ from spx_apps.common_cli import runid_option, jobid_option, result_dir_option, \
     parse_detectors, parse_time, fake_option, use_deep_option, validate_writable
 from spx_apps.photometry_tool.temp_butler import populate_temp_butler_from_export
 from ..exceptions import EmptyMosaicQueryError
-from ..temp_butler import collect_inputs_for_temp_butler
+from ..hips_builder import (
+    HIPS_ORDER_MIN,
+    HIPS_ORDER_MAX,
+    build_hips_tile_from_temp_butler,
+)
+from ..hips_grid import hips_pixel_scale_arcsec, npix_for_coordinate
+from ..temp_butler import (
+    collect_inputs_for_temp_butler,
+    collect_inputs_for_hips_tile,
+)
 from lsst.daf.butler import Butler, MissingDatasetTypeError
 # Global variables for timing
 _start_time = None
@@ -504,7 +513,7 @@ def create_mosaic(
                 collect_result = pool.apply_async(
                     collect_inputs_for_temp_butler,
                     args=(butler_repo, tmp_dir, center, size,
-                        rotation, time, detectors, pixel_scale_deg, use_deep)
+                          rotation, time, detectors, pixel_scale_deg, use_deep)
                 )
                 # This will automatically propagate exceptions from the child process
                 collect_results = collect_result.get()
@@ -594,7 +603,294 @@ def create_mosaic(
             safe_exit(exit_code)
 
 
+def validate_hips_tile(ctx, param, value):
+    if value is None:
+        return None
+    try:
+        order_str, npix_str = value.split(",")
+        order, npix = int(order_str), int(npix_str)
+    except ValueError:
+        raise click.BadParameter(
+            f"Invalid --hips-tile format: '{value}', expected order,npix (integers)"
+        )
+    if not (HIPS_ORDER_MIN <= order <= HIPS_ORDER_MAX):
+        raise click.BadParameter(
+            f"Invalid HiPS order {order}: must be in [{HIPS_ORDER_MIN}, {HIPS_ORDER_MAX}]."
+        )
+    npix_max = 12 * (1 << (2 * order))
+    if not (0 <= npix < npix_max):
+        raise click.BadParameter(
+            f"Invalid HiPS npix {npix}: must be in [0, {npix_max}) for order {order}."
+        )
+    return (order, npix)
+
+
+def validate_hips_order(ctx, param, value):
+    if value is None:
+        return None
+    if not (HIPS_ORDER_MIN <= value <= HIPS_ORDER_MAX):
+        raise click.BadParameter(
+            f"Invalid HiPS order {value}: must be in [{HIPS_ORDER_MIN}, {HIPS_ORDER_MAX}]."
+        )
+    return value
+
+
+def validate_optional_center(ctx, param, value):
+    if not value:
+        return None
+    return validate_center(ctx, param, value)
+
+
+def _default_hips_jobid(argv):
+    """Derive the default HiPS job identifier, Norder{order}Npix{npix},
+    from the tile-selection arguments in `argv`.
+
+    Returns None if the tile cannot be determined from the arguments;
+    proper validation errors are raised later by the click callbacks.
+    """
+    def extract(key):
+        if key in argv:
+            try:
+                return argv[argv.index(key) + 1]
+            except IndexError:
+                return None
+        for arg in argv:
+            if arg.startswith(f"{key}="):
+                return arg.split("=", 1)[1]
+        return None
+
+    try:
+        tile = extract("--hips-tile")
+        if tile is not None:
+            order, npix = (int(v) for v in tile.split(","))
+            return f"Norder{order}Npix{npix}"
+        order = extract("--hips-order")
+        center = extract("--center")
+        if order is not None and center is not None:
+            ra, dec = (float(v) for v in center.split(","))
+            return f"Norder{int(order)}Npix{npix_for_coordinate(int(order), ra, dec)}"
+    except ValueError:
+        return None
+    return None
+
+
+@click.command()
+@result_dir_option()
+@err_dir_option()
+@runid_option("hips")
+@click.option(
+    '--jobid',
+    default=None,
+    help=(
+        "Allows the UWS system to pass in the opaque UWS 'Job Identifier' by which the job "
+        "is referenceable in the REST API. Optional for HiPS tile jobs; defaults to "
+        "Norder{order}Npix{npix} derived from the tile selection. This is not the same as "
+        "the UWS 'Run ID' which is set by the user and passed to the tool via the --runid option."
+    )
+)
+@tmp_dir_option()
+@log_dir_option()
+@use_deep_option()
+@click.option("--hips-tile", callback=validate_hips_tile, default=None,
+              help=f"""HiPS tile to build, as ORDER,NPIX. ORDER is the HiPS
+                    tile order (HEALPix NSIDE = 2^ORDER), allowed range
+                    [{HIPS_ORDER_MIN},{HIPS_ORDER_MAX}]; NPIX is the HEALPix
+                    NESTED pixel index of the tile at that order. The tile
+                    fully determines the output grid: 512x512 pixels in the
+                    HPX projection, matching the HiPS 1.0 standard tiling
+                    (~12.88 arcsec pixels at order 5). Incompatible with
+                    --hips-order. Example: --hips-tile=5,1000.""")
+@click.option("--hips-order", type=int, callback=validate_hips_order, default=None,
+              help=f"""HiPS tile order, allowed range
+                    [{HIPS_ORDER_MIN},{HIPS_ORDER_MAX}]. Must be combined with
+                    --center: the tile containing that coordinate is built.
+                    Incompatible with --hips-tile. Example: --hips-order=5.""")
+@click.option("--center", callback=validate_optional_center, default=None,
+              help="""Sky coordinate selecting the tile, used with
+                    --hips-order. Values are in ICRS degrees, with ra in
+                    [0, 360) and dec in [-90, 90]. Note that unlike
+                    create-mosaic, the coordinate does not become the mosaic
+                    center; it only identifies the HiPS tile containing it.
+                    Example: --center=6.2001,-14.8314.""")
+@click.option("--channel-range", callback=validate_channel_range, default=None,
+              help="""Range of central wavelengths of standard SPHEREx
+                    spectral channels to include in the result. Values are
+                    in microns and must be in range [0.75,5]. Default is
+                    the 102 standard channels.""")
+@click.option("--time", default=None,
+              help="""Time restriction. Values are in days, as MJD values,
+                    following the IVOA DALI and SIAv2 standards. Restricts
+                    the selection of Level 2 LVF images used as input.
+                    The min value may be given as -Inf and the max value as
+                    +Inf. Defaults to no restriction.""")
+@click.option("--detector", multiple=True, type=str,
+              help="""Detector label: D1, D2, D3, D4, D5, or D6. Restricts
+                    inputs to come from the named detector(s). Defaults to
+                    no restriction.""")
+@click.option('--verbose/--no-verbose', default=False, show_default=True,
+              help="Turns on additional verbosity in a job's logging.")
+@click.option('--compress', is_flag=True, default=True, show_default=True,
+              help="Compress output cube with gzip (produces .fits.gz instead of .fits).")
+def create_hips_tile(
+    result_dir,
+    err_dir: str,
+    runid: str,
+    jobid: str,
+    tmp_dir: str,
+    log_dir: str,
+    use_deep: bool,
+    hips_tile,
+    hips_order,
+    center,
+    channel_range,
+    time,
+    detector,
+    verbose: bool,
+    compress: bool
+):
+    """Create a HiPS tile spectral cube from SPHEREx data.
+
+    Builds a mosaic cube whose spatial grid is one HiPS tile (HiPS 1.0
+    standard: 512x512 pixels, HPX projection, NESTED tile numbering).
+    The output cube is written under the HiPS directory convention
+    Norder{order}/Dir{D}/Npix{npix}_cube.fits inside the result directory.
+    """
+    log_file = None
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.FileHandler):
+            log_file = handler.baseFilename
+            break
+    error_symlink = pathlib.Path(os.path.join(err_dir, "error"))
+    time = parse_time(time)
+    detectors = parse_detectors(detector)
+
+    # Resolve the tile selection
+    if hips_tile is not None and hips_order is not None:
+        raise click.BadParameter(
+            "Options --hips-tile and --hips-order are mutually exclusive."
+        )
+    if hips_tile is None:
+        if hips_order is None:
+            raise click.BadParameter(
+                "Either --hips-tile or --hips-order with --center is required."
+            )
+        if center is None:
+            raise click.BadParameter(
+                "--hips-order requires --center to select the tile."
+            )
+        hips_tile = (hips_order, npix_for_coordinate(hips_order, center[0], center[1]))
+    elif center is not None:
+        raise click.BadParameter("--center can only be used with --hips-order.")
+    order, npix = hips_tile
+
+    if jobid is None:
+        # Must match the derivation in _default_hips_jobid(), which names
+        # the log file before click parses the command line.
+        jobid = f"Norder{order}Npix{npix}"
+
+    logging.info("HiPS tile configuration:")
+    logging.info(f"  Order: {order}, Npix: {npix}")
+    logging.info(f"  Pixel scale: {hips_pixel_scale_arcsec(order):.2f} arcsec")
+    logging.info(f"  Channel range: {channel_range}")
+    logging.info(f"  Time: {time}")
+    logging.info(f"  Detector(s): {detectors}")
+    logging.info(f"  Verbose: {verbose}")
+    logging.info(f"  Compress: {compress}")
+    logging.info(f"  Run ID: {runid}, Job ID: {jobid}")
+    logging.info(f"  Result dir: {result_dir}")
+    logging.info(f"  Temp dir: {tmp_dir}, Error dir: {err_dir}, Log dir: {log_dir}")
+
+    butler_repo = os.getenv("SPXTOOL_BUTLER")
+    try:
+        butler = Butler(butler_repo)
+        logging.info(f"Butler {butler} exists")
+    except Exception as e:
+        error_description = f"Butler ({butler_repo}) does not exist or is not a valid Butler path."
+        logging.error(e)
+        logging.error(error_description)
+
+        generate_error_summary(message=error_description, error_dir=err_dir,
+                               write_to_file=True, error_type="fatal")
+        if log_dir is not None:
+            error_symlink.unlink(missing_ok=True)
+            error_symlink.symlink_to(log_file)
+        safe_exit(11)
+
+    try:
+        # Create pool for collect process
+        with multiprocessing.Pool(processes=1) as pool:
+            collect_result = pool.apply_async(
+                collect_inputs_for_hips_tile,
+                args=(butler_repo, tmp_dir, order, npix,
+                      time, detectors, use_deep)
+            )
+            # This will automatically propagate exceptions from the child process
+            collect_results = collect_result.get()
+        logging.info(f"Temp butler root: {collect_results['temp_butler_root']}")
+        logging.info(f"export_file: {collect_results['export_file']}")
+        logging.info(f"coverage_table:\n{collect_results['coverage_table']}")
+        # Create pool for populate process
+        with multiprocessing.Pool(processes=1) as pool:
+            populate_result = pool.apply_async(
+                populate_temp_butler_from_export,
+                args=(
+                    collect_results["temp_butler_root"],
+                    collect_results["export_file"],
+                    collect_results["coverage_table"]
+                )
+            )
+            # This will also automatically propagate exceptions
+            populate_results = populate_result.get()
+
+        logging.info(f'Temp butler root: {populate_results["temp_butler_root"]}')
+
+        # ================================================================
+        # HIPS TILE BUILDING
+        # ================================================================
+        with tempfile.TemporaryDirectory(
+            dir=tmp_dir, prefix="channel_mosaics_"
+        ) as channel_mosaics_dir:
+            output_filepath = build_hips_tile_from_temp_butler(
+                temp_butler_root=populate_results["temp_butler_root"],
+                hips_order=order,
+                hips_npix=npix,
+                output_dir=result_dir,
+                channel_mosaics_dir=channel_mosaics_dir,
+                channel_range=channel_range,
+                compress=compress,
+            )
+
+        # Symlink creation happens after the context manager exits.
+        # The cube lives in the Norder/Dir hierarchy, so the symlink
+        # target is a relative path, not just a basename.
+        result_symlink = pathlib.Path(result_dir) / "result"
+        if result_symlink.exists() or result_symlink.is_symlink():
+            result_symlink.unlink()
+        result_symlink.symlink_to(os.path.relpath(output_filepath, result_dir))
+        logging.info(f"Result symlink created: {result_symlink}")
+        logging.info("HiPS tile building complete!")
+    except MissingDatasetTypeError as mdte:
+        logging.error(f"Error: {mdte}")
+        exit_code = 12
+        generate_error_summary(message=mdte, error_dir=err_dir,
+                               write_to_file=True, error_type="fatal")
+        if log_dir is not None:
+            error_symlink.unlink(missing_ok=True)
+            error_symlink.symlink_to(log_file)
+        safe_exit(exit_code)
+    except EmptyMosaicQueryError as elqe:
+        logging.error(f"Error: {elqe}")
+        exit_code = 13
+        generate_error_summary(message=elqe, error_dir=err_dir,
+                               write_to_file=True, error_type="fatal", user_error=True)
+        if log_dir is not None:
+            error_symlink.unlink(missing_ok=True)
+            error_symlink.symlink_to(log_file)
+        safe_exit(exit_code)
+
+
 cli.add_command(create_mosaic)
+cli.add_command(create_hips_tile)
 
 
 def main():
@@ -612,6 +908,11 @@ def main():
             if runid is None:
                 runid = make_runid_default("mosaic")
                 force_override_runid(new_value=runid)
+            if jobid is None and "create-hips-tile" in sys.argv:
+                # --jobid is optional for HiPS tile jobs; derive the same
+                # default the command itself will use, so the log file
+                # name carries the tile identification.
+                jobid = _default_hips_jobid(sys.argv)
             err_dir = extract_err_dir_from_argv()
             log_level = logging.DEBUG if verbose else logging.INFO
             if log_dir is None:

@@ -8,7 +8,7 @@ import warnings
 
 # Related third party imports
 from astropy.io import fits
-from astropy.table import Table, vstack
+from astropy.table import Table, meta, vstack
 from astropy.utils.exceptions import AstropyWarning
 from lsst.pex.config.config import FieldValidationError
 from lsst.pipe.base import Struct, QuantumContext
@@ -26,7 +26,10 @@ from spx_tasks import (CreateAllSkyCatalogConfig, CreateAllSkyCatalogTask,
                        PerformForcedPhotometryConfig)
 from spx_tasks.create_all_sky_catalog import (hips6_to_hips5,
                                               compute_nyquist_metric,
-                                              compute_nyquist_diagnostics)
+                                              compute_nyquist_diagnostics,
+                                              add_meta_yaml,
+                                              META_YAML_TYPE_TAG)
+from spx_data.spx_version import SSDC_PIPELINES_VERSION
 from spx_tests import get_sample_global_bkgd, get_sample_pix_map
 
 test_root = Path(__file__).parent.parent
@@ -588,6 +591,65 @@ class TestCreateAllSkyCatalogTask():
             assert parquet_path.is_file(), "Parquet file failed to write."
             check_astropy_read(parquet_path, expected_columns)
             check_refcat_meta_in_parquet(parquet_path)
+
+    @pytest.mark.parametrize("phot_meas", [{"mode": "pipeline"}], indirect=["phot_meas"])
+    def test_pass_thru_values_unsorted_refcat(self, phot_meas, refcat):
+        """Test that pass-through values are matched to the correct source
+        when the reference catalog rows are not sorted by SPHERExRefID.
+
+        Regression test: matched indices are computed against the sorted view
+        of the refcat, so column values must be taken from that same view.
+        """
+        rc = refcat[0].get()
+        expected = {int(sid): (float(ra), float(dec), float(par))
+                    for sid, ra, dec, par in zip(
+                        rc["SPHERExRefID"], rc["ra"], rc["dec"], rc["parallax"])}
+
+        # Reorder rows by descending ID -- a valid refcat, just not sorted
+        rc_unsorted = rc[np.argsort(rc["SPHERExRefID"].data)[::-1]]
+
+        config = CreateAllSkyCatalogConfig(merge_refcat=True)
+        task = CreateAllSkyCatalogTask(config=config)
+        output = task.run(phot_meas["meas_table_list"],
+                          refcat=[MockDeferredAstropyTable(rc_unsorted)])
+
+        df = output.allsky_cat.to_pandas()
+        assert len(df) > 0, "Expected a non-empty output catalog."
+        for _, row in df.iterrows():
+            exp_ra, exp_dec, exp_par = expected[int(row["source_id"])]
+            assert np.isclose(row["ra"], exp_ra) and np.isclose(row["dec"], exp_dec), (
+                f"Pass-through ra/dec for source {int(row['source_id'])} do not match refcat.")
+            assert np.isclose(row["parallax"], exp_par, equal_nan=True), (
+                f"Pass-through parallax for source {int(row['source_id'])} does not match refcat.")
+
+    @pytest.mark.parametrize("has_meta", [False, True])
+    def test_add_meta_yaml(self, has_meta):
+        """Test that add_meta_yaml places field entries in the 'datatype'
+        list and version entries under a top-level 'meta' key, creating the
+        meta section when the input table has no table-level metadata.
+        """
+        table = Table({"ra": [1.0], "dec": [2.0]})
+        if has_meta:
+            table.meta["origin"] = "TEST"
+        meta_yaml = meta.get_yaml_from_table(table)
+        assert (META_YAML_TYPE_TAG in meta_yaml) == has_meta
+
+        add_meta_yaml(meta_yaml, mode="field",
+                      field_dict={"name": "nyquist_comp", "datatype": "float32",
+                                  "description": "Nyquist flag"})
+        add_meta_yaml(meta_yaml, mode="version")
+
+        # Round-trip through the astropy YAML parser: the version entry must
+        # land under the top-level 'meta' key, not in the 'datatype' list
+        header = meta.get_header_from_yaml(meta_yaml)
+        colnames = [col["name"] for col in header["datatype"]]
+        assert colnames == ["ra", "dec", "nyquist_comp"], \
+            f"Unexpected columns in 'datatype': {colnames}"
+        assert header["meta"]["version_allsky_cat"] == SSDC_PIPELINES_VERSION, \
+            "Missing or wrong 'version_allsky_cat' in table-level meta."
+        if has_meta:
+            assert header["meta"]["origin"] == "TEST", \
+                "Pre-existing table-level meta was not preserved."
 
     @pytest.mark.parametrize("hips6, hips5", [(10371, 2592), (42, 10)])
     def test_hips6_to_hips5(self, hips6, hips5):

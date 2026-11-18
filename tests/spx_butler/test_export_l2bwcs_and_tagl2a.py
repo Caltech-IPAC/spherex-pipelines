@@ -46,7 +46,7 @@ class DummyRef:
 def dummy_header(finast=0, sps_flags=""):
     hdr = Header()
     hdr["FINAST"] = finast
-    hdr["SPS_FLAGS"] = sps_flags
+    hdr["HIERARCH SPS_FLAGS"] = sps_flags
     return hdr
 
 

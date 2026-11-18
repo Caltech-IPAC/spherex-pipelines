@@ -288,10 +288,10 @@ class PerformForcedPhotometryConfig(pipeBase.PipelineTaskConfig,
         default=[])
 
     gc_interval = Field(
-        doc="Triggers manual garbage collection very N iterations during window loop. Default is 0 (no"
-            " garbage collection).",
+        doc="Triggers manual garbage collection very N iterations during window loop. If 0, no"
+            " extra garbage collection occurs.",
         dtype=int,
-        default=0)
+        default=55487)  # (2040/5)^2 = 166,464 windows -> ~3 garbage collection calls
 
     cat_phot_cols = ListField(
         doc="Minimal list of input source catalog columns required to perform photometry.",

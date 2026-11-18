@@ -25,6 +25,7 @@ tasks:
         "input_type", "ra", "dec", "name", "sersic", "ab_ratio", "phi", "shape_r", "SPHERExRefID"]
       perform_forced_photometry.phot_tool_mode: true
       perform_forced_photometry.fit_sso: false
+      perform_forced_photometry.gc_interval: 0  # no manual garbage collection during window loop
   level3b_create_all_sky_catalog:
     class: spx_tasks.CreateAllSkyCatalogTask
     config:

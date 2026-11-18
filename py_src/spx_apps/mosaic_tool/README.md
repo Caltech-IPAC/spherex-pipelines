@@ -258,7 +258,7 @@ Creates spectral mosaic cubes from SPHEREx Level 2 (L2) images for all standard 
 
 ### 4. Create MosaicBuilder
 - Configures output WCS grid from center, size, pixel scale, rotation
-- Uses histogram reprojection (`reproject_hist`) by default
+- Accumulates via histogram (nearest-pixel-bin) reprojection
 - Sets up bad pixel flags and propagated flags
 
 ### 5. Build mosaics (file-centric approach)

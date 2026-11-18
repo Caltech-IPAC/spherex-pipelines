@@ -57,6 +57,9 @@ class ChannelMosaic:
     propagated_flags : int, optional
         Bitwise OR of Flag values that were propagated to the flags array.
         Used to populate mask plane headers in FITS output.
+    extra_header : astropy.io.fits.Header, optional
+        Extra cards to include in the output IMAGE header (e.g. the HiPS
+        ORDER/NPIX tile identification).
 
     Examples
     --------
@@ -75,6 +78,7 @@ class ChannelMosaic:
     wcs: WCS
     channel_info: ChannelInfo
     propagated_flags: Optional[int] = None
+    extra_header: Optional[fits.Header] = None
 
     def write(self, filepath: str, overwrite: bool = True) -> None:
         """Write mosaic to FITS file.
@@ -98,6 +102,10 @@ class ChannelMosaic:
         """
         header = self.wcs.to_header()
         info = self.channel_info
+
+        # Extra caller-provided cards (e.g. HiPS ORDER/NPIX)
+        if self.extra_header is not None:
+            header.update(self.extra_header)
 
         # Add metadata
         header['BUNIT'] = _BUNIT['IMAGE']
@@ -283,6 +291,13 @@ def _get_mosaic_metadata(filepath: str) -> dict:
         # Reconstruct propagated_flags from mask plane headers
         propagated_flags = read_flag_headers_as_bitmask(flags_header)
 
+        # Preserve extra non-WCS cards (e.g. HiPS ORDER/NPIX) that
+        # WCS.to_header() would otherwise drop from the cube header
+        extra_header = fits.Header()
+        for key in ('ORDER', 'NPIX'):
+            if key in header:
+                extra_header[key] = (header[key], header.comments[key])
+
         wcs = WCS(header)
         shape = hdul['IMAGE'].shape
 
@@ -297,6 +312,7 @@ def _get_mosaic_metadata(filepath: str) -> dict:
             'R_std': R_std,
             'bandwidth': bandwidth,
             'propagated_flags': propagated_flags,
+            'extra_header': extra_header if len(extra_header) > 0 else None,
             'wcs': wcs,
             'shape': shape
         }
@@ -518,6 +534,8 @@ def write_mosaic_cube(
 
     # Format Spectral WCS Header Template
     header = first_meta['wcs'].to_header()
+    if first_meta['extra_header'] is not None:
+        header.update(first_meta['extra_header'])
     header = apply_spectral_wcs_headers(header)
     header['NCHAN'] = (n_channels, 'Number of spectral channels')
     header['WLMIN'] = (wavelengths[0], 'Minimum wavelength [micron]')

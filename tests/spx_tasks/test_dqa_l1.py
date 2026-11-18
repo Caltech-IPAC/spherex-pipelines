@@ -85,7 +85,7 @@ class TestL1DQA(unittest.TestCase):
         fake_flags_metadata(spximg, self.rp)
 
         # Inject transient flags above the threshold
-        spximg.flags = np.zeros(spximg.data.shape, dtype=np.int32)
+        spximg.flags = np.zeros(spximg.data.shape, dtype=np.int16)
         spximg.flags[50:60, 50:60] = Flag.TRANSIENT  # 100 transients
 
         output = self.task.run(spximg)

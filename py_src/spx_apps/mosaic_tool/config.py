@@ -22,9 +22,6 @@ class MosaicConfig:
         Output pixel size in arcseconds. Default is 6.2.
     rotation_deg : float or None, optional
         Rotation angle (roll) in degrees. None means no rotation.
-    reproject_method : str, optional
-        Reprojection method name. One of 'reproject_exact' or 'reproject_hist'.
-        Default is 'reproject_exact'.
     projection : str, optional
         WCS projection type. Default is 'SIN'.
     bad_pixel_flags : int, optional
@@ -40,7 +37,6 @@ class MosaicConfig:
     ...     width_deg=1.0,
     ...     height_deg=1.0,
     ...     pixel_size_arcsec=6.15,
-    ...     reproject_method='reproject_exact'
     ... )
 
     """
@@ -51,7 +47,6 @@ class MosaicConfig:
     height_deg: float
     pixel_size_arcsec: float = 6.2
     rotation_deg: Optional[float] = None
-    reproject_method: str = 'reproject_exact'
     projection: str = 'SIN'
     bad_pixel_flags: Optional[int] = None
     propagated_flags: Optional[int] = None

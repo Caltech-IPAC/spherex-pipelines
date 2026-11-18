@@ -19,7 +19,7 @@ from .config import MosaicConfig
 from .results import ChannelMosaic, write_mosaic_cube
 from .l2_loader import L2FileLoader
 from .grid import create_mosaic_grid
-from .reprojection import get_method, ReprojectionMethod
+from .reprojection import HistogramReprojection
 from .spectral_interpolation import SpectralInterpolator, InterpConfig, wavelength_to_array
 from ..resource_usage import log_resource_usage
 from numba import njit
@@ -121,7 +121,6 @@ class MosaicBuilder:
     >>> config = MosaicConfig(
     ...     ra_center=322.0, dec_center=-6.0,
     ...     width_deg=1.0, height_deg=1.0,
-    ...     reproject_method='reproject_exact'
     ... )
     >>>
     >>> # Build mosaics
@@ -148,11 +147,30 @@ class MosaicBuilder:
             propagated_flags=config.propagated_flags
         )
 
-        # Get reprojection method
-        self._reprojection = get_method(config.reproject_method)
+        # The file-centric accumulation kernel (_numba_accumulate_pixels)
+        # implements histogram (nearest-pixel-bin) semantics unconditionally;
+        # HistogramReprojection is instantiated only to source nhits_dtype
+        # from a single place in the reprojection package.
+        self._reprojection = HistogramReprojection()
+
+        # Extra FITS cards attached to every output mosaic header.
+        # None for rectangular mosaics; subclasses may set a fits.Header
+        # (e.g. ORDER/NPIX for HiPS tiles).
+        self._extra_header = None
 
         # Create output grid
-        self.wcs_mosaic, self.shape_mosaic = create_mosaic_grid(
+        self.wcs_mosaic, self.shape_mosaic = self._create_grid(config)
+
+    def _create_grid(self, config: MosaicConfig):
+        """Create the output grid; grid-creation hook for subclasses.
+
+        Returns
+        -------
+        tuple of (astropy.wcs.WCS, tuple of (int, int))
+            Output WCS and array shape (ny, nx).
+
+        """
+        return create_mosaic_grid(
             ra_center=config.ra_center,
             dec_center=config.dec_center,
             width_deg=config.width_deg,
@@ -161,11 +179,6 @@ class MosaicBuilder:
             rotation_deg=config.rotation_deg,
             projection=config.projection
         )
-
-    @property
-    def reprojection_method(self) -> ReprojectionMethod:
-        """Current reprojection method."""
-        return self._reprojection
 
     def build_all(
         self,
@@ -354,18 +367,7 @@ class MosaicBuilder:
             True where the output pixel falls within the mosaic grid.
 
         """
-        ny_in, nx_in = crop_shape
-        y_offset, x_offset = origin
-
-        # Build pixel coordinate grids with origin offset applied.
-        # float32 is sufficient for pixel coordinates at detector scales.
-        iy_in, ix_in = np.indices((ny_in, nx_in), dtype=np.float32)
-        iy_in += y_offset
-        ix_in += x_offset
-
-        # Transform input pixel coordinates to sky coordinates
-        ra, dec = wcs_in.all_pix2world(ix_in, iy_in, 0)
-        del iy_in, ix_in
+        ra, dec = self._input_sky_coords(wcs_in, origin, crop_shape)
 
         # Transform sky coordinates to output pixel coordinates
         ix_out, iy_out = self.wcs_mosaic.all_world2pix(ra, dec, 0)
@@ -386,14 +388,49 @@ class MosaicBuilder:
 
         return ix_idx, iy_idx, bounds_mask
 
+    @staticmethod
+    def _input_sky_coords(
+        wcs_in,
+        origin: tuple[int, int],
+        crop_shape: tuple[int, int]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Sky coordinates of pixel centers in a cropped input region.
+
+        Parameters
+        ----------
+        wcs_in : astropy.wcs.WCS
+            Input image WCS.
+        origin : tuple of (int, int)
+            (y_offset, x_offset) of the crop region within the full detector.
+        crop_shape : tuple of (int, int)
+            Shape (ny, nx) of the cropped region.
+
+        Returns
+        -------
+        ra, dec : numpy.ndarray
+            Sky coordinates in degrees, shape (ny, nx).
+
+        """
+        ny_in, nx_in = crop_shape
+        y_offset, x_offset = origin
+
+        # Build pixel coordinate grids with origin offset applied.
+        # float32 is sufficient for pixel coordinates at detector scales.
+        iy_in, ix_in = np.indices((ny_in, nx_in), dtype=np.float32)
+        iy_in += y_offset
+        ix_in += x_offset
+
+        # Transform input pixel coordinates to sky coordinates
+        return wcs_in.all_pix2world(ix_in, iy_in, 0)
+
     def _build_array_channels(
-            self,
-            l2_files: list[str],
-            array: int,
-            subchannels: list[int],
-            progress_callback: Optional[Callable[[int, int, str], None]] = None,
-            file_counter: int = 0,
-            total_files: int = 0) -> list[ChannelMosaic]:
+        self,
+        l2_files: list[str],
+        array: int,
+        subchannels: list[int],
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        file_counter: int = 0,
+        total_files: int = 0) -> list[ChannelMosaic]:
         """Build mosaics for multiple subchannels of one array natively via Numba.
 
         Each file is opened once via multithreading
@@ -549,7 +586,8 @@ class MosaicBuilder:
                 flags=acc['acc_flags'],
                 wcs=self.wcs_mosaic,
                 channel_info=channel_info,
-                propagated_flags=self.config.propagated_flags
+                propagated_flags=self.config.propagated_flags,
+                extra_header=self._extra_header
             ))
 
         accumulators.clear()
@@ -711,82 +749,65 @@ def _load_wavelength_model_from_files(
     )
 
 
-def build_mosaics_from_temp_butler(
-    temp_butler_root: str,
-    center: tuple[float, float],
-    size: tuple[float, float],
-    pixel_scale: float,
-    rotation: float,
-    output_dir: str,
-    channel_mosaics_dir: str,
-    channel_range: Optional[tuple[float, float]] = None,
-    compress: bool = False,
-    user_channels: Optional[tuple[float, float]] = None
-) -> str:
-    """Build mosaics from a populated temp butler.
-
-    This function orchestrates the complete mosaic building workflow:
-    1. Finds L2 files in temp_butler_root/level2
-    2. Loads spectral calibration from temp_butler_root/spectral_channels
-       or wavelength calibration from temp_butler_root/spectral_wcs
-    3. Creates channel definition using bundled LVF contours
-    4. Builds mosaics for all (or filtered) channels
-    5. Saves individual channel mosaics to channel_mosaics_dir as they complete
-    6. Writes combined cube to output_dir by loading saved channel files
+def _find_l2_files(temp_butler_root: str) -> dict[int, list[str]]:
+    """Find L2 files in a temp butler, by detector array.
 
     Parameters
     ----------
     temp_butler_root : str
         Path to the populated temp butler root directory.
-    center : tuple[float, float]
-        Mosaic center as (ra, dec) in degrees.
-    size : tuple[float, float]
-        Mosaic size as (width, height) in degrees.
-    pixel_scale : float
-        Output pixel scale in arcseconds.
-    rotation : float
-        Rotation angle in degrees.
-    output_dir : str
-        Directory for the output cube file.
-    channel_mosaics_dir : str
-        Directory for individual channel mosaic files.
-    channel_range : tuple[float, float], optional
-        Wavelength range (min, max) in microns to filter channels.
-        If None, all standard channels are processed.
-    compress : bool, optional
-        Whether to compress the output cube with gzip. Default is False.
-    user_channels : tuple[float, float], optional
-        Wavelength range (min, max) in microns to filter channels.
-        Used for tophat user channels as an alternative to standard channels.
 
     Returns
     -------
-    str
-        Path to the output cube file.
+    dict
+        Mapping of array number (1-6) to list of L2 file paths.
 
     Raises
     ------
     ValueError
-        If no L2 files are found or no mosaics are created.
+        If no L2 files are found.
 
     """
-    log_resource_usage()
-    # Setup paths
     l2_base_dir = os.path.join(temp_butler_root, 'level2')
 
-    # File patterns (array in directory and file name):
-    # L2 file pattern: level2/.../1/level2_...D1_....fits
+    # L2 file pattern (array in directory name):
+    # level2/.../1/level2_...D1_....fits
     l2_pattern = '**/{array}/*.fits'
 
-    # Find L2 files
     logging.info("Finding L2 files...")
     l2_files_by_array = _find_files_by_array(l2_base_dir, l2_pattern, "L2 files")
     total_files = sum(len(f) for f in l2_files_by_array.values())
     if total_files == 0:
         raise ValueError(f"No L2 files found in {l2_base_dir}")
     logging.info(f"Total L2 files found: {total_files}")
-    log_resource_usage()
+    return l2_files_by_array
 
+
+def _get_channel_definition(
+    temp_butler_root: str,
+    user_channels: Optional[tuple[float, float]] = None
+) -> ChannelDefinition:
+    """Load the channel definition for a populated temp butler.
+
+    Without user channels, standard spectral channel definitions are read
+    from the temp butler's spectral_channels dataset (falling back to the
+    bundled reference definitions). With user channels, a channel
+    definition is built from the wavelength calibration files.
+
+    Parameters
+    ----------
+    temp_butler_root : str
+        Path to the populated temp butler root directory.
+    user_channels : tuple[float, float], optional
+        Wavelength range (min, max) in microns for tophat user channels
+        as an alternative to standard channels.
+
+    Returns
+    -------
+    ChannelDefinition
+        Channel definition to build mosaics with.
+
+    """
     if user_channels is None:
         # Use standard spectral channels
 
@@ -809,7 +830,6 @@ def build_mosaics_from_temp_butler(
         if len(spectral_channels_files) < 1:
             logging.info("Using reference spectral channel definitions.")
             channel_def = get_reference_spectral_channel_defs()
-        log_resource_usage()
     else:
         wavelength_fits_dir = os.path.join(temp_butler_root, 'spectral_wcs')
         # Wavelength file pattern: spectral_wcs/.../1/spectral_wcs_D1_....fits
@@ -828,55 +848,100 @@ def build_mosaics_from_temp_butler(
         # TODO: implement custom channel definitions
         channel_def = LVFContourChannelDefinition.from_bundled(wl_model)
         del wl_model  # wavelength model is only needed for spectral channels stats
-        log_resource_usage()
 
-    # Determine channels to process
-    # Filter to only arrays that have L2 files (e.g., when --detector is used)
+    return channel_def
+
+
+def _select_channels(
+    channel_def: ChannelDefinition,
+    l2_files_by_array: dict[int, list[str]],
+    channel_range: Optional[tuple[float, float]] = None
+) -> list[tuple[int, int]]:
+    """Determine the (array, subchannel) pairs to process.
+
+    Filters to arrays that have L2 files (e.g., when --detector is used)
+    and, optionally, to a wavelength range.
+
+    Parameters
+    ----------
+    channel_def : ChannelDefinition
+        Channel definition providing the available channels.
+    l2_files_by_array : dict
+        Mapping of array number to list of L2 file paths.
+    channel_range : tuple[float, float], optional
+        Wavelength range (min, max) in microns to filter channels.
+
+    Returns
+    -------
+    list of (int, int)
+        Channels to process as (array, subchannel) pairs.
+
+    """
     available_arrays = set(l2_files_by_array.keys())
     all_channels = [
         (a, s) for a, s in channel_def.get_all_channels()
         if a in available_arrays
     ]
-    if channel_range is not None:
-        wl_min, wl_max = channel_range
-        channels_to_process = []
-        for array_id, subchannel in all_channels:
-            wl = channel_def.get_channel_info(array_id, subchannel).wavelength.to('um').value
-            if wl_min <= wl <= wl_max:
-                channels_to_process.append((array_id, subchannel))
-        logging.info(
-            f"Filtered to {len(channels_to_process)} channels "
-            f"in range [{wl_min}, {wl_max}] um"
-        )
-    else:
-        channels_to_process = all_channels
+    if channel_range is None:
+        return all_channels
 
-    n_channels = len(channels_to_process)
-    logging.info(f"Processing {n_channels} channels...")
-
-    # Create mosaic configuration
-    config = MosaicConfig(
-        ra_center=center[0],
-        dec_center=center[1],
-        width_deg=size[0],
-        height_deg=size[1],
-        pixel_size_arcsec=pixel_scale,
-        rotation_deg=rotation if rotation != 0 else None,
-        reproject_method='reproject_hist',
-        projection='TAN',
-        bad_pixel_flags=BAD_PIX_FLAGS,
-        propagated_flags=PROPAGATED_FLAGS
-    )
-
-    # Create builder
-    builder = MosaicBuilder(channel_def, config)
+    wl_min, wl_max = channel_range
+    channels_to_process = []
+    for array_id, subchannel in all_channels:
+        wl = channel_def.get_channel_info(array_id, subchannel).wavelength.to('um').value
+        if wl_min <= wl <= wl_max:
+            channels_to_process.append((array_id, subchannel))
     logging.info(
-        f"Mosaic grid: {builder.shape_mosaic[0]} x {builder.shape_mosaic[1]} pixels"
+        f"Filtered to {len(channels_to_process)} channels "
+        f"in range [{wl_min}, {wl_max}] um"
     )
+    return channels_to_process
+
+
+def _build_and_write_cube(
+    builder: MosaicBuilder,
+    l2_files_by_array: dict[int, list[str]],
+    channels_to_process: list[tuple[int, int]],
+    channel_mosaics_dir: str,
+    cube_filepath: str,
+    compress: bool = False
+) -> str:
+    """Build all channel mosaics and combine them into an output cube.
+
+    Each completed mosaic is written to `channel_mosaics_dir` and freed
+    immediately; the cube is then assembled from the saved files.
+
+    Parameters
+    ----------
+    builder : MosaicBuilder
+        Configured builder (grid and reprojection already set up).
+    l2_files_by_array : dict
+        Mapping of array number to list of L2 file paths.
+    channels_to_process : list of (int, int)
+        Channels to process as (array, subchannel) pairs.
+    channel_mosaics_dir : str
+        Directory for individual channel mosaic files.
+    cube_filepath : str
+        Output cube file path (parent directories are created).
+    compress : bool, optional
+        Whether to compress the output cube with gzip. Default is False.
+
+    Returns
+    -------
+    str
+        Path to the output cube file.
+
+    Raises
+    ------
+    ValueError
+        If no mosaics are created.
+
+    """
+    n_channels = len(channels_to_process)
 
     # Setup output directories
     os.makedirs(channel_mosaics_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(cube_filepath) or '.', exist_ok=True)
 
     # Track saved mosaic file paths for cube creation.
     # Paths are appended in output_callback and used after build_all() returns,
@@ -937,14 +1002,112 @@ def build_mosaics_from_temp_butler(
     # from disk sequentially to assemble the output cube. Peak RAM here
     # is bounded by the number of channels × one mosaic footprint, which
     # is far smaller than holding mosaics alongside active accumulators.
-    # Write combined cube
-    cube_filename = 'mosaic_cube.fits'
-    cube_filepath = os.path.join(output_dir, cube_filename)
     logging.info(f"Writing combined cube with {len(saved_mosaic_paths)} channels...")
     cube_filepath = write_mosaic_cube(saved_mosaic_paths, cube_filepath, compress=compress)
     logging.info(f"Cube saved to: {cube_filepath}")
 
     return cube_filepath
+
+
+def build_mosaics_from_temp_butler(
+    temp_butler_root: str,
+    center: tuple[float, float],
+    size: tuple[float, float],
+    pixel_scale: float,
+    rotation: float,
+    output_dir: str,
+    channel_mosaics_dir: str,
+    channel_range: Optional[tuple[float, float]] = None,
+    compress: bool = False,
+    user_channels: Optional[tuple[float, float]] = None
+) -> str:
+    """Build mosaics from a populated temp butler.
+
+    This function orchestrates the complete mosaic building workflow:
+    1. Finds L2 files in temp_butler_root/level2
+    2. Loads spectral calibration from temp_butler_root/spectral_channels
+       or wavelength calibration from temp_butler_root/spectral_wcs
+    3. Creates channel definition using bundled LVF contours
+    4. Builds mosaics for all (or filtered) channels
+    5. Saves individual channel mosaics to channel_mosaics_dir as they complete
+    6. Writes combined cube to output_dir by loading saved channel files
+
+    Parameters
+    ----------
+    temp_butler_root : str
+        Path to the populated temp butler root directory.
+    center : tuple[float, float]
+        Mosaic center as (ra, dec) in degrees.
+    size : tuple[float, float]
+        Mosaic size as (width, height) in degrees.
+    pixel_scale : float
+        Output pixel scale in arcseconds.
+    rotation : float
+        Rotation angle in degrees.
+    output_dir : str
+        Directory for the output cube file.
+    channel_mosaics_dir : str
+        Directory for individual channel mosaic files.
+    channel_range : tuple[float, float], optional
+        Wavelength range (min, max) in microns to filter channels.
+        If None, all standard channels are processed.
+    compress : bool, optional
+        Whether to compress the output cube with gzip. Default is False.
+    user_channels : tuple[float, float], optional
+        Wavelength range (min, max) in microns to filter channels.
+        Used for tophat user channels as an alternative to standard channels.
+
+    Returns
+    -------
+    str
+        Path to the output cube file.
+
+    Raises
+    ------
+    ValueError
+        If no L2 files are found or no mosaics are created.
+
+    """
+    log_resource_usage()
+    l2_files_by_array = _find_l2_files(temp_butler_root)
+    log_resource_usage()
+
+    channel_def = _get_channel_definition(temp_butler_root, user_channels)
+    log_resource_usage()
+
+    channels_to_process = _select_channels(
+        channel_def, l2_files_by_array, channel_range
+    )
+    logging.info(f"Processing {len(channels_to_process)} channels...")
+
+    # Create mosaic configuration
+    config = MosaicConfig(
+        ra_center=center[0],
+        dec_center=center[1],
+        width_deg=size[0],
+        height_deg=size[1],
+        pixel_size_arcsec=pixel_scale,
+        rotation_deg=rotation if rotation != 0 else None,
+        projection='TAN',
+        bad_pixel_flags=BAD_PIX_FLAGS,
+        propagated_flags=PROPAGATED_FLAGS
+    )
+
+    # Create builder
+    builder = MosaicBuilder(channel_def, config)
+    logging.info(
+        f"Mosaic grid: {builder.shape_mosaic[0]} x {builder.shape_mosaic[1]} pixels"
+    )
+
+    cube_filepath = os.path.join(output_dir, 'mosaic_cube.fits')
+    return _build_and_write_cube(
+        builder=builder,
+        l2_files_by_array=l2_files_by_array,
+        channels_to_process=channels_to_process,
+        channel_mosaics_dir=channel_mosaics_dir,
+        cube_filepath=cube_filepath,
+        compress=compress
+    )
 
 
 def build_interpolated_mosaic(
@@ -1231,7 +1394,6 @@ def build_interpolated_mosaic(
         height_deg=size[1],
         pixel_size_arcsec=pixel_scale,
         rotation_deg=rotation if rotation != 0 else None,
-        reproject_method='reproject_hist',
         projection='TAN',
         bad_pixel_flags=BAD_PIX_FLAGS,
         propagated_flags=PROPAGATED_FLAGS

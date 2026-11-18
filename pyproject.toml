@@ -134,6 +134,7 @@ target-version = "py311"
 extend-exclude = [
     "__init__.py",
     "docs",
+    "*.ipynb",
 ]
 
 [tool.ruff.lint.per-file-ignores]

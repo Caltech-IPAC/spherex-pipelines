@@ -19,6 +19,7 @@ from spx_apps.photometry_tool.temp_butler import (
     export_datasets
 )
 from spx_apps.mosaic_tool.exceptions import EmptyMosaicQueryError
+from spx_apps.mosaic_tool.hips_grid import hips_tile_polygon
 
 BUTLER_CONFIG = "resource://spx_butler/configs"
 BUTLER_YAML = "butler.yaml"
@@ -218,6 +219,99 @@ def collect_inputs_for_temp_butler(
         )
         logging.info(f"Computed Mosaic Query Polygon: {region_str}")
 
+    return _export_region_inputs(
+        butler=butler,
+        region_str=region_str,
+        tmp_dir=tmp_dir,
+        time_interval=time_interval,
+        detectors=detectors,
+        use_deep=use_deep,
+        instrument=instrument,
+        lvf_dataset_type_name=lvf_dataset_type_name,
+        input_coll=input_coll
+    )
+
+
+def collect_inputs_for_hips_tile(
+        butler_repo: str,
+        tmp_dir: str,
+        hips_order: int,
+        hips_npix: int,
+        time_interval: Optional[tuple[Time, Time]] = None,
+        detectors: Optional[list[int]] = None,
+        use_deep: bool = False
+) -> dict:
+    """Find and export all necessary inputs to build one HiPS tile.
+
+    HiPS counterpart of `collect_inputs_for_temp_butler`: the query
+    region is the boundary of the HEALPix NESTED cell `hips_npix` at
+    order `hips_order`, expanded by the SPXMOSAIC_BUFFER_DEG margin.
+
+    Parameters
+    ----------
+    butler_repo : str
+        Path or URI of the source Butler repository.
+    tmp_dir : str
+        Directory for the temp butler and export file.
+    hips_order : int
+        HiPS tile order (HEALPix NSIDE = 2^order).
+    hips_npix : int
+        HEALPix NESTED pixel index of the tile at NSIDE = 2^hips_order.
+    time_interval : tuple of (Time, Time), optional
+        Restrict input images to this time interval.
+    detectors : list of int, optional
+        Restrict input images to these detectors.
+    use_deep : bool, optional
+        Include non-all-sky (deep) observations. Default is False.
+
+    Returns
+    -------
+    dict
+        With keys 'temp_butler_root', 'export_file' and 'coverage_table'.
+
+    """
+    instrument = os.getenv("SPXMOSAIC_INSTRUMENT", "spx")
+    if instrument not in ["spx", "simu"]:
+        raise ValueError(f"Unsupported instrument: {instrument}")
+
+    lvf_dataset_type_name = os.getenv("SPXMOSAIC_L2_DATASET_TYPE", "level2")
+    butler = Butler(butler_repo)
+    input_coll = os.getenv("SPXMOSAIC_INPUT_COLL", "IRSA-qr2-visible")
+
+    buffer_deg = float(os.getenv("SPXMOSAIC_BUFFER_DEG", DEFAULT_BUFFER_DEG))
+    region_str = hips_tile_polygon(hips_order, hips_npix, buffer_deg=buffer_deg)
+    logging.info(
+        f"HiPS tile order {hips_order}, npix {hips_npix}: "
+        f"query polygon {region_str}"
+    )
+
+    return _export_region_inputs(
+        butler=butler,
+        region_str=region_str,
+        tmp_dir=tmp_dir,
+        time_interval=time_interval,
+        detectors=detectors,
+        use_deep=use_deep,
+        instrument=instrument,
+        lvf_dataset_type_name=lvf_dataset_type_name,
+        input_coll=input_coll
+    )
+
+
+def _export_region_inputs(
+        butler: Butler,
+        region_str: Optional[str],
+        tmp_dir: str,
+        time_interval: Optional[tuple[Time, Time]],
+        detectors: Optional[list[int]],
+        use_deep: bool,
+        instrument: str,
+        lvf_dataset_type_name: str,
+        input_coll: str
+) -> dict:
+    """Query L2 datasets overlapping a region and export them, with
+    calibration products, to a temp butler export.
+    """
     coverage_table, dataset_refs = lvf_lookup(
         butler,
         region=region_str,

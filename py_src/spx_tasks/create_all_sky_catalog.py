@@ -92,6 +92,7 @@ def compute_nyquist_metric(wavelengths: list[float], params: dict) -> float:
     nyquist_metric = np.sum(good) / n_channels
     return float(np.clip(nyquist_metric, 0.0, 1.0))
 
+
 def compute_nyquist_diagnostics(wavelengths, params):
     """Compute diagnostic information for testing Nyquist spread behavior.
 
@@ -147,6 +148,7 @@ def compute_nyquist_diagnostics(wavelengths, params):
         w = wavelengths_valid[chan_valid == channel_idx]
         spread[channel_idx] = np.max(w) - np.min(w)
         spread_fraction[channel_idx] = spread[channel_idx] / channel_sizes[channel_idx]
+
     def frac_with_spread(threshold):
         good = (counts >= 2) & (spread_fraction >= threshold)
         return float(np.sum(good) / n_channels)
@@ -161,6 +163,7 @@ def compute_nyquist_diagnostics(wavelengths, params):
         "frac_bins_with_spread_033": frac_with_spread(0.33),
         "frac_bins_with_spread_050": frac_with_spread(0.50),
     }
+
 
 def add_meta_yaml(meta_yaml: list, mode: Literal["field", "version"], field_dict: dict | None = None):
     """Add field or version metadata to a list of text lines with YAML header
@@ -201,7 +204,9 @@ def add_meta_yaml(meta_yaml: list, mode: Literal["field", "version"], field_dict
             idx = meta_yaml.index(META_YAML_TYPE_TAG) + 1
         meta_yaml.insert(idx, new_meta)
     else:
-        # Add metadata at general level
+        if mode == "version":
+            # No table-level meta section yet; create it
+            meta_yaml.append(META_YAML_TYPE_TAG)
         meta_yaml.append(new_meta)
     return
 
@@ -663,7 +668,7 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
                         meas_table.replace_column(
                             name=col,
                             col=Column(
-                                data=refcat[col][matched_idx],
+                                data=refcat_sorted[col][matched_idx],
                                 name=col,
                                 unit=pass_thru_lookup[col]["unit"],
                                 description=pass_thru_lookup[col]["description"],
@@ -671,7 +676,7 @@ class CreateAllSkyCatalogTask(pipeBase.PipelineTask):
                     else:
                         meas_table.add_column(
                             Column(
-                                data=refcat[col][matched_idx],
+                                data=refcat_sorted[col][matched_idx],
                                 name=pass_thru_lookup[col]["final_name"],
                                 unit=pass_thru_lookup[col]["unit"],
                                 description=pass_thru_lookup[col]["description"],

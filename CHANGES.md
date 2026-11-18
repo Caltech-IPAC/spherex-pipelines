@@ -1,3 +1,10 @@
+## SPHEREx Pipelines 7.0.3 (2026-07-15)
+
+### Bug Fixes
+
+- Fixed false-positive failures in Level 1 DQA. [[#SP-2261](https://jira.ipac.caltech.edu/browse/SP-2261)]
+
+
 ## SPHEREx Pipelines 7.0.2 (2026-07-13)
 
 ### Bug Fixes
